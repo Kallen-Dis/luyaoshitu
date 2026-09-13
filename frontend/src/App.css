@@ -1,0 +1,277 @@
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --border: #e2e5e9;
+  --text: #1f2328;
+  --muted: #656d76;
+  --accent: #1f6feb;
+  --warn: #9a6700;
+  --danger: #cf222e;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 380px 1fr;
+  height: 100vh;
+}
+
+.sidebar {
+  overflow-y: auto;
+  padding: 20px;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+}
+
+.sidebar header h1 {
+  margin: 0 0 4px;
+  font-size: 19px;
+}
+
+.subtitle,
+.hint {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.subtitle {
+  margin: 0 0 18px;
+}
+
+.sidebar section {
+  padding-top: 16px;
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.sidebar h2 {
+  margin: 0 0 6px;
+  font-size: 14px;
+}
+
+.sample-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.sample {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  text-align: left;
+  cursor: pointer;
+  background: #fbfcfd;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.sample:hover {
+  border-color: var(--accent);
+}
+
+.sample.active {
+  background: #eaf2ff;
+  border-color: var(--accent);
+}
+
+.sample-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sample-meta {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.field {
+  margin-bottom: 14px;
+}
+
+.field label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+}
+
+input[type='text'],
+input:not([type]) {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+input[type='range'] {
+  width: 100%;
+}
+
+button {
+  padding: 7px 14px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  background: #f6f8fa;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+button:hover:not(:disabled) {
+  background: #eef1f4;
+}
+
+button:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+button.primary {
+  width: 100%;
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+button.primary:hover:not(:disabled) {
+  background: #1a5fd0;
+}
+
+button.primary:disabled {
+  background: #9dbcf0;
+  border-color: #9dbcf0;
+}
+
+.banner {
+  padding: 10px 12px;
+  margin-top: 16px;
+  font-size: 12px;
+  line-height: 1.6;
+  border-radius: 6px;
+}
+
+.banner.error {
+  color: var(--danger);
+  background: #ffebe9;
+  border: 1px solid #ffcecb;
+}
+
+.banner.notice {
+  color: #0a5d1f;
+  background: #eaffea;
+  border: 1px solid #c5f0c5;
+}
+
+.metrics {
+  padding-top: 16px;
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.metrics-headline {
+  margin-bottom: 12px;
+}
+
+.metrics-value {
+  font-size: 34px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.metrics-unit {
+  margin-left: 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.metrics-caption {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.callout {
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #7a4b00;
+  background: #fff8e6;
+  border: 1px solid #f5dda0;
+  border-radius: 6px;
+}
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 14px 0 0;
+}
+
+.metrics-grid dt {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.metrics-grid dd {
+  margin: 2px 0 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.metrics-note {
+  margin: 12px 0 0;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+
+.metrics-meta {
+  margin: 10px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.metrics-meta .warn {
+  color: var(--warn);
+}
+
+.stage {
+  position: relative;
+}
+
+.map-canvas,
+.placeholder {
+  width: 100%;
+  height: 100%;
+}
+
+.placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  font-size: 13px;
+  color: var(--muted);
+  text-align: center;
+}
