@@ -163,13 +163,1325 @@
     "min_radius_m": 548.6,
     "max_radius_m": 910.0,
     "compactness": 0.603,
+    "mean_detour": 1.31,
+    "max_detour": 1.568,
     "sampled_points": 252,
     "failed_points": 0,
+    "rays": [
+      {
+        "bearing": 0.0,
+        "radius_m": 878.3,
+        "detour": 1.114,
+        "barrier": false
+      },
+      {
+        "bearing": 10.0,
+        "radius_m": 829.2,
+        "detour": 1.166,
+        "barrier": false
+      },
+      {
+        "bearing": 20.0,
+        "radius_m": 812.5,
+        "detour": 1.312,
+        "barrier": false
+      },
+      {
+        "bearing": 30.0,
+        "radius_m": 742.6,
+        "detour": 1.371,
+        "barrier": false
+      },
+      {
+        "bearing": 40.0,
+        "radius_m": 729.8,
+        "detour": 1.286,
+        "barrier": false
+      },
+      {
+        "bearing": 50.0,
+        "radius_m": 715.7,
+        "detour": 1.314,
+        "barrier": false
+      },
+      {
+        "bearing": 60.0,
+        "radius_m": 705.4,
+        "detour": 1.38,
+        "barrier": false
+      },
+      {
+        "bearing": 70.0,
+        "radius_m": 655.4,
+        "detour": 1.489,
+        "barrier": false
+      },
+      {
+        "bearing": 80.0,
+        "radius_m": 597.8,
+        "detour": 1.31,
+        "barrier": false
+      },
+      {
+        "bearing": 90.0,
+        "radius_m": 655.6,
+        "detour": 1.319,
+        "barrier": false
+      },
+      {
+        "bearing": 100.0,
+        "radius_m": 708.5,
+        "detour": 1.309,
+        "barrier": false
+      },
+      {
+        "bearing": 110.0,
+        "radius_m": 827.1,
+        "detour": 1.237,
+        "barrier": false
+      },
+      {
+        "bearing": 120.0,
+        "radius_m": 846.4,
+        "detour": 1.178,
+        "barrier": false
+      },
+      {
+        "bearing": 130.0,
+        "radius_m": 837.6,
+        "detour": 1.111,
+        "barrier": false
+      },
+      {
+        "bearing": 140.0,
+        "radius_m": 698.3,
+        "detour": 1.249,
+        "barrier": false
+      },
+      {
+        "bearing": 150.0,
+        "radius_m": 568.5,
+        "detour": 1.274,
+        "barrier": false
+      },
+      {
+        "bearing": 160.0,
+        "radius_m": 548.6,
+        "detour": 1.438,
+        "barrier": false
+      },
+      {
+        "bearing": 170.0,
+        "radius_m": 661.7,
+        "detour": 1.36,
+        "barrier": false
+      },
+      {
+        "bearing": 180.0,
+        "radius_m": 763.6,
+        "detour": 1.181,
+        "barrier": false
+      },
+      {
+        "bearing": 190.0,
+        "radius_m": 805.3,
+        "detour": 1.371,
+        "barrier": false
+      },
+      {
+        "bearing": 200.0,
+        "radius_m": 757.2,
+        "detour": 1.39,
+        "barrier": false
+      },
+      {
+        "bearing": 210.0,
+        "radius_m": 737.7,
+        "detour": 1.351,
+        "barrier": false
+      },
+      {
+        "bearing": 220.0,
+        "radius_m": 719.0,
+        "detour": 1.319,
+        "barrier": false
+      },
+      {
+        "bearing": 230.0,
+        "radius_m": 711.6,
+        "detour": 1.568,
+        "barrier": false
+      },
+      {
+        "bearing": 240.0,
+        "radius_m": 704.9,
+        "detour": 1.479,
+        "barrier": false
+      },
+      {
+        "bearing": 250.0,
+        "radius_m": 690.6,
+        "detour": 1.368,
+        "barrier": false
+      },
+      {
+        "bearing": 260.0,
+        "radius_m": 709.9,
+        "detour": 1.281,
+        "barrier": false
+      },
+      {
+        "bearing": 270.0,
+        "radius_m": 717.9,
+        "detour": 1.184,
+        "barrier": false
+      },
+      {
+        "bearing": 280.0,
+        "radius_m": 743.5,
+        "detour": 1.346,
+        "barrier": false
+      },
+      {
+        "bearing": 290.0,
+        "radius_m": 755.5,
+        "detour": 1.429,
+        "barrier": false
+      },
+      {
+        "bearing": 300.0,
+        "radius_m": 769.5,
+        "detour": 1.339,
+        "barrier": false
+      },
+      {
+        "bearing": 310.0,
+        "radius_m": 773.4,
+        "detour": 1.309,
+        "barrier": false
+      },
+      {
+        "bearing": 320.0,
+        "radius_m": 792.8,
+        "detour": 1.451,
+        "barrier": false
+      },
+      {
+        "bearing": 330.0,
+        "radius_m": 859.6,
+        "detour": 1.459,
+        "barrier": false
+      },
+      {
+        "bearing": 340.0,
+        "radius_m": 909.2,
+        "detour": 1.017,
+        "barrier": false
+      },
+      {
+        "bearing": 350.0,
+        "radius_m": 910.0,
+        "detour": 1.115,
+        "barrier": false
+      }
+    ],
     "center": {
       "lat": 31.247979,
       "lng": 121.416775
     },
     "name": "上海市普陀区曹杨新村街道",
-    "generated_at": "2026-09-13T14:24:06"
+    "generated_at": "2026-09-15T19:27:34",
+    "coverage": {
+      "categories": {
+        "生鲜采买": 5,
+        "医药": 6,
+        "基础教育": 2,
+        "基础医疗": 10,
+        "养老服务": 4,
+        "文体休闲": 14
+      },
+      "nearby_categories": {
+        "生鲜采买": 47,
+        "医药": 28,
+        "基础教育": 11,
+        "基础医疗": 31,
+        "养老服务": 26,
+        "文体休闲": 64
+      },
+      "failed_categories": [],
+      "searches": 17,
+      "radius_m": 1910,
+      "clean_stats": {
+        "生鲜采买": {
+          "raw": 54,
+          "invalid": 0,
+          "excluded": 0,
+          "out_of_range": 0,
+          "duplicated": 7,
+          "dropped": 7
+        },
+        "医药": {
+          "raw": 56,
+          "invalid": 0,
+          "excluded": 0,
+          "out_of_range": 0,
+          "duplicated": 28,
+          "dropped": 28
+        },
+        "基础教育": {
+          "raw": 11,
+          "invalid": 0,
+          "excluded": 0,
+          "out_of_range": 0,
+          "duplicated": 0,
+          "dropped": 0
+        },
+        "基础医疗": {
+          "raw": 41,
+          "invalid": 0,
+          "excluded": 0,
+          "out_of_range": 0,
+          "duplicated": 10,
+          "dropped": 10
+        },
+        "养老服务": {
+          "raw": 37,
+          "invalid": 0,
+          "excluded": 0,
+          "out_of_range": 0,
+          "duplicated": 11,
+          "dropped": 11
+        },
+        "文体休闲": {
+          "raw": 64,
+          "invalid": 0,
+          "excluded": 0,
+          "out_of_range": 0,
+          "duplicated": 0,
+          "dropped": 0
+        }
+      },
+      "source": "预生成快照，检索半径 1910 米"
+    },
+    "blindspots": {
+      "grid_spacing_m": 150.0,
+      "walk_limit_m": 1000.0,
+      "cell_count": 78,
+      "blind_count": 16,
+      "max_reach_s": 1251,
+      "blind_ratio": {
+        "生鲜采买": 0.051,
+        "医药": 0.013,
+        "基础教育": 0.192
+      },
+      "cells": [
+        {
+          "lat": 31.242202,
+          "lng": 121.41381,
+          "reach_s": 746,
+          "nearest_m": {
+            "生鲜采买": 407,
+            "医药": 392,
+            "基础教育": 106
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.242202,
+          "lng": 121.415386,
+          "reach_s": 801,
+          "nearest_m": {
+            "生鲜采买": 269,
+            "医药": 411,
+            "基础教育": 61
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.242202,
+          "lng": 121.416962,
+          "reach_s": 742,
+          "nearest_m": {
+            "生鲜采买": 118,
+            "医药": 415,
+            "基础教育": 237
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.24355,
+          "lng": 121.412234,
+          "reach_s": 806,
+          "nearest_m": {
+            "生鲜采买": 224,
+            "医药": 270,
+            "基础教育": 349
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.24355,
+          "lng": 121.41381,
+          "reach_s": 682,
+          "nearest_m": {
+            "生鲜采买": 335,
+            "医药": 518,
+            "基础教育": 348
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.24355,
+          "lng": 121.415386,
+          "reach_s": 624,
+          "nearest_m": {
+            "生鲜采买": 156,
+            "医药": 481,
+            "基础教育": 417
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.24355,
+          "lng": 121.416962,
+          "reach_s": 608,
+          "nearest_m": {
+            "生鲜采买": 138,
+            "医药": 602,
+            "基础教育": 360
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.24355,
+          "lng": 121.418538,
+          "reach_s": 1251,
+          "nearest_m": {
+            "生鲜采买": 659,
+            "医药": 454,
+            "基础教育": 1072
+          },
+          "missing": [
+            "基础教育"
+          ],
+          "unknown": []
+        },
+        {
+          "lat": 31.24355,
+          "lng": 121.420114,
+          "reach_s": 783,
+          "nearest_m": {
+            "生鲜采买": 336,
+            "医药": 373,
+            "基础教育": 849
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.24355,
+          "lng": 121.42169,
+          "reach_s": 752,
+          "nearest_m": {
+            "生鲜采买": 530,
+            "医药": 239,
+            "基础教育": 1043
+          },
+          "missing": [
+            "基础教育"
+          ],
+          "unknown": []
+        },
+        {
+          "lat": 31.24355,
+          "lng": 121.423267,
+          "reach_s": 820,
+          "nearest_m": {
+            "生鲜采买": 767,
+            "医药": 319,
+            "基础教育": 1106
+          },
+          "missing": [
+            "基础教育"
+          ],
+          "unknown": []
+        },
+        {
+          "lat": 31.244897,
+          "lng": 121.410658,
+          "reach_s": 851,
+          "nearest_m": {
+            "生鲜采买": 22,
+            "医药": 94,
+            "基础教育": 511
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.244897,
+          "lng": 121.412234,
+          "reach_s": 633,
+          "nearest_m": {
+            "生鲜采买": 333,
+            "医药": 128,
+            "基础教育": 373
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.244897,
+          "lng": 121.41381,
+          "reach_s": 461,
+          "nearest_m": {
+            "生鲜采买": 390,
+            "医药": 389,
+            "基础教育": 412
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.244897,
+          "lng": 121.415386,
+          "reach_s": 524,
+          "nearest_m": {
+            "生鲜采买": 123,
+            "医药": 512,
+            "基础教育": 488
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.244897,
+          "lng": 121.416962,
+          "reach_s": 510,
+          "nearest_m": {
+            "生鲜采买": 182,
+            "医药": 575,
+            "基础教育": 540
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.244897,
+          "lng": 121.418538,
+          "reach_s": 702,
+          "nearest_m": {
+            "生鲜采买": 179,
+            "医药": 386,
+            "基础教育": 692
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.244897,
+          "lng": 121.420114,
+          "reach_s": 590,
+          "nearest_m": {
+            "生鲜采买": 259,
+            "医药": 254,
+            "基础教育": 772
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.244897,
+          "lng": 121.42169,
+          "reach_s": 633,
+          "nearest_m": {
+            "生鲜采买": 548,
+            "医药": 100,
+            "基础教育": 1061
+          },
+          "missing": [
+            "基础教育"
+          ],
+          "unknown": []
+        },
+        {
+          "lat": 31.244897,
+          "lng": 121.423267,
+          "reach_s": 721,
+          "nearest_m": {
+            "生鲜采买": 645,
+            "医药": 202,
+            "基础教育": 908
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.246245,
+          "lng": 121.410658,
+          "reach_s": 787,
+          "nearest_m": {
+            "生鲜采买": 183,
+            "医药": 80,
+            "基础教育": 553
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.246245,
+          "lng": 121.412234,
+          "reach_s": 575,
+          "nearest_m": {
+            "生鲜采买": 472,
+            "医药": 283,
+            "基础教育": 306
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.246245,
+          "lng": 121.41381,
+          "reach_s": 428,
+          "nearest_m": {
+            "生鲜采买": 411,
+            "医药": 340,
+            "基础教育": 245
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.246245,
+          "lng": 121.415386,
+          "reach_s": 288,
+          "nearest_m": {
+            "生鲜采买": 378,
+            "医药": 351,
+            "基础教育": 488
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.246245,
+          "lng": 121.416962,
+          "reach_s": 600,
+          "nearest_m": {
+            "生鲜采买": 332,
+            "医药": 722,
+            "基础教育": 690
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.246245,
+          "lng": 121.418538,
+          "reach_s": 424,
+          "nearest_m": {
+            "生鲜采买": 714,
+            "医药": 469,
+            "基础教育": 990
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.246245,
+          "lng": 121.420114,
+          "reach_s": 419,
+          "nearest_m": {
+            "生鲜采买": 423,
+            "医药": 178,
+            "基础教育": 936
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.246245,
+          "lng": 121.42169,
+          "reach_s": 541,
+          "nearest_m": {
+            "生鲜采买": 442,
+            "医药": 197,
+            "基础教育": 955
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.246245,
+          "lng": 121.423267,
+          "reach_s": 726,
+          "nearest_m": {
+            "生鲜采买": 651,
+            "医药": 204,
+            "基础教育": 938
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.247592,
+          "lng": 121.410658,
+          "reach_s": 707,
+          "nearest_m": {
+            "生鲜采买": 252,
+            "医药": 95,
+            "基础教育": 620
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.247592,
+          "lng": 121.412234,
+          "reach_s": 615,
+          "nearest_m": {
+            "生鲜采买": 196,
+            "医药": 148,
+            "基础教育": 351
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.247592,
+          "lng": 121.41381,
+          "reach_s": 429,
+          "nearest_m": {
+            "生鲜采买": 244,
+            "医药": 451,
+            "基础教育": 167
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.247592,
+          "lng": 121.415386,
+          "reach_s": 229,
+          "nearest_m": {
+            "生鲜采买": 192,
+            "医药": 242,
+            "基础教育": 344
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.247592,
+          "lng": 121.416962,
+          "reach_s": 180,
+          "nearest_m": {
+            "生鲜采买": 390,
+            "医药": 185,
+            "基础教育": 542
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.247592,
+          "lng": 121.418538,
+          "reach_s": 227,
+          "nearest_m": {
+            "生鲜采买": 610,
+            "医药": 219,
+            "基础教育": 762
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.247592,
+          "lng": 121.420114,
+          "reach_s": 410,
+          "nearest_m": {
+            "生鲜采买": 601,
+            "医药": 356,
+            "基础教育": 975
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.247592,
+          "lng": 121.42169,
+          "reach_s": 597,
+          "nearest_m": {
+            "生鲜采买": 508,
+            "医药": 263,
+            "基础教育": 1021
+          },
+          "missing": [
+            "基础教育"
+          ],
+          "unknown": []
+        },
+        {
+          "lat": 31.247592,
+          "lng": 121.423267,
+          "reach_s": 893,
+          "nearest_m": {
+            "生鲜采买": 846,
+            "医药": 399,
+            "基础教育": 951
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.24894,
+          "lng": 121.410658,
+          "reach_s": 716,
+          "nearest_m": {
+            "生鲜采买": 315,
+            "医药": 166,
+            "基础教育": 641
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.24894,
+          "lng": 121.412234,
+          "reach_s": 553,
+          "nearest_m": {
+            "生鲜采买": 124,
+            "医药": 160,
+            "基础教育": 540
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.24894,
+          "lng": 121.41381,
+          "reach_s": 404,
+          "nearest_m": {
+            "生鲜采买": 1,
+            "医药": 241,
+            "基础教育": 365
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.24894,
+          "lng": 121.415386,
+          "reach_s": 309,
+          "nearest_m": {
+            "生鲜采买": 203,
+            "医药": 293,
+            "基础教育": 505
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.24894,
+          "lng": 121.416962,
+          "reach_s": 94,
+          "nearest_m": {
+            "生鲜采买": 452,
+            "医药": 17,
+            "基础教育": 604
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.24894,
+          "lng": 121.418538,
+          "reach_s": 327,
+          "nearest_m": {
+            "生鲜采买": 734,
+            "医药": 350,
+            "基础教育": 886
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.24894,
+          "lng": 121.420114,
+          "reach_s": 457,
+          "nearest_m": {
+            "生鲜采买": 799,
+            "医药": 488,
+            "基础教育": 1031
+          },
+          "missing": [
+            "基础教育"
+          ],
+          "unknown": []
+        },
+        {
+          "lat": 31.24894,
+          "lng": 121.42169,
+          "reach_s": 994,
+          "nearest_m": {
+            "生鲜采买": 1264,
+            "医药": 1008,
+            "基础教育": 1152
+          },
+          "missing": [
+            "生鲜采买",
+            "医药",
+            "基础教育"
+          ],
+          "unknown": []
+        },
+        {
+          "lat": 31.250287,
+          "lng": 121.410658,
+          "reach_s": 794,
+          "nearest_m": {
+            "生鲜采买": 379,
+            "医药": 289,
+            "基础教育": 814
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.250287,
+          "lng": 121.412234,
+          "reach_s": 631,
+          "nearest_m": {
+            "生鲜采买": 197,
+            "医药": 263,
+            "基础教育": 632
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.250287,
+          "lng": 121.41381,
+          "reach_s": 538,
+          "nearest_m": {
+            "生鲜采买": 221,
+            "医药": 313,
+            "基础教育": 523
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.250287,
+          "lng": 121.415386,
+          "reach_s": 575,
+          "nearest_m": {
+            "生鲜采买": 383,
+            "医药": 509,
+            "基础教育": 685
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.250287,
+          "lng": 121.416962,
+          "reach_s": 262,
+          "nearest_m": {
+            "生鲜采买": 649,
+            "医药": 260,
+            "基础教育": 801
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.250287,
+          "lng": 121.418538,
+          "reach_s": 347,
+          "nearest_m": {
+            "生鲜采买": 749,
+            "医药": 360,
+            "基础教育": 901
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.250287,
+          "lng": 121.420114,
+          "reach_s": 602,
+          "nearest_m": {
+            "生鲜采买": 977,
+            "医药": 658,
+            "基础教育": 1199
+          },
+          "missing": [
+            "基础教育"
+          ],
+          "unknown": []
+        },
+        {
+          "lat": 31.250287,
+          "lng": 121.42169,
+          "reach_s": 751,
+          "nearest_m": {
+            "生鲜采买": 1221,
+            "医药": 833,
+            "基础教育": 1136
+          },
+          "missing": [
+            "生鲜采买",
+            "基础教育"
+          ],
+          "unknown": []
+        },
+        {
+          "lat": 31.251635,
+          "lng": 121.410658,
+          "reach_s": 815,
+          "nearest_m": {
+            "生鲜采买": 366,
+            "医药": 247,
+            "基础教育": 762
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.251635,
+          "lng": 121.412234,
+          "reach_s": 709,
+          "nearest_m": {
+            "生鲜采买": 115,
+            "医药": 21,
+            "基础教育": 887
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.251635,
+          "lng": 121.41381,
+          "reach_s": 679,
+          "nearest_m": {
+            "生鲜采买": 278,
+            "医药": 275,
+            "基础教育": 934
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.251635,
+          "lng": 121.415386,
+          "reach_s": 391,
+          "nearest_m": {
+            "生鲜采买": 470,
+            "医药": 380,
+            "基础教育": 836
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.251635,
+          "lng": 121.416962,
+          "reach_s": 492,
+          "nearest_m": {
+            "生鲜采买": 636,
+            "医药": 528,
+            "基础教育": 1002
+          },
+          "missing": [
+            "基础教育"
+          ],
+          "unknown": []
+        },
+        {
+          "lat": 31.251635,
+          "lng": 121.418538,
+          "reach_s": 504,
+          "nearest_m": {
+            "生鲜采买": 763,
+            "医药": 543,
+            "基础教育": 1084
+          },
+          "missing": [
+            "基础教育"
+          ],
+          "unknown": []
+        },
+        {
+          "lat": 31.251635,
+          "lng": 121.420114,
+          "reach_s": 662,
+          "nearest_m": {
+            "生鲜采买": 949,
+            "医药": 729,
+            "基础教育": 1105
+          },
+          "missing": [
+            "基础教育"
+          ],
+          "unknown": []
+        },
+        {
+          "lat": 31.251635,
+          "lng": 121.42169,
+          "reach_s": 891,
+          "nearest_m": {
+            "生鲜采买": 855,
+            "医药": 730,
+            "基础教育": 989
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.252982,
+          "lng": 121.412234,
+          "reach_s": 803,
+          "nearest_m": {
+            "生鲜采买": 183,
+            "医药": 180,
+            "基础教育": 836
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.252982,
+          "lng": 121.41381,
+          "reach_s": 612,
+          "nearest_m": {
+            "生鲜采买": 327,
+            "医药": 324,
+            "基础教育": 752
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.252982,
+          "lng": 121.415386,
+          "reach_s": 539,
+          "nearest_m": {
+            "生鲜采买": 415,
+            "医药": 412,
+            "基础教育": 729
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.252982,
+          "lng": 121.416962,
+          "reach_s": 694,
+          "nearest_m": {
+            "生鲜采买": 551,
+            "医药": 548,
+            "基础教育": 865
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.252982,
+          "lng": 121.418538,
+          "reach_s": 566,
+          "nearest_m": {
+            "生鲜采买": 846,
+            "医药": 615,
+            "基础教育": 1097
+          },
+          "missing": [
+            "基础教育"
+          ],
+          "unknown": []
+        },
+        {
+          "lat": 31.252982,
+          "lng": 121.420114,
+          "reach_s": 753,
+          "nearest_m": {
+            "生鲜采买": 892,
+            "医药": 767,
+            "基础教育": 1026
+          },
+          "missing": [
+            "基础教育"
+          ],
+          "unknown": []
+        },
+        {
+          "lat": 31.252982,
+          "lng": 121.42169,
+          "reach_s": 897,
+          "nearest_m": {
+            "生鲜采买": 707,
+            "医药": 582,
+            "基础教育": 841
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.254329,
+          "lng": 121.412234,
+          "reach_s": 882,
+          "nearest_m": {
+            "生鲜采买": 341,
+            "医药": 338,
+            "基础教育": 667
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.254329,
+          "lng": 121.41381,
+          "reach_s": 719,
+          "nearest_m": {
+            "生鲜采买": 591,
+            "医药": 588,
+            "基础教育": 635
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.254329,
+          "lng": 121.415386,
+          "reach_s": 759,
+          "nearest_m": {
+            "生鲜采买": 672,
+            "医药": 669,
+            "基础教育": 656
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.254329,
+          "lng": 121.416962,
+          "reach_s": 730,
+          "nearest_m": {
+            "生鲜采买": 838,
+            "医药": 807,
+            "基础教育": 749
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.254329,
+          "lng": 121.418538,
+          "reach_s": 760,
+          "nearest_m": {
+            "生鲜采买": 1063,
+            "医药": 843,
+            "基础教育": 974
+          },
+          "missing": [
+            "生鲜采买"
+          ],
+          "unknown": []
+        },
+        {
+          "lat": 31.254329,
+          "lng": 121.420114,
+          "reach_s": 881,
+          "nearest_m": {
+            "生鲜采买": 1047,
+            "医药": 922,
+            "基础教育": 1173
+          },
+          "missing": [
+            "生鲜采买",
+            "基础教育"
+          ],
+          "unknown": []
+        },
+        {
+          "lat": 31.255677,
+          "lng": 121.41381,
+          "reach_s": 791,
+          "nearest_m": {
+            "生鲜采买": 506,
+            "医药": 593,
+            "基础教育": 316
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.255677,
+          "lng": 121.415386,
+          "reach_s": 844,
+          "nearest_m": {
+            "生鲜采买": 721,
+            "医药": 718,
+            "基础教育": 632
+          },
+          "missing": [],
+          "unknown": []
+        },
+        {
+          "lat": 31.255677,
+          "lng": 121.416962,
+          "reach_s": 889,
+          "nearest_m": {
+            "生鲜采买": 843,
+            "医药": 840,
+            "基础教育": 754
+          },
+          "missing": [],
+          "unknown": []
+        }
+      ]
+    },
+    "report": {
+      "total": 71.4,
+      "grade": "良",
+      "dimensions": {
+        "reach": 47.9,
+        "compact": 60.3,
+        "detour": 75.2,
+        "cover": 100.0,
+        "equity": 91.5
+      },
+      "blinds": [],
+      "ideal_area_km2": 3.664,
+      "area_ratio": 0.479,
+      "straight_inflation": 2.09,
+      "categories": {
+        "生鲜采买": 5,
+        "医药": 6,
+        "基础教育": 2,
+        "基础医疗": 10,
+        "养老服务": 4,
+        "文体休闲": 14
+      },
+      "failed_categories": [],
+      "blind_ratio": {
+        "生鲜采买": 0.051,
+        "医药": 0.013,
+        "基础教育": 0.192
+      },
+      "blind_cell_count": 16,
+      "cell_count": 78,
+      "coverage_source": "预生成快照，检索半径 1910 米",
+      "coverage_pending": false,
+      "blindspots_pending": false
+    }
   }
 }

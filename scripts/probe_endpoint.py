@@ -48,7 +48,10 @@ async def probe(client, label: str, path: str, params: dict) -> int | None:
         extra = ""
         if body.get("message") and status != 0:
             extra = f'  message="{body["message"]}"'
-        print(f"  {label:<26} status={status:<5} {desc(status):<24} {time.perf_counter()-start:.2f}s{extra}")
+        print(
+            f"  {label:<26} status={status:<5} {desc(status):<24} "
+            f"{time.perf_counter() - start:.2f}s{extra}"
+        )
         return status
     except Exception as exc:
         print(f"  {label:<26} 异常 {type(exc).__name__}")

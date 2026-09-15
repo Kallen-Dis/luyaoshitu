@@ -48,6 +48,8 @@ export const computeIsochrone = (params: {
   lng: number
   minutes: number
   directions: number
+  coverage?: boolean
+  blindspots?: boolean
 }) =>
   request<IsochroneFeature>('/api/isochrone', {
     method: 'POST',

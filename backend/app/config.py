@@ -59,9 +59,9 @@ def get_settings() -> Settings:
     return Settings(
         server_ak=os.environ.get("BAIDU_SERVER_AK", ""),
         browser_ak=os.environ.get("VITE_BAIDU_BROWSER_AK", ""),
-        max_qps=int(os.environ.get("BAIDU_MAX_QPS", 8)),
-        http_timeout=float(os.environ.get("BAIDU_HTTP_TIMEOUT", 30)),
-        max_retries=int(os.environ.get("BAIDU_MAX_RETRIES", 3)),
-        retry_backoff=float(os.environ.get("BAIDU_RETRY_BACKOFF", 0.5)),
-        matrix_batch_size=int(os.environ.get("BAIDU_MATRIX_BATCH_SIZE", 100)),
+        max_qps=int(os.environ.get("BAIDU_MAX_QPS", "8")),
+        http_timeout=float(os.environ.get("BAIDU_HTTP_TIMEOUT", "30")),
+        max_retries=int(os.environ.get("BAIDU_MAX_RETRIES", "3")),
+        retry_backoff=float(os.environ.get("BAIDU_RETRY_BACKOFF", "0.5")),
+        matrix_batch_size=int(os.environ.get("BAIDU_MATRIX_BATCH_SIZE", "100")),
     )

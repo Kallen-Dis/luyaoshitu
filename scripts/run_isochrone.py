@@ -1,4 +1,4 @@
-"""等时圈算法的命令行验证入口。
+"""等时圈与服务盲区的命令行入口，同时用于生成随仓库分发的样例快照。
 
 在接入 Web 界面之前，先用它确认算法在真实路网上能跑出合理结果，
 并观察 API 消耗、绕行系数、方向均衡度等关键指标。
@@ -6,6 +6,10 @@
 用法：
     python scripts/run_isochrone.py --address "上海市普陀区曹杨新村街道"
     python scripts/run_isochrone.py --lat 31.247979 --lng 121.416775 --directions 24
+    python scripts/run_isochrone.py --lat 31.284817 --lng 121.369523 --id taopu
+
+默认连带做设施覆盖采集与网格盲区判定；只想验证等时圈形状时加 --no-coverage，
+可完全不碰地点检索配额。
 """
 
 from __future__ import annotations
@@ -24,6 +28,9 @@ sys.path.insert(0, str(ROOT / "backend"))
 from app.baidu.client import BaiduMapClient  # noqa: E402
 from app.baidu.errors import BaiduApiError  # noqa: E402
 from app.isochrone.algorithm import IsochroneConfig, compute_isochrone  # noqa: E402
+from app.poi.collect import collect_coverage  # noqa: E402
+from app.report.blindspot import BlindspotConfig, identify_blindspots  # noqa: E402
+from app.report.score import build_report  # noqa: E402
 
 # 等时圈结果作为示例数据随仓库分发，让评审方无需消耗 API 配额即可跑通演示
 OUT_DIR = ROOT / "data" / "samples"
@@ -58,6 +65,17 @@ async def main() -> None:
     parser.add_argument("--directions", type=int, default=36, help="射线方向数，默认 36")
     parser.add_argument("--name", help="样例显示名（可含中文），缺省时由地址或坐标推导")
     parser.add_argument("--id", dest="sample_id", help="样例标识，须为 ASCII，用作文件名与接口路径")
+    parser.add_argument(
+        "--no-coverage",
+        action="store_true",
+        help="只算等时圈，跳过设施采集与盲区判定（不消耗地点检索配额）",
+    )
+    parser.add_argument(
+        "--grid-spacing",
+        type=float,
+        default=150.0,
+        help="盲区判定的网格间距（米），默认 150",
+    )
     args = parser.parse_args()
 
     if args.address is None and (args.lat is None or args.lng is None):
@@ -77,7 +95,24 @@ async def main() -> None:
         try:
             iso = await compute_isochrone(client, center, cfg)
         except BaiduApiError as exc:
-            raise SystemExit(f"计算失败：{exc}")
+            raise SystemExit(f"计算失败：{exc}") from exc
+
+        coverage = None
+        blind = None
+        blind_cfg = BlindspotConfig(grid_spacing_m=args.grid_spacing)
+        if not args.no_coverage:
+            # 采集半径覆盖整个等时圈再加 1 公里判定阈值：圈外的设施对圈边居民依然有效
+            radius = int(iso.max_radius_m + blind_cfg.walk_limit_m)
+            print(f"\n采集民生设施，检索半径 {radius} 米…")
+            try:
+                coverage = await collect_coverage(client, center, radius)
+                blind = await identify_blindspots(
+                    client, center, iso.polygon, coverage, blind_cfg
+                )
+            except BaiduApiError as exc:
+                raise SystemExit(f"设施采集失败：{exc}") from exc
+
+        matrix_failures = client.matrix_failures
 
     elapsed = time.perf_counter() - started
     batches = -(-iso.sampled_points // 100)
@@ -107,6 +142,38 @@ async def main() -> None:
     print("\n形状预览（+ 中心，o 边界，x 障碍截断）：")
     print(render_ascii(iso))
 
+    if coverage is not None:
+        inside = coverage.as_dict(iso.polygon)
+        print("\n圈内民生设施（括号内为检索半径内的总数）：")
+        for name, count in inside["categories"].items():
+            nearby = inside["nearby_categories"][name]
+            stats = inside["clean_stats"][name]
+            flag = "  <- 圈内缺失" if count == 0 else ""
+            print(
+                f"  {name:<6} {count:>3} 处（附近 {nearby}）"
+                f"  原始 {stats['raw']} 条，剔除 {stats['dropped']} 条{flag}"
+            )
+        if coverage.failed:
+            print(f"  检索失败品类：{'、'.join(coverage.failed)}（数量未知，未计入评分）")
+        print(f"  共发起 {coverage.searches} 次地点检索（命中缓存不计入配额）")
+
+    if blind is not None:
+        print(f"\n网格盲区判定（间距 {blind.config.grid_spacing_m:.0f} 米）：")
+        print(f"  网格总数   {len(blind.cells)}")
+        print(f"  盲区网格   {len(blind.blind_cells)}")
+        for name, ratio in blind.blind_ratio.items():
+            print(f"  {name:<6} {ratio*100:>5.1f}% 的居民点步行 1 公里内到不了")
+        unknown = sum(1 for c in blind.cells if c.unknown)
+        if unknown:
+            print(f"  测距失败   {unknown} 个网格未判定（不计入占比，也不算盲区）")
+        if matrix_failures:
+            print(
+                f"  丢块       {len(matrix_failures)} 次矩阵请求整块失败，"
+                f"是上面「测距失败」的主因："
+            )
+            for line in matrix_failures:
+                print(f"               {line}")
+
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     display_name = args.name or args.address or f"{center[0]:.4f}, {center[1]:.4f}"
     # 文件名与接口路径一律用 ASCII 标识，中文名只作为展示属性，
@@ -116,11 +183,24 @@ async def main() -> None:
     out = OUT_DIR / f"isochrone-{slug}-{args.minutes:.0f}min.geojson"
 
     payload = iso.to_geojson()
-    payload["properties"]["center"] = {"lat": center[0], "lng": center[1]}
-    payload["properties"]["name"] = display_name
-    payload["properties"]["generated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    props = payload["properties"]
+    props["center"] = {"lat": center[0], "lng": center[1]}
+    props["name"] = display_name
+    props["generated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+
+    # 快照只写派生结果：品类计数、清洗统计、网格判定。POI 的店名与地址不入库、不分发。
+    if coverage is not None:
+        cov = coverage.as_dict(iso.polygon)
+        cov["source"] = f"预生成快照，检索半径 {cov['radius_m']} 米"
+        props["coverage"] = cov
+    if blind is not None:
+        props["blindspots"] = blind.as_dict()
+    props["report"] = build_report(props, props.get("coverage"), props.get("blindspots"))
+
     out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"\nGeoJSON 已写入 {out}")
+    report = props["report"]
+    print(f"体检总分 {report['total']}（{report['grade']}）")
 
 
 if __name__ == "__main__":

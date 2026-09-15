@@ -3,6 +3,7 @@ import './App.css'
 import { ApiError, computeIsochrone, fetchConfig, fetchSample, fetchSamples, geocode } from './api'
 import { MapView } from './components/MapView'
 import { MetricsPanel } from './components/MetricsPanel'
+import { ReportCard } from './components/ReportCard'
 import type { AppConfig, IsochroneFeature, SampleMeta } from './types'
 
 export default function App() {
@@ -16,6 +17,9 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [showHeatmap, setShowHeatmap] = useState(true)
+  const [showBlindspots, setShowBlindspots] = useState(true)
+  const [withCoverage, setWithCoverage] = useState(true)
 
   // 启动时载入配置与样例列表，并默认展示第一个样例。
   // 默认走预生成快照而不是实时计算，是为了让首屏不消耗任何 API 配额。
@@ -42,7 +46,14 @@ export default function App() {
       setError(null)
       setNotice(null)
       try {
-        const feature = await computeIsochrone({ lat, lng, minutes, directions })
+        const feature = await computeIsochrone({
+          lat,
+          lng,
+          minutes,
+          directions,
+          coverage: withCoverage,
+          blindspots: withCoverage,
+        })
         setIsochrone(feature)
         setCenter({ lat, lng })
       } catch (err) {
@@ -55,7 +66,7 @@ export default function App() {
         setBusy(false)
       }
     },
-    [minutes, directions],
+    [minutes, directions, withCoverage],
   )
 
   async function onSearch() {
@@ -75,8 +86,8 @@ export default function App() {
     <div className="layout">
       <aside className="sidebar">
         <header>
-          <h1>15 分钟生活圈体检助手</h1>
-          <p className="subtitle">基于百度地图真实路网的步行等时圈与服务盲区诊断</p>
+          <h1>路遥识途</h1>
+          <p className="subtitle">基于百度地图真实路网的步行等时圈与民生设施盲区诊断</p>
         </header>
 
         <section>
@@ -147,16 +158,53 @@ export default function App() {
             </p>
           </div>
 
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={withCoverage}
+              onChange={(e) => setWithCoverage(e.target.checked)}
+            />
+            同时做设施覆盖与盲区判定
+          </label>
+          <p className="hint">
+            关闭后只算等时圈，不消耗地点检索配额，出分也只含路网三项。
+          </p>
+
           <button className="primary" onClick={() => run(center.lat, center.lng)} disabled={busy}>
             {busy ? '计算中…' : '重新计算当前中心点'}
           </button>
           <p className="hint">也可直接在地图上点击选取中心点。</p>
         </section>
 
+        {isochrone?.properties.blindspots && (
+          <section>
+            <h2>图层</h2>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={showHeatmap}
+                onChange={(e) => setShowHeatmap(e.target.checked)}
+              />
+              步行耗时热力图
+            </label>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={showBlindspots}
+                onChange={(e) => setShowBlindspots(e.target.checked)}
+              />
+              服务盲区点位
+            </label>
+          </section>
+        )}
+
         {error && <div className="banner error">{error}</div>}
         {notice && !error && <div className="banner notice">{notice}</div>}
 
         {isochrone && <MetricsPanel props={isochrone.properties} />}
+        {isochrone?.properties.report && (
+          <ReportCard report={isochrone.properties.report} rays={isochrone.properties.rays} />
+        )}
       </aside>
 
       <main className="stage">
@@ -165,6 +213,8 @@ export default function App() {
             ak={config.browser_ak}
             center={center}
             isochrone={isochrone}
+            showHeatmap={showHeatmap}
+            showBlindspots={showBlindspots}
             onPickCenter={(lat, lng) => run(lat, lng)}
             onError={setError}
           />

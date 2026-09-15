@@ -28,7 +28,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import httpx
-
 from _singleton import AlreadyRunning, single_instance
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -356,8 +355,11 @@ async def main() -> None:
                 missing = [sum(1 for v in p.values() if v == 0) for p in cand.probes]
                 score, covered, max_missing = contrast_score(cand.center, cand.probes)
                 print(f"  四向探点缺失品类数：{missing}", flush=True)
-                print(f"  对比度评分 {score}（中心覆盖 {covered} 类，探点最大缺失 {max_missing} 类）",
-                      flush=True)
+                print(
+                    f"  对比度评分 {score}"
+                    f"（中心覆盖 {covered} 类，探点最大缺失 {max_missing} 类）",
+                    flush=True,
+                )
                 detailed.append((score, cand, covered, max_missing, missing))
         except QuotaExhausted as exc:
             aborted = f"阶段二中断：{exc}"
@@ -440,7 +442,11 @@ async def main() -> None:
         "> 中心点坐标在正式应用中可由用户自由拖拽修改，此处仅为默认演示值。",
     ]
     if aborted:
-        lines += ["", f"> 探测未跑完：{aborted}", "> 排名仅基于已完成的候选，配额恢复后重跑可补齐。"]
+        lines += [
+            "",
+            f"> 探测未跑完：{aborted}",
+            "> 排名仅基于已完成的候选，配额恢复后重跑可补齐。",
+        ]
 
     REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
     REPORT_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -453,4 +459,4 @@ if __name__ == "__main__":
         with single_instance("pick_sample_area"):
             asyncio.run(main())
     except AlreadyRunning as exc:
-        raise SystemExit(str(exc))
+        raise SystemExit(str(exc)) from exc

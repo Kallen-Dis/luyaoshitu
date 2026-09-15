@@ -22,16 +22,10 @@
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 
 from ..baidu.client import BaiduMapClient
-from .geometry import (
-    haversine_m,
-    offset_point,
-    polygon_area_m2,
-    smooth_radii,
-)
+from .geometry import offset_point, polygon_area_m2, smooth_radii
 
 
 @dataclass(frozen=True)
@@ -114,6 +108,7 @@ class Isochrone:
         ring = [[lng, lat] for lat, lng in self.polygon]
         if ring and ring[0] != ring[-1]:
             ring.append(ring[0])
+        detours = [r.detour_ratio for r in self.rays if r.detour_ratio]
         return {
             "type": "Feature",
             "geometry": {"type": "Polygon", "coordinates": [ring]},
@@ -125,8 +120,20 @@ class Isochrone:
                 "min_radius_m": round(self.min_radius_m, 1),
                 "max_radius_m": round(self.max_radius_m, 1),
                 "compactness": self.compactness,
+                "mean_detour": round(sum(detours) / len(detours), 3) if detours else None,
+                "max_detour": round(max(detours), 3) if detours else None,
                 "sampled_points": self.sampled_points,
                 "failed_points": self.failed_points,
+                # 各方向半径供雷达图使用；不含 POI 原始记录
+                "rays": [
+                    {
+                        "bearing": round(r.bearing_deg, 1),
+                        "radius_m": round(r.boundary_m, 1),
+                        "detour": r.detour_ratio,
+                        "barrier": r.truncated_by_barrier,
+                    }
+                    for r in self.rays
+                ],
             },
         }
 
@@ -202,7 +209,9 @@ async def compute_isochrone(
 
     results: list[RayResult] = []
     polygon: list[tuple[float, float]] = []
-    for d, (ray, (_, barrier, saturated), radius) in enumerate(zip(rays, raw, radii)):
+    for d, (ray, (_, barrier, saturated), radius) in enumerate(
+        zip(rays, raw, radii, strict=True)
+    ):
         bearing = 360.0 * d / cfg.directions
         blat, blng = offset_point(lat0, lng0, bearing, radius)
         polygon.append((blat, blng))

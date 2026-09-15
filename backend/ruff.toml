@@ -1,0 +1,16 @@
+# 显式声明规则集与行宽，避免 ruff 升级改动默认值导致 CI 忽红忽绿。
+line-length = 100
+target-version = "py311"
+
+[lint]
+select = [
+    "E",    # pycodestyle
+    "F",    # pyflakes：未使用的导入与变量
+    "I",    # isort：导入顺序
+    "UP",   # pyupgrade：跟上 3.11 的写法
+    "B",    # flake8-bugbear：易错模式
+    "SIM",  # flake8-simplify
+]
+
+[format]
+quote-style = "double"

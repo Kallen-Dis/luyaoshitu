@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, Iterable, Sequence
+from collections.abc import Sequence
+from typing import Any, Self
 
 import httpx
 
@@ -31,12 +32,27 @@ from .errors import (
 
 BASE_URL = "https://api.map.baidu.com"
 
+# 多少个点对折算一个令牌。一次 100 点对的批量算路在服务端的工作量远大于
+# 一次 4 点对的请求，按请求数计的限速对它并不公平。并发配额的确切计量口径
+# 官方未公开，这里按点对数折算取一个保守值：8 QPS 下 100 点对约占 0.6 秒。
+PAIRS_PER_TOKEN = 20.0
+
+# 同时在途的批量算路请求数上限，取 1 即完全串行。
+#
+# 串行是最省配额的做法。并发放行时，一旦撞上限流或配额耗尽，多个分块会各自
+# 展开退避重试并互相踩踏，既烧配额又拿不到结果；串行后每次重试都有干净的窗口，
+# 且配额耗尽能在第一块就被 _exhausted 拦住，不会再白发十几个必然失败的请求。
+MAX_INFLIGHT_MATRIX = 1
+
 
 class TokenBucket:
     """最简令牌桶：把出口速率钳在 qps 以内。
 
     只记录"下一个可发令牌的时刻"，比维护令牌计数更简单，且天然平滑——
     不会出现桶攒满后瞬间放出一大批请求、恰好撞上百度并发限制的情况。
+
+    cost 让一次请求可以占用多个令牌：批量算路按点对数付出服务端算力，
+    100 个点对的矩阵与 1 个点对的查询不该占用同样的速率预算。
     """
 
     def __init__(self, qps: float) -> None:
@@ -44,11 +60,11 @@ class TokenBucket:
         self._lock = asyncio.Lock()
         self._next_at = 0.0
 
-    async def acquire(self) -> None:
+    async def acquire(self, cost: float = 1.0) -> None:
         async with self._lock:
             now = time.monotonic()
             wait = max(0.0, self._next_at - now)
-            self._next_at = max(now, self._next_at) + self._interval
+            self._next_at = max(now, self._next_at) + self._interval * max(cost, 1.0)
         if wait:
             await asyncio.sleep(wait)
 
@@ -60,10 +76,18 @@ class BaiduMapClient:
         self._bucket = TokenBucket(self._s.max_qps)
         self._cache = DiskCache(self._s.cache_dir, self._s.cache_grid_m)
         self._client: httpx.AsyncClient | None = None
+        self._matrix_gate = asyncio.Semaphore(MAX_INFLIGHT_MATRIX)
+        # 整块失败的矩阵请求。失败会让下游把网格记成「测距失败」，
+        # 与真实的不可达长得一模一样，不留痕就只能靠猜。
+        self.matrix_failures: list[str] = []
         # 配额一旦耗尽，同一进程内不再重复试探该接口，避免每次调用都白等一轮重试
         self._exhausted: set[str] = set()
 
-    async def __aenter__(self) -> "BaiduMapClient":
+    @property
+    def failed_matrix_blocks(self) -> int:
+        return len(self.matrix_failures)
+
+    async def __aenter__(self) -> Self:
         limits = httpx.Limits(
             max_connections=max(self._s.max_qps * 2, 16),
             max_keepalive_connections=max(self._s.max_qps * 2, 16),
@@ -79,7 +103,9 @@ class BaiduMapClient:
 
     # ---------- 底层请求 ----------
 
-    async def _request(self, endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
+    async def _request(
+        self, endpoint: str, params: dict[str, Any], cost: float = 1.0
+    ) -> dict[str, Any]:
         if self._client is None:
             raise RuntimeError("BaiduMapClient 必须在 async with 块中使用")
         if endpoint in self._exhausted:
@@ -89,7 +115,7 @@ class BaiduMapClient:
         last_error: Exception | None = None
 
         for attempt in range(self._s.max_retries + 1):
-            await self._bucket.acquire()
+            await self._bucket.acquire(cost)
             try:
                 resp = await self._client.get(BASE_URL + endpoint, params=payload)
                 body = resp.json()
@@ -130,11 +156,17 @@ class BaiduMapClient:
         return float(loc["lat"]), float(loc["lng"])
 
     async def search_poi(
-        self, keyword: str, lat: float, lng: float, radius: int = 1000, page_size: int = 20
+        self,
+        keyword: str,
+        lat: float,
+        lng: float,
+        radius: int = 1000,
+        page_size: int = 20,
+        page_num: int = 0,
     ) -> list[dict[str, Any]] | None:
-        """周边检索。返回 None 表示查询失败或配额耗尽——调用方必须区别对待，
+        """周边检索单页。返回 None 表示查询失败或配额耗尽——调用方必须区别对待，
         绝不能当成「该区域没有此类设施」，否则 API 故障会被伪装成服务盲区。"""
-        cache_path = self._cache.key_for_point("poi", lat, lng, keyword, radius)
+        cache_path = self._cache.key_for_point("poi", lat, lng, keyword, radius, page_num)
         cached = self._cache.read(cache_path)
         if cached is not None:
             return cached["results"]
@@ -148,14 +180,47 @@ class BaiduMapClient:
                     "radius": radius,
                     "output": "json",
                     "page_size": page_size,
+                    "page_num": page_num,
                 },
             )
         except (QuotaExhaustedError, BaiduApiError):
             return None
 
         results = body.get("results", [])
-        self._cache.write(cache_path, {"keyword": keyword, "total": body.get("total"), "results": results})
+        self._cache.write(
+            cache_path,
+            {"keyword": keyword, "total": body.get("total"), "results": results},
+        )
         return results
+
+    async def search_poi_all(
+        self,
+        keyword: str,
+        lat: float,
+        lng: float,
+        radius: int = 1000,
+        page_size: int = 20,
+        max_pages: int = 3,
+    ) -> list[dict[str, Any]] | None:
+        """翻页取全量周边检索结果。
+
+        分页必须串行：只有拿到当前页才知道是否还有下一页，盲目并发预取整页区间
+        会在设施稀少的品类上白烧配额——而地点检索正是本项目最紧的那项。
+
+        任何一页失败即返回 None。半截结果比没有结果更危险：它会让某个品类看起来
+        数量偏少甚至为零，从而把 API 故障伪装成服务盲区。
+        """
+        collected: list[dict[str, Any]] = []
+        for page in range(max_pages):
+            page_results = await self.search_poi(
+                keyword, lat, lng, radius, page_size=page_size, page_num=page
+            )
+            if page_results is None:
+                return None
+            collected.extend(page_results)
+            if len(page_results) < page_size:
+                break  # 不满一页说明已到末页
+        return collected
 
     async def walking_matrix(
         self, origin: tuple[float, float], destinations: Sequence[tuple[float, float]]
@@ -177,12 +242,113 @@ class BaiduMapClient:
         )
 
         out: list[dict[str, float] | None] = []
-        for batch, chunk in zip(batches, chunks):
+        for batch, chunk in zip(batches, chunks, strict=True):
             if isinstance(chunk, BaseException):
                 out.extend([None] * len(batch))  # 整批失败，如实标记缺失
             else:
                 out.extend(chunk)
         return out
+
+    async def walking_matrix_grid(
+        self,
+        origins: Sequence[tuple[float, float]],
+        destinations: Sequence[tuple[float, float]],
+    ) -> list[list[dict[str, float] | None]]:
+        """多起点 × 多终点的步行距离矩阵，返回 origins × destinations 的二维表。
+
+        批量算路的实测硬上限是**起点数 × 终点数 ≤ 100**（不是终点数 ≤ 100），
+        所以把多个起点并进一次请求能大幅压低请求数：网格盲区判定有约 130 个网格
+        × 每品类若干候选设施，逐个起点单发要上百次请求，按乘积装箱后只需二十余次。
+
+        代价是请求形状必须是矩形：一个起点缺某个终点的缓存，整块就得重发。
+        故以「整块全部命中才跳过」为粒度，宁可少量重复也不拆成碎请求。
+        """
+        if not origins or not destinations:
+            return [[None] * len(destinations) for _ in origins]
+
+        budget = max(1, self._s.matrix_batch_size)
+        d_size = min(len(destinations), budget)
+        o_size = max(1, budget // d_size)
+
+        out: list[list[dict[str, float] | None]] = [
+            [None] * len(destinations) for _ in origins
+        ]
+        tasks = []
+        for oi in range(0, len(origins), o_size):
+            for di in range(0, len(destinations), d_size):
+                tasks.append((oi, di))
+
+        async def run(oi: int, di: int) -> None:
+            o_chunk = origins[oi : oi + o_size]
+            d_chunk = destinations[di : di + d_size]
+            block = await self._matrix_block(o_chunk, d_chunk)
+            for i, row in enumerate(block):
+                for j, cell in enumerate(row):
+                    out[oi + i][di + j] = cell
+
+        await asyncio.gather(*(run(oi, di) for oi, di in tasks))
+        return out
+
+    async def _matrix_block(
+        self,
+        origins: Sequence[tuple[float, float]],
+        destinations: Sequence[tuple[float, float]],
+    ) -> list[list[dict[str, float] | None]]:
+        """请求一个矩形块。整块缓存命中则零消耗，否则整块重发。"""
+        cached_block: list[list[dict[str, float] | None]] = []
+        complete = True
+        for o in origins:
+            row: list[dict[str, float] | None] = []
+            for d in destinations:
+                entry = self._cache.read(
+                    self._cache.key_for_pair("walk", o[0], o[1], d[0], d[1])
+                )
+                if entry is None:
+                    complete = False
+                row.append(entry)
+            cached_block.append(row)
+        if complete:
+            return cached_block
+
+        try:
+            async with self._matrix_gate:
+                body = await self._request(
+                    "/routematrix/v2/walking",
+                    {
+                        "origins": "|".join(f"{o[0]:.6f},{o[1]:.6f}" for o in origins),
+                        "destinations": "|".join(
+                            f"{d[0]:.6f},{d[1]:.6f}" for d in destinations
+                        ),
+                        "output": "json",
+                    },
+                    cost=len(origins) * len(destinations) / PAIRS_PER_TOKEN,
+                )
+        except BaiduApiError as exc:
+            # 整块失败时保留已有缓存，其余如实留空。绝不用 0 或极大值顶替：
+            # 距离缺失会被下游判成盲区，等于让 API 故障冒充设施缺失。
+            self.matrix_failures.append(
+                f"{len(origins)}x{len(destinations)} status={exc.status} {exc}"
+            )
+            return cached_block
+
+        # 返回的 result 是长度 M×N 的一维数组，按起点优先展开
+        flat = body.get("result", [])
+        for i, o in enumerate(origins):
+            for j, d in enumerate(destinations):
+                idx = i * len(destinations) + j
+                if idx >= len(flat):
+                    continue
+                item = flat[idx]
+                distance = item.get("distance", {}).get("value")
+                duration = item.get("duration", {}).get("value")
+                if distance is None or duration is None:
+                    continue
+                entry = {"distance_m": float(distance), "duration_s": float(duration)}
+                cached_block[i][j] = entry
+                self._cache.write(
+                    self._cache.key_for_pair("walk", o[0], o[1], d[0], d[1]), entry
+                )
+        return cached_block
 
     async def _walking_matrix_batch(
         self, origin: tuple[float, float], destinations: Sequence[tuple[float, float]]
@@ -205,16 +371,20 @@ class BaiduMapClient:
         dest_param = "|".join(
             f"{destinations[i][0]:.6f},{destinations[i][1]:.6f}" for i in misses
         )
-        body = await self._request(
-            "/routematrix/v2/walking",
-            {
-                "origins": f"{origin[0]:.6f},{origin[1]:.6f}",
-                "destinations": dest_param,
-                "output": "json",
-            },
-        )
+        async with self._matrix_gate:
+            body = await self._request(
+                "/routematrix/v2/walking",
+                {
+                    "origins": f"{origin[0]:.6f},{origin[1]:.6f}",
+                    "destinations": dest_param,
+                    "output": "json",
+                },
+                cost=len(misses) / PAIRS_PER_TOKEN,
+            )
 
-        for slot, item in zip(misses, body.get("result", [])):
+        # 这里刻意不用 strict：返回条数少于请求数时，缺的点如实留空即可，
+        # 长度不齐不该让整批结果作废
+        for slot, item in zip(misses, body.get("result", []), strict=False):
             distance = item.get("distance", {}).get("value")
             duration = item.get("duration", {}).get("value")
             if distance is None or duration is None:

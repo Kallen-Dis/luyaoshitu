@@ -86,7 +86,9 @@ async def main() -> None:
     for level in (3, 5, 8, 12):
         limits = httpx.Limits(max_connections=level, max_keepalive_connections=level)
         async with httpx.AsyncClient(timeout=TIMEOUT, limits=limits) as client:
-            results = await asyncio.gather(*(one(client, ak, i + 200 + level * 20) for i in range(level)))
+            results = await asyncio.gather(
+                *(one(client, ak, i + 200 + level * 20) for i in range(level))
+            )
         summarize(f"C 并发 {level:>2} (60s 超时)", list(results))
         await asyncio.sleep(2.0)
 

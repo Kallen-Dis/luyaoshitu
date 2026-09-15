@@ -25,7 +25,6 @@ from datetime import datetime
 from pathlib import Path
 
 import httpx
-
 from _singleton import AlreadyRunning, single_instance
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -193,13 +192,18 @@ async def check_connectivity(client: httpx.AsyncClient, probes: list[Probe]) -> 
                 "latency": elapsed,
             }
         )
-        print(f"  [{'OK ' if status == 0 else 'FAIL'}] {probe.path} -> status={status} ({elapsed:.2f}s)")
+        flag = "OK " if status == 0 else "FAIL"
+        print(f"  [{flag}] {probe.path} -> status={status} ({elapsed:.2f}s)")
         await asyncio.sleep(0.4)
     return results
 
 
-async def probe_matrix_limit(client: httpx.AsyncClient, ak: str) -> dict:
-    """二分查找批量算路单次请求可接受的最大终点数。"""
+async def probe_matrix_limit(client: httpx.AsyncClient, ak: str, ceiling: int = 120) -> dict:
+    """二分查找批量算路单次请求可接受的最大终点数。
+
+    ceiling 必须是一个**已知不可行**的上界。配额调整后上限可能被放宽，
+    沿用旧的 120 会让二分收敛到 119 而看不出真实上限，故做成参数。
+    """
 
     async def try_count(n: int) -> int | None:
         dests = "|".join(
@@ -217,7 +221,7 @@ async def probe_matrix_limit(client: httpx.AsyncClient, ak: str) -> dict:
         except Exception:
             return None
 
-    low, high = 1, 120  # low 已知可行，high 已知不可行（上一轮实测 100 失败）
+    low, high = 1, max(2, ceiling)  # low 已知可行，high 已知不可行
     tested: list[tuple[int, int | None]] = []
     while low + 1 < high:
         mid = (low + high) // 2
@@ -229,7 +233,8 @@ async def probe_matrix_limit(client: httpx.AsyncClient, ak: str) -> dict:
         else:
             high = mid
         await asyncio.sleep(0.6)
-    return {"max_destinations": low, "tested": tested}
+    # low == ceiling - 1 说明加压到上界仍然成功，真实上限可能更高
+    return {"max_destinations": low, "tested": tested, "saturated": low >= ceiling - 1}
 
 
 async def warm_pool(client: httpx.AsyncClient, probe: Probe, size: int) -> None:
@@ -299,7 +304,8 @@ def render_report(conn, matrix, qps_results, elapsed, total_requests) -> str:
     ]
     for r in conn:
         lines.append(
-            f"| {r['name']} | `{r['path']}` | {r['status']} | {r['meaning']} | {r['latency']:.2f}s |"
+            f"| {r['name']} | `{r['path']}` | {r['status']} "
+            f"| {r['meaning']} | {r['latency']:.2f}s |"
         )
 
     lines += [
@@ -358,8 +364,16 @@ def render_report(conn, matrix, qps_results, elapsed, total_requests) -> str:
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description="百度地图 API 配额与限流探测")
-    parser.add_argument("--skip-qps", action="store_true", help="跳过并发加压，仅做连通性与批量上限探测")
+    parser.add_argument(
+        "--skip-qps", action="store_true", help="跳过并发加压，仅做连通性与批量上限探测"
+    )
     parser.add_argument("--max-conc", type=int, default=30, help="并发加压的最高档位，默认 30")
+    parser.add_argument(
+        "--matrix-ceiling",
+        type=int,
+        default=120,
+        help="批量算路终点数二分的上界（须已知不可行）。配额放宽后可调高，如 600",
+    )
     args = parser.parse_args()
 
     env = load_env(ROOT / ".env")
@@ -377,7 +391,7 @@ async def main() -> None:
         counter += len(probes)
 
         print("\n[2/3] routematrix destination limit")
-        matrix = await probe_matrix_limit(client, ak)
+        matrix = await probe_matrix_limit(client, ak, args.matrix_ceiling)
         counter += len(matrix["tested"])
 
         qps_results: list[tuple[str, list[BurstResult]]] = []
@@ -413,4 +427,4 @@ if __name__ == "__main__":
         with single_instance("probe_quota"):
             asyncio.run(main())
     except AlreadyRunning as exc:
-        raise SystemExit(str(exc))
+        raise SystemExit(str(exc)) from exc
