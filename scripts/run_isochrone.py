@@ -113,12 +113,15 @@ async def main() -> None:
                 raise SystemExit(f"设施采集失败：{exc}") from exc
 
         matrix_failures = client.matrix_failures
+        matrix_pairs = client.matrix_pairs
 
     elapsed = time.perf_counter() - started
     batches = -(-iso.sampled_points // 100)
 
     print(f"\n采样 {iso.sampled_points} 个点，分 {batches} 批提交，失败 {iso.failed_points} 个")
     print(f"耗时 {elapsed:.1f} 秒")
+    # 批量算路的日配额按点对数计量，故这里报点对数而非请求数
+    print(f"本次实发算路点对 {matrix_pairs} 个（命中缓存的不计入配额）")
     print(f"\n{args.minutes:.0f} 分钟步行等时圈：")
     print(f"  面积       {iso.area_m2/1e6:.3f} 平方公里")
     print(f"  平均半径   {iso.mean_radius_m:.0f} 米")

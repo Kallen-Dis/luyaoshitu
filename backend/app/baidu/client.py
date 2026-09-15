@@ -80,6 +80,10 @@ class BaiduMapClient:
         # 整块失败的矩阵请求。失败会让下游把网格记成「测距失败」，
         # 与真实的不可达长得一模一样，不留痕就只能靠猜。
         self.matrix_failures: list[str] = []
+        # 实发的算路点对数。批量算路的**日配额按点对数计量**，不按请求数：
+        # 实测一天发出约 140 次请求、共 2479 个点对即触发 302，而同日的地点检索
+        # 只用掉 38 次（额度 3000）。省配额要盯的是这个数，不是请求数。
+        self.matrix_pairs = 0
         # 配额一旦耗尽，同一进程内不再重复试探该接口，避免每次调用都白等一轮重试
         self._exhausted: set[str] = set()
 
@@ -310,6 +314,7 @@ class BaiduMapClient:
         if complete:
             return cached_block
 
+        self.matrix_pairs += len(origins) * len(destinations)
         try:
             async with self._matrix_gate:
                 body = await self._request(
@@ -371,6 +376,7 @@ class BaiduMapClient:
         dest_param = "|".join(
             f"{destinations[i][0]:.6f},{destinations[i][1]:.6f}" for i in misses
         )
+        self.matrix_pairs += len(misses)
         async with self._matrix_gate:
             body = await self._request(
                 "/routematrix/v2/walking",
