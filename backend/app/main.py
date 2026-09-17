@@ -24,6 +24,7 @@ from .poi.catalog import CATEGORIES
 from .poi.collect import collect_coverage
 from .report.blindspot import BlindspotConfig, identify_blindspots
 from .report.score import build_report
+from .travel import MODES, get_mode
 
 
 class IsochroneRequest(BaseModel):
@@ -39,6 +40,10 @@ class IsochroneRequest(BaseModel):
     )
     grid_spacing_m: float = Field(
         150.0, ge=80, le=400, description="盲区判定的网格间距，越小越精细也越耗配额"
+    )
+    mode: str = Field(
+        "walk",
+        description="出行方式：walk / ride / drive / drive_traffic",
     )
 
 
@@ -122,6 +127,8 @@ async def config() -> dict:
             {"name": c.name, "key_facility": c.key_facility} for c in CATEGORIES
         ],
         "walk_limit_m": BlindspotConfig().walk_limit_m,
+        "modes": [m.as_public() for m in MODES.values()],
+        "default_mode": "walk",
     }
 
 
@@ -153,8 +160,17 @@ async def isochrone(req: IsochroneRequest) -> dict:
     命中缓存时均为 0 次。覆盖层失败不影响等时圈返回——降级的粒度就是这三段。
     """
     client: BaiduMapClient = app.state.baidu
+    try:
+        mode = get_mode(req.mode)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "bad_mode", "message": str(exc)},
+        ) from exc
     center = (req.lat, req.lng)
-    cfg = IsochroneConfig(minutes=req.minutes, directions=req.directions)
+    cfg = IsochroneConfig(
+        minutes=req.minutes, directions=req.directions, mode_id=mode.id
+    )
     try:
         result = await compute_isochrone(client, center, cfg)
     except BaiduApiError as exc:
@@ -178,7 +194,7 @@ async def isochrone(req: IsochroneRequest) -> dict:
         coverage_dict["source"] = f"实时采集，检索半径 {radius} 米"
         props["coverage"] = coverage_dict
 
-        if req.blindspots:
+        if req.blindspots and mode.allow_grid_blindspots:
             try:
                 blind = await identify_blindspots(
                     client, center, result.polygon, coverage, blind_cfg
@@ -187,6 +203,11 @@ async def isochrone(req: IsochroneRequest) -> dict:
                 raise _handle_baidu_error(exc) from exc
             blind_dict = blind.as_dict()
             props["blindspots"] = blind_dict
+        elif req.blindspots:
+            props["blindspots_skipped"] = (
+                "网格盲区只对步行等时圈计算：判定口径是居民点步行 1 公里能否到达设施。"
+                "骑行/驾车圈面积大一个数量级，铺同样网格会把算路配额打爆。"
+            )
 
     props["report"] = build_report(props, coverage_dict, blind_dict)
     return payload

@@ -50,6 +50,7 @@ export const computeIsochrone = (params: {
   directions: number
   coverage?: boolean
   blindspots?: boolean
+  mode?: string
 }) =>
   request<IsochroneFeature>('/api/isochrone', {
     method: 'POST',

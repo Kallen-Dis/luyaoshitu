@@ -31,6 +31,7 @@ from app.isochrone.algorithm import IsochroneConfig, compute_isochrone  # noqa: 
 from app.poi.collect import collect_coverage  # noqa: E402
 from app.report.blindspot import BlindspotConfig, identify_blindspots  # noqa: E402
 from app.report.score import build_report  # noqa: E402
+from app.travel import get_mode  # noqa: E402
 
 # 等时圈结果作为示例数据随仓库分发，让评审方无需消耗 API 配额即可跑通演示
 OUT_DIR = ROOT / "data" / "samples"
@@ -76,12 +77,23 @@ async def main() -> None:
         default=150.0,
         help="盲区判定的网格间距（米），默认 150",
     )
+    parser.add_argument(
+        "--mode",
+        default="walk",
+        help="出行方式：walk / ride / drive / drive_traffic，默认 walk",
+    )
     args = parser.parse_args()
 
     if args.address is None and (args.lat is None or args.lng is None):
         parser.error("请提供 --address，或同时提供 --lat 与 --lng")
 
-    cfg = IsochroneConfig(minutes=args.minutes, directions=args.directions)
+    try:
+        mode = get_mode(args.mode)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    cfg = IsochroneConfig(
+        minutes=args.minutes, directions=args.directions, mode_id=mode.id
+    )
     started = time.perf_counter()
 
     async with BaiduMapClient() as client:
@@ -106,9 +118,10 @@ async def main() -> None:
             print(f"\n采集民生设施，检索半径 {radius} 米…")
             try:
                 coverage = await collect_coverage(client, center, radius)
-                blind = await identify_blindspots(
-                    client, center, iso.polygon, coverage, blind_cfg
-                )
+                if mode.allow_grid_blindspots:
+                    blind = await identify_blindspots(
+                        client, center, iso.polygon, coverage, blind_cfg
+                    )
             except BaiduApiError as exc:
                 raise SystemExit(f"设施采集失败：{exc}") from exc
 
@@ -122,7 +135,7 @@ async def main() -> None:
     print(f"耗时 {elapsed:.1f} 秒")
     # 批量算路的日配额按点对数计量，故这里报点对数而非请求数
     print(f"本次实发算路点对 {matrix_pairs} 个（命中缓存的不计入配额）")
-    print(f"\n{args.minutes:.0f} 分钟步行等时圈：")
+    print(f"\n{args.minutes:.0f} 分钟{mode.label}等时圈：")
     print(f"  面积       {iso.area_m2/1e6:.3f} 平方公里")
     print(f"  平均半径   {iso.mean_radius_m:.0f} 米")
     print(f"  最短方向   {iso.min_radius_m:.0f} 米")

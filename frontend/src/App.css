@@ -327,8 +327,37 @@ button.primary:disabled {
   font-weight: 600;
 }
 
-.live-panel[open] summary {
-  margin-bottom: 10px;
+.mode-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.pill {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.pill.active {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.field-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.factor-list {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--muted);
 }
 
 .story {

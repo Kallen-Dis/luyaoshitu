@@ -21,6 +21,7 @@ from typing import Any, Self
 import httpx
 
 from ..config import Settings, get_settings
+from ..travel import TravelMode, get_mode
 from .cache import DiskCache
 from .errors import (
     RETRYABLE_STATUS,
@@ -229,48 +230,53 @@ class BaiduMapClient:
     async def walking_matrix(
         self, origin: tuple[float, float], destinations: Sequence[tuple[float, float]]
     ) -> list[dict[str, float] | None]:
-        """批量步行算路：一个起点到多个终点的真实路网距离与耗时。
-
-        自动按 matrix_batch_size（实测硬上限 100）分批，各批并发提交，
-        速率由令牌桶统一钳制。返回值与 destinations 一一对应，
-        某项为 None 表示该点不可达或查询失败。
-        """
-        if not destinations:
-            return []
-
-        size = self._s.matrix_batch_size
-        batches = [destinations[i : i + size] for i in range(0, len(destinations), size)]
-        chunks = await asyncio.gather(
-            *(self._walking_matrix_batch(origin, b) for b in batches),
-            return_exceptions=True,
-        )
-
-        out: list[dict[str, float] | None] = []
-        for batch, chunk in zip(batches, chunks, strict=True):
-            if isinstance(chunk, BaseException):
-                out.extend([None] * len(batch))  # 整批失败，如实标记缺失
-            else:
-                out.extend(chunk)
-        return out
+        """步行批量算路。保留此名以免测试与调用方大面积改动。"""
+        return await self.route_matrix("walk", origin, destinations)
 
     async def walking_matrix_grid(
         self,
         origins: Sequence[tuple[float, float]],
         destinations: Sequence[tuple[float, float]],
     ) -> list[list[dict[str, float] | None]]:
-        """多起点 × 多终点的步行距离矩阵，返回 origins × destinations 的二维表。
+        return await self.route_matrix_grid("walk", origins, destinations)
 
-        批量算路的实测硬上限是**起点数 × 终点数 ≤ 100**（不是终点数 ≤ 100），
-        所以把多个起点并进一次请求能大幅压低请求数：网格盲区判定有约 130 个网格
-        × 每品类若干候选设施，逐个起点单发要上百次请求，按乘积装箱后只需二十余次。
+    async def route_matrix(
+        self,
+        mode_id: str,
+        origin: tuple[float, float],
+        destinations: Sequence[tuple[float, float]],
+    ) -> list[dict[str, float] | None]:
+        """一个起点到多个终点的真实路网距离与耗时。出行方式决定路网与是否计入路况。"""
+        if not destinations:
+            return []
+        mode = get_mode(mode_id)
+        size = min(self._s.matrix_batch_size, mode.matrix_product_limit)
+        batches = [destinations[i : i + size] for i in range(0, len(destinations), size)]
+        chunks = await asyncio.gather(
+            *(self._route_matrix_batch(mode, origin, b) for b in batches),
+            return_exceptions=True,
+        )
 
-        代价是请求形状必须是矩形：一个起点缺某个终点的缓存，整块就得重发。
-        故以「整块全部命中才跳过」为粒度，宁可少量重复也不拆成碎请求。
-        """
+        out: list[dict[str, float] | None] = []
+        for batch, chunk in zip(batches, chunks, strict=True):
+            if isinstance(chunk, BaseException):
+                out.extend([None] * len(batch))
+            else:
+                out.extend(chunk)
+        return out
+
+    async def route_matrix_grid(
+        self,
+        mode_id: str,
+        origins: Sequence[tuple[float, float]],
+        destinations: Sequence[tuple[float, float]],
+    ) -> list[list[dict[str, float] | None]]:
+        """多起点 × 多终点矩阵。乘积上限随出行方式变化（骑行文档为 50）。"""
         if not origins or not destinations:
             return [[None] * len(destinations) for _ in origins]
 
-        budget = max(1, self._s.matrix_batch_size)
+        mode = get_mode(mode_id)
+        budget = max(1, min(self._s.matrix_batch_size, mode.matrix_product_limit))
         d_size = min(len(destinations), budget)
         o_size = max(1, budget // d_size)
 
@@ -285,7 +291,7 @@ class BaiduMapClient:
         async def run(oi: int, di: int) -> None:
             o_chunk = origins[oi : oi + o_size]
             d_chunk = destinations[di : di + d_size]
-            block = await self._matrix_block(o_chunk, d_chunk)
+            block = await self._matrix_block(mode, o_chunk, d_chunk)
             for i, row in enumerate(block):
                 for j, cell in enumerate(row):
                     out[oi + i][di + j] = cell
@@ -295,17 +301,18 @@ class BaiduMapClient:
 
     async def _matrix_block(
         self,
+        mode: TravelMode,
         origins: Sequence[tuple[float, float]],
         destinations: Sequence[tuple[float, float]],
     ) -> list[list[dict[str, float] | None]]:
-        """请求一个矩形块。整块缓存命中则零消耗，否则整块重发。"""
+        """请求一个矩形块。缓存命名空间含出行方式，步行旧缓存仍可复用。"""
         cached_block: list[list[dict[str, float] | None]] = []
         complete = True
         for o in origins:
             row: list[dict[str, float] | None] = []
             for d in destinations:
                 entry = self._cache.read(
-                    self._cache.key_for_pair("walk", o[0], o[1], d[0], d[1])
+                    self._cache.key_for_pair(mode.cache_ns, o[0], o[1], d[0], d[1])
                 )
                 if entry is None:
                     complete = False
@@ -315,28 +322,25 @@ class BaiduMapClient:
             return cached_block
 
         self.matrix_pairs += len(origins) * len(destinations)
+        params: dict[str, Any] = {
+            "origins": "|".join(f"{o[0]:.6f},{o[1]:.6f}" for o in origins),
+            "destinations": "|".join(f"{d[0]:.6f},{d[1]:.6f}" for d in destinations),
+            "output": "json",
+            **{k: v for k, v in mode.extra_params.items()},
+        }
         try:
             async with self._matrix_gate:
                 body = await self._request(
-                    "/routematrix/v2/walking",
-                    {
-                        "origins": "|".join(f"{o[0]:.6f},{o[1]:.6f}" for o in origins),
-                        "destinations": "|".join(
-                            f"{d[0]:.6f},{d[1]:.6f}" for d in destinations
-                        ),
-                        "output": "json",
-                    },
+                    mode.endpoint,
+                    params,
                     cost=len(origins) * len(destinations) / PAIRS_PER_TOKEN,
                 )
         except BaiduApiError as exc:
-            # 整块失败时保留已有缓存，其余如实留空。绝不用 0 或极大值顶替：
-            # 距离缺失会被下游判成盲区，等于让 API 故障冒充设施缺失。
             self.matrix_failures.append(
-                f"{len(origins)}x{len(destinations)} status={exc.status} {exc}"
+                f"{mode.id} {len(origins)}x{len(destinations)} status={exc.status} {exc}"
             )
             return cached_block
 
-        # 返回的 result 是长度 M×N 的一维数组，按起点优先展开
         flat = body.get("result", [])
         for i, o in enumerate(origins):
             for j, d in enumerate(destinations):
@@ -351,19 +355,23 @@ class BaiduMapClient:
                 entry = {"distance_m": float(distance), "duration_s": float(duration)}
                 cached_block[i][j] = entry
                 self._cache.write(
-                    self._cache.key_for_pair("walk", o[0], o[1], d[0], d[1]), entry
+                    self._cache.key_for_pair(mode.cache_ns, o[0], o[1], d[0], d[1]),
+                    entry,
                 )
         return cached_block
 
-    async def _walking_matrix_batch(
-        self, origin: tuple[float, float], destinations: Sequence[tuple[float, float]]
+    async def _route_matrix_batch(
+        self,
+        mode: TravelMode,
+        origin: tuple[float, float],
+        destinations: Sequence[tuple[float, float]],
     ) -> list[dict[str, float] | None]:
-        # 先查缓存，只把未命中的点发出去。等时圈采样在相邻半径上高度重复，
-        # 命中率通常很可观。
         results: list[dict[str, float] | None] = [None] * len(destinations)
         misses: list[int] = []
         for i, dest in enumerate(destinations):
-            path = self._cache.key_for_pair("walk", origin[0], origin[1], dest[0], dest[1])
+            path = self._cache.key_for_pair(
+                mode.cache_ns, origin[0], origin[1], dest[0], dest[1]
+            )
             cached = self._cache.read(path)
             if cached is not None:
                 results[i] = cached
@@ -377,19 +385,19 @@ class BaiduMapClient:
             f"{destinations[i][0]:.6f},{destinations[i][1]:.6f}" for i in misses
         )
         self.matrix_pairs += len(misses)
+        params: dict[str, Any] = {
+            "origins": f"{origin[0]:.6f},{origin[1]:.6f}",
+            "destinations": dest_param,
+            "output": "json",
+            **{k: v for k, v in mode.extra_params.items()},
+        }
         async with self._matrix_gate:
             body = await self._request(
-                "/routematrix/v2/walking",
-                {
-                    "origins": f"{origin[0]:.6f},{origin[1]:.6f}",
-                    "destinations": dest_param,
-                    "output": "json",
-                },
+                mode.endpoint,
+                params,
                 cost=len(misses) / PAIRS_PER_TOKEN,
             )
 
-        # 这里刻意不用 strict：返回条数少于请求数时，缺的点如实留空即可，
-        # 长度不齐不该让整批结果作废
         for slot, item in zip(misses, body.get("result", []), strict=False):
             distance = item.get("distance", {}).get("value")
             duration = item.get("duration", {}).get("value")
@@ -399,6 +407,10 @@ class BaiduMapClient:
             results[slot] = entry
             dest = destinations[slot]
             self._cache.write(
-                self._cache.key_for_pair("walk", origin[0], origin[1], dest[0], dest[1]), entry
+                self._cache.key_for_pair(
+                    mode.cache_ns, origin[0], origin[1], dest[0], dest[1]
+                ),
+                entry,
             )
         return results
+

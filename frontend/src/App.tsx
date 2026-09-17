@@ -25,8 +25,8 @@ export default function App() {
   const [showHeatmap, setShowHeatmap] = useState(true)
   const [showBlindspots, setShowBlindspots] = useState(true)
   const [withCoverage, setWithCoverage] = useState(true)
-  // 默认关闭：演示时点地图极易误触发实时计算。地址搜索与「重新计算」仍是显式操作。
   const [pickEnabled, setPickEnabled] = useState(false)
+  const [mode, setMode] = useState('walk')
 
   // 启动时载入配置与样例列表，并默认展示第一个样例。
   // 默认走预生成快照而不是实时计算，是为了让首屏不消耗任何 API 配额。
@@ -69,6 +69,7 @@ export default function App() {
           directions,
           coverage: withCoverage,
           blindspots: withCoverage,
+          mode,
         })
         setIsochrone(feature)
         setCenter({ lat, lng })
@@ -82,7 +83,7 @@ export default function App() {
         setBusy(false)
       }
     },
-    [minutes, directions, withCoverage],
+    [minutes, directions, withCoverage, mode],
   )
 
   async function onSearch() {
@@ -162,6 +163,33 @@ export default function App() {
 
         <details className="live-panel">
           <summary>实时计算（消耗配额）</summary>
+          <div className="field">
+            <span className="field-label">出行方式</span>
+            <div className="mode-pills">
+              {(config?.modes?.length
+                ? config.modes
+                : [
+                    { id: 'walk', label: '步行' },
+                    { id: 'ride', label: '骑行' },
+                    { id: 'drive', label: '驾车（畅通路况）' },
+                    { id: 'drive_traffic', label: '驾车（实时路况）' },
+                  ]
+              ).map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  className={mode === m.id ? 'pill active' : 'pill'}
+                  onClick={() => setMode(m.id)}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+            <p className="hint">
+              步行是命题口径。骑行/驾车走另一张路网；「实时路况」与「畅通路况」对照即拥堵损失。
+              红绿灯等待已计入耗时，接口不能按灯拆开。网格盲区只在步行时计算。
+            </p>
+          </div>
           <div className="field">
             <label htmlFor="address">地址搜索</label>
             <div className="row">

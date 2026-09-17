@@ -37,14 +37,16 @@ WEIGHT_COVER = 0.20
 WEIGHT_EQUITY = 0.15
 
 
-def ideal_area_km2(minutes: float) -> float:
-    radius = minutes * 60.0 * WALK_SPEED_M_PER_S
+def ideal_area_km2(minutes: float, speed_m_per_s: float = WALK_SPEED_M_PER_S) -> float:
+    radius = minutes * 60.0 * speed_m_per_s
     return (3.141592653589793 * radius * radius) / 1e6
 
 
-def reach_score(area_km2: float, minutes: float) -> float:
-    """真实面积占直线圆的百分比，封顶 100。"""
-    ideal = ideal_area_km2(minutes)
+def reach_score(
+    area_km2: float, minutes: float, speed_m_per_s: float = WALK_SPEED_M_PER_S
+) -> float:
+    """真实面积占直线圆的百分比，封顶 100。直线圆半径随出行方式的速度变化。"""
+    ideal = ideal_area_km2(minutes, speed_m_per_s)
     if ideal <= 0:
         return 0.0
     return round(min(100.0, 100.0 * area_km2 / ideal), 1)
@@ -124,6 +126,7 @@ def build_report(
     minutes = float(properties.get("minutes") or 15)
     area = float(properties.get("area_km2") or 0)
     compactness = float(properties.get("compactness") or 0)
+    speed = float(properties.get("speed_m_per_s") or WALK_SPEED_M_PER_S)
     mean_detour = properties.get("mean_detour")
     if mean_detour is not None:
         mean_detour = float(mean_detour)
@@ -136,13 +139,13 @@ def build_report(
 
     blind_ratio = blindspots.get("blind_ratio") if blindspots else None
 
-    r = reach_score(area, minutes)
+    r = reach_score(area, minutes, speed)
     c = compact_score(compactness)
     d = detour_score(mean_detour)
     cov, blinds = cover_score(categories)
     eq = equity_score(blind_ratio)
     total = overall_score(r, c, d, cov, eq)
-    ideal = ideal_area_km2(minutes)
+    ideal = ideal_area_km2(minutes, speed)
     inflation = round(ideal / area, 2) if area > 0 else None
 
     return {

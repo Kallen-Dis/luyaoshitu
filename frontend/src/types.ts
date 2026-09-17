@@ -21,6 +21,12 @@ export interface IsochroneProperties {
   name?: string
   center?: { lat: number; lng: number }
   generated_at?: string
+  mode?: string
+  mode_label?: string
+  uses_traffic?: boolean
+  speed_m_per_s?: number
+  factors?: string[]
+  blindspots_skipped?: string
 }
 
 export interface IsochroneFeature {
@@ -56,12 +62,23 @@ export interface CategoryMeta {
   key_facility: boolean
 }
 
+export interface TravelModeInfo {
+  id: string
+  label: string
+  speed_m_per_s: number
+  uses_traffic: boolean
+  allow_grid_blindspots: boolean
+  factors: string[]
+}
+
 export interface AppConfig {
   browser_ak: string
   default_minutes: number
   default_directions: number
   categories: CategoryMeta[]
   walk_limit_m: number
+  modes: TravelModeInfo[]
+  default_mode: string
 }
 
 export interface RayMetric {

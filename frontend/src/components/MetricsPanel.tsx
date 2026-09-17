@@ -1,6 +1,6 @@
 import type { IsochroneProperties } from '../types'
 
-/** 常人步行速度约 1.2 m/s，用于换算「若按直线画圆」的理想覆盖面积。 */
+/** 常人步行速度约 1.2 m/s；其它出行方式用结果里带回的速度，直线圆才对得上。 */
 const WALK_SPEED_M_PER_S = 1.2
 
 interface Props {
@@ -14,16 +14,20 @@ interface Props {
  * 传统的直线缓冲区做法会成倍高估服务覆盖范围。
  */
 export function MetricsPanel({ props }: Props) {
-  const idealRadiusM = props.minutes * 60 * WALK_SPEED_M_PER_S
+  const speed = props.speed_m_per_s ?? WALK_SPEED_M_PER_S
+  const idealRadiusM = props.minutes * 60 * speed
   const idealAreaKm2 = (Math.PI * idealRadiusM ** 2) / 1e6
   const ratio = idealAreaKm2 > 0 ? props.area_km2 / idealAreaKm2 : 0
+  const modeLabel = props.mode_label ?? '步行'
 
   return (
     <div className="metrics">
       <div className="metrics-headline">
         <span className="metrics-value">{props.area_km2.toFixed(3)}</span>
         <span className="metrics-unit">平方公里</span>
-        <p className="metrics-caption">{props.minutes} 分钟步行真实可达范围</p>
+        <p className="metrics-caption">
+          {props.minutes} 分钟{modeLabel}真实可达范围
+        </p>
       </div>
 
       <div className="callout">
@@ -50,6 +54,15 @@ export function MetricsPanel({ props }: Props) {
           <dd>{props.compactness.toFixed(3)}</dd>
         </div>
       </dl>
+
+      {props.factors && props.factors.length > 0 && (
+        <ul className="factor-list">
+          {props.factors.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
+      )}
+      {props.blindspots_skipped && <p className="hint">{props.blindspots_skipped}</p>}
 
       <p className="metrics-note">
         紧凑度为最短方向半径除以最远方向半径，越接近 1 说明各方向可达性越均衡。

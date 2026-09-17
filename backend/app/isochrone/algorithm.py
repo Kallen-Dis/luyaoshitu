@@ -1,23 +1,8 @@
-"""基于真实路网的步行等时圈算法。
+"""基于真实路网的等时圈算法。
 
 百度地图不提供等时圈接口，也不开放底层路网数据。本算法用**扇形采样 + 射线插值**
-在仅有「批量算路」这一原语的条件下逼近真实可达边界：
-
-1. 以中心点为原点，按方位角均匀发射 N 条射线；
-2. 每条射线上按固定半径梯度布置候选点；
-3. 所有候选点一次性提交批量算路，取回真实路网步行耗时；
-4. 在每条射线上找到耗时首次超过阈值的区间，线性插值反解出边界半径；
-5. 环形平滑各方向半径，连成多边形。
-
-关键设计取舍：
-
-- **首次穿越而非最远可达**。某方向 600 米处耗时超标、900 米处却达标（绕行到了
-  另一条快速通道），边界仍取 600 米。等时圈描述的是连通可达区域，
-  跨越不可达地带的"飞地"不应计入。
-- **失败点视为障碍而非跳过**。算路返回不可达时，射线在此截断。把它当缺失值忽略
-  会让等时圈越过河道、铁路这类真实屏障，得出偏乐观的结论。
-- **采样点数不是瓶颈**。批量算路单次可提交 100 个终点（实测硬上限），
-  36 方向 × 7 档半径 = 252 个点仅需 3 次请求，可以放心提高角分辨率。
+在仅有「批量算路」这一原语的条件下逼近真实可达边界。出行方式（步行 / 骑行 / 驾车）
+决定用哪张路网、采样半径上界，以及驾车是否计入实时路况。
 """
 
 from __future__ import annotations
@@ -25,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ..baidu.client import BaiduMapClient
+from ..travel import WALK, TravelMode, get_mode
 from .geometry import offset_point, polygon_area_m2, smooth_radii
 
 
@@ -32,10 +18,19 @@ from .geometry import offset_point, polygon_area_m2, smooth_radii
 class IsochroneConfig:
     minutes: float = 15.0
     directions: int = 36
-    # 半径梯度。上界 1500 米：15 分钟按常人步行速度（约 1.2 m/s）的直线极限约
-    # 1080 米，即便在路网极通畅处也难超 1500 米，再往外采样只是浪费配额。
-    radii_m: tuple[float, ...] = (200, 400, 600, 800, 1000, 1200, 1400)
+    mode_id: str = "walk"
+    # None 表示采用该出行方式的默认半径梯度。驾车 15 分钟直线约 9 公里，
+    # 若仍用步行的 1400 米上界，整圈都会饱和，形状失去意义。
+    radii_m: tuple[float, ...] | None = None
     smooth_window: int = 3
+
+    @property
+    def mode(self) -> TravelMode:
+        return get_mode(self.mode_id)
+
+    @property
+    def sampling_radii(self) -> tuple[float, ...]:
+        return self.radii_m or self.mode.radii_m
 
     @property
     def target_seconds(self) -> float:
@@ -93,6 +88,7 @@ class Isochrone:
     max_radius_m: float
     sampled_points: int
     failed_points: int
+    mode: TravelMode = WALK
 
     @property
     def compactness(self) -> float:
@@ -124,6 +120,11 @@ class Isochrone:
                 "max_detour": round(max(detours), 3) if detours else None,
                 "sampled_points": self.sampled_points,
                 "failed_points": self.failed_points,
+                "mode": self.mode.id,
+                "mode_label": self.mode.label,
+                "uses_traffic": self.mode.uses_traffic,
+                "speed_m_per_s": self.mode.speed_m_per_s,
+                "factors": list(self.mode.factors),
                 # 各方向半径供雷达图使用；不含 POI 原始记录
                 "rays": [
                     {
@@ -177,24 +178,24 @@ async def compute_isochrone(
 ) -> Isochrone:
     cfg = config or IsochroneConfig()
     lat0, lng0 = center
+    radii = cfg.sampling_radii
 
-    # 构造全部采样点：方位角均匀，半径按梯度
     rays: list[list[RaySample]] = []
     flat: list[tuple[float, float]] = []
     for d in range(cfg.directions):
         bearing = 360.0 * d / cfg.directions
         ray: list[RaySample] = []
-        for r in cfg.radii_m:
+        for r in radii:
             plat, plng = offset_point(lat0, lng0, bearing, r)
             ray.append(RaySample(radius_m=r, lat=plat, lng=plng))
             flat.append((plat, plng))
         rays.append(ray)
 
-    matrix = await client.walking_matrix((lat0, lng0), flat)
+    matrix = await client.route_matrix(cfg.mode_id, (lat0, lng0), flat)
 
     failed = 0
     for i, entry in enumerate(matrix):
-        sample = rays[i // len(cfg.radii_m)][i % len(cfg.radii_m)]
+        sample = rays[i // len(radii)][i % len(radii)]
         if entry is None:
             failed += 1
             continue
@@ -239,4 +240,5 @@ async def compute_isochrone(
         max_radius_m=max(radii),
         sampled_points=len(flat),
         failed_points=failed,
+        mode=cfg.mode,
     )
