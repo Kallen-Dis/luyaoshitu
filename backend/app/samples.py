@@ -32,10 +32,24 @@ class SampleMeta:
     mean_radius_m: float
     compactness: float
     generated_at: str | None
+    # 列表接口就要带对比数字：评审切样例前应已看见「面积只剩几成、圈内有没有设施」
+    grade: str | None
+    total: float | None
+    area_ratio: float | None
+    facilities_in: int | None
+    facilities_nearby: int | None
+
+
+def _count_facilities(categories: dict | None) -> int | None:
+    if not categories:
+        return None
+    return sum(int(v) for v in categories.values())
 
 
 def _meta_from(path: Path, payload: dict) -> SampleMeta:
     props = payload.get("properties", {})
+    report = props.get("report") or {}
+    coverage = props.get("coverage") or {}
     return SampleMeta(
         id=path.stem,
         name=props.get("name", path.stem),
@@ -45,6 +59,11 @@ def _meta_from(path: Path, payload: dict) -> SampleMeta:
         mean_radius_m=float(props.get("mean_radius_m", 0.0)),
         compactness=float(props.get("compactness", 0.0)),
         generated_at=props.get("generated_at"),
+        grade=report.get("grade"),
+        total=report.get("total"),
+        area_ratio=report.get("area_ratio"),
+        facilities_in=_count_facilities(coverage.get("categories") or report.get("categories")),
+        facilities_nearby=_count_facilities(coverage.get("nearby_categories")),
     )
 
 

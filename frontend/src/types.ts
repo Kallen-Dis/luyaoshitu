@@ -42,6 +42,12 @@ export interface SampleMeta {
   mean_radius_m: number
   compactness: number
   generated_at: string | null
+  grade: string | null
+  total: number | null
+  /** 真实可达面积 ÷ 直线圆面积。越低说明直线法高估越严重。 */
+  area_ratio: number | null
+  facilities_in: number | null
+  facilities_nearby: number | null
 }
 
 export interface CategoryMeta {

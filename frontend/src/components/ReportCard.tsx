@@ -1,9 +1,9 @@
-import type { ExamReport } from '../types'
+import type { Coverage, ExamReport, RayMetric } from '../types'
 import { DirectionRadar } from './DirectionRadar'
-import type { RayMetric } from '../types'
 
 interface Props {
   report: ExamReport
+  coverage?: Coverage
   rays?: RayMetric[]
 }
 
@@ -15,7 +15,12 @@ const DIM_LABEL: Record<string, string> = {
   equity: '可达均衡',
 }
 
-export function ReportCard({ report, rays }: Props) {
+function sumCounts(table: Record<string, number> | null | undefined): number {
+  if (!table) return 0
+  return Object.values(table).reduce((acc, n) => acc + n, 0)
+}
+
+export function ReportCard({ report, coverage, rays }: Props) {
   const dims = [
     ['reach', report.dimensions.reach],
     ['compact', report.dimensions.compact],
@@ -24,13 +29,36 @@ export function ReportCard({ report, rays }: Props) {
     ['equity', report.dimensions.equity],
   ] as const
 
+  const inCount = sumCounts(coverage?.categories ?? report.categories)
+  const nearbyCount = sumCounts(coverage?.nearby_categories)
+  const outside = Math.max(0, nearbyCount - inCount)
+  const allMissing = report.blinds.length > 0 && inCount === 0
+
   return (
     <section className="report">
       <h2>体检报告</h2>
       <div className="report-score">
         <span className="report-total">{report.total.toFixed(0)}</span>
-        <span className="report-grade">{report.grade}</span>
+        <span className={`report-grade grade-${report.grade}`}>{report.grade}</span>
       </div>
+
+      {report.straight_inflation != null && (
+        <div className="callout">
+          直线画圆会把可达面积算成 {report.ideal_area_km2.toFixed(2)} km²，
+          高估 <strong>{report.straight_inflation.toFixed(1)} 倍</strong>
+          （真实只有其 {(report.area_ratio * 100).toFixed(0)}%）。
+        </div>
+      )}
+
+      {coverage && (
+        <p className={allMissing ? 'story story-alert' : 'story'}>
+          {allMissing
+            ? `真实 15 分钟圈内设施 ${inCount} 处，检索半径内却有 ${nearbyCount} 处——直线看得见，路网走不到。`
+            : `圈内 ${inCount} 处民生设施${
+                outside > 0 ? `，另有 ${outside} 处在附近但走不进等时圈` : ''
+              }。`}
+        </p>
+      )}
 
       <ul className="dim-list">
         {dims.map(([key, value]) => (

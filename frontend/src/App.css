@@ -281,13 +281,108 @@ button.primary:disabled {
   line-height: 1;
 }
 
+.sample-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sample-grade,
 .report-grade {
   padding: 2px 8px;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   color: #fff;
   background: var(--accent);
   border-radius: 4px;
+  white-space: nowrap;
+}
+
+.grade-优 {
+  background: #1a7f37;
+}
+
+.grade-良 {
+  background: var(--accent);
+}
+
+.grade-中 {
+  background: var(--warn);
+}
+
+.grade-弱 {
+  background: var(--danger);
+}
+
+.live-panel {
+  padding-top: 16px;
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.live-panel summary {
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.live-panel[open] summary {
+  margin-bottom: 10px;
+}
+
+.story {
+  margin: 0 0 12px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text);
+}
+
+.story-alert {
+  padding: 10px 12px;
+  color: #7a4b00;
+  background: #fff8e6;
+  border: 1px solid #f5dda0;
+  border-radius: 6px;
+}
+
+.busy-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  background: rgb(15 23 42 / 45%);
+}
+
+.map-mode {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 10;
+  max-width: 360px;
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 12%);
+}
+
+.map-mode.live {
+  color: #7a4b00;
+  background: #fff8e6;
+  border-color: #f5dda0;
+}
+
+.legend-swatch.unknown {
+  background: #9ca3af;
+  border: 1px solid #6b7280;
 }
 
 .dim-list {
@@ -480,7 +575,7 @@ button.primary:disabled {
   font-size: 11px;
   line-height: 1.5;
   background: rgba(255, 255, 255, 0.94);
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
   border-radius: 6px;
   box-shadow: 0 2px 8px rgb(0 0 0 / 12%);
 }

@@ -10,6 +10,8 @@ interface Props {
   showBlindspots: boolean
   onPickCenter: (lat: number, lng: number) => void
   onError: (message: string) => void
+  /** 关闭时点击地图不改中心、不算路，避免演示误触烧配额。 */
+  pickEnabled: boolean
 }
 
 // 热力图色阶：由近及远。JS API GL 不自带热力图图层，
@@ -50,6 +52,7 @@ export function MapView({
   showBlindspots,
   onPickCenter,
   onError,
+  pickEnabled,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<any>(null)
@@ -60,6 +63,8 @@ export function MapView({
   // 点击盲区色块只应弹出详情。若任其冒泡到地图，就会被当成「改选中心点」
   // 而触发一次完整的实时计算——白烧配额，且用户根本没打算换点。
   const suppressPickRef = useRef(false)
+  const pickEnabledRef = useRef(pickEnabled)
+  pickEnabledRef.current = pickEnabled
 
   useEffect(() => {
     let cancelled = false
@@ -78,6 +83,7 @@ export function MapView({
             suppressPickRef.current = false
             return
           }
+          if (!pickEnabledRef.current) return
           if (e.latlng) pickRef.current(e.latlng.lat, e.latlng.lng)
         })
         mapRef.current = map
@@ -183,6 +189,11 @@ export function MapView({
   return (
     <div className="map-shell">
       <div ref={containerRef} className="map-canvas" />
+      <div className={`map-mode ${pickEnabled ? 'live' : 'browse'}`}>
+        {pickEnabled
+          ? '点击地图将按新中心点重新计算（消耗配额）'
+          : '浏览模式：点击盲区色块看详情，点击地图不会算路'}
+      </div>
       {blindspots && (
         <div className="map-legend">
           {showHeatmap && (
@@ -201,6 +212,12 @@ export function MapView({
                     : '远'}
                 </em>
               </span>
+            </div>
+          )}
+          {showHeatmap && (
+            <div className="legend-row">
+              <span className="legend-swatch unknown" />
+              <span>灰色为测距失败，不是「很远」</span>
             </div>
           )}
           {showBlindspots && (

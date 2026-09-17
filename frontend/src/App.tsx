@@ -6,10 +6,15 @@ import { MetricsPanel } from './components/MetricsPanel'
 import { ReportCard } from './components/ReportCard'
 import type { AppConfig, IsochroneFeature, SampleMeta } from './types'
 
+function shortName(name: string) {
+  return name.replace(/^上海市普陀区/, '')
+}
+
 export default function App() {
   const [config, setConfig] = useState<AppConfig | null>(null)
   const [samples, setSamples] = useState<SampleMeta[]>([])
-  const [center, setCenter] = useState({ lat: 31.284817, lng: 121.369523 })
+  const [activeSampleId, setActiveSampleId] = useState<string | null>(null)
+  const [center, setCenter] = useState({ lat: 31.247979, lng: 121.416775 })
   const [isochrone, setIsochrone] = useState<IsochroneFeature | null>(null)
   const [minutes, setMinutes] = useState(15)
   const [directions, setDirections] = useState(36)
@@ -20,6 +25,8 @@ export default function App() {
   const [showHeatmap, setShowHeatmap] = useState(true)
   const [showBlindspots, setShowBlindspots] = useState(true)
   const [withCoverage, setWithCoverage] = useState(true)
+  // 默认关闭：演示时点地图极易误触发实时计算。地址搜索与「重新计算」仍是显式操作。
+  const [pickEnabled, setPickEnabled] = useState(false)
 
   // 启动时载入配置与样例列表，并默认展示第一个样例。
   // 默认走预生成快照而不是实时计算，是为了让首屏不消耗任何 API 配额。
@@ -28,16 +35,24 @@ export default function App() {
       .then(([cfg, list]) => {
         setConfig(cfg)
         setSamples(list)
-        if (list.length > 0) return fetchSample(list[0].id).then(applySample)
+        if (list.length > 0) return loadSample(list[0].id)
       })
       .catch((err: Error) => setError(err.message))
   }, [])
 
-  function applySample(feature: IsochroneFeature) {
+  function applySample(id: string, feature: IsochroneFeature) {
+    setActiveSampleId(id)
     setIsochrone(feature)
     setMinutes(feature.properties.minutes)
     if (feature.properties.center) setCenter(feature.properties.center)
+    setPickEnabled(false)
     setNotice(`已载入预生成样例：${feature.properties.name ?? '未命名'}（不消耗 API 配额）`)
+  }
+
+  function loadSample(id: string) {
+    return fetchSample(id)
+      .then((feature) => applySample(id, feature))
+      .catch((e: Error) => setError(e.message))
   }
 
   const run = useCallback(
@@ -45,6 +60,7 @@ export default function App() {
       setBusy(true)
       setError(null)
       setNotice(null)
+      setActiveSampleId(null)
       try {
         const feature = await computeIsochrone({
           lat,
@@ -58,7 +74,7 @@ export default function App() {
         setCenter({ lat, lng })
       } catch (err) {
         if (err instanceof ApiError && err.code === 'quota_exhausted') {
-          setError(`${err.message}（可继续查看下方预生成样例）`)
+          setError(`${err.message}（可继续查看左侧预生成样例）`)
         } else {
           setError(err instanceof Error ? err.message : String(err))
         }
@@ -91,18 +107,32 @@ export default function App() {
         </header>
 
         <section>
-          <h2>预生成样例</h2>
-          <p className="hint">载入快照不消耗 API 配额，适合快速演示。</p>
+          <h2>对比样例</h2>
+          <p className="hint">载入快照不消耗配额。先看配套较全的曹杨，再看被路网切开的桃浦。</p>
           <div className="sample-list">
             {samples.map((s) => (
               <button
                 key={s.id}
-                className={isochrone?.properties.name === s.name ? 'sample active' : 'sample'}
-                onClick={() => fetchSample(s.id).then(applySample).catch((e) => setError(e.message))}
+                className={activeSampleId === s.id ? 'sample active' : 'sample'}
+                onClick={() => loadSample(s.id)}
               >
-                <span className="sample-name">{s.name}</span>
+                <span className="sample-head">
+                  <span className="sample-name">{shortName(s.name)}</span>
+                  {s.grade && (
+                    <span className={`sample-grade grade-${s.grade}`}>
+                      {s.grade}
+                      {s.total != null ? ` ${Math.round(s.total)}` : ''}
+                    </span>
+                  )}
+                </span>
                 <span className="sample-meta">
-                  {s.area_km2.toFixed(2)} km² · 紧凑度 {s.compactness.toFixed(2)}
+                  {s.area_ratio != null
+                    ? `真实面积仅 ${(s.area_ratio * 100).toFixed(0)}%`
+                    : `${s.area_km2.toFixed(2)} km²`}
+                  {s.facilities_in != null && ` · 圈内 ${s.facilities_in} 处`}
+                  {s.facilities_in === 0 &&
+                    s.facilities_nearby != null &&
+                    `（附近 ${s.facilities_nearby} 处走不到）`}
                 </span>
               </button>
             ))}
@@ -111,7 +141,27 @@ export default function App() {
         </section>
 
         <section>
-          <h2>实时计算</h2>
+          <h2>图层</h2>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={showHeatmap}
+              onChange={(e) => setShowHeatmap(e.target.checked)}
+            />
+            步行耗时热力图
+          </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={showBlindspots}
+              onChange={(e) => setShowBlindspots(e.target.checked)}
+            />
+            服务盲区点位
+          </label>
+        </section>
+
+        <details className="live-panel">
+          <summary>实时计算（消耗配额）</summary>
           <div className="field">
             <label htmlFor="address">地址搜索</label>
             <div className="row">
@@ -166,44 +216,33 @@ export default function App() {
             />
             同时做设施覆盖与盲区判定
           </label>
-          <p className="hint">
-            关闭后只算等时圈，不消耗地点检索配额，出分也只含路网三项。
-          </p>
+          <p className="hint">关闭后只算等时圈，不消耗地点检索配额，出分也只含路网三项。</p>
+
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={pickEnabled}
+              onChange={(e) => setPickEnabled(e.target.checked)}
+            />
+            允许点击地图重新计算
+          </label>
+          <p className="hint">默认关闭。误点一次就会烧掉一批算路点对。</p>
 
           <button className="primary" onClick={() => run(center.lat, center.lng)} disabled={busy}>
             {busy ? '计算中…' : '重新计算当前中心点'}
           </button>
-          <p className="hint">也可直接在地图上点击选取中心点。</p>
-        </section>
-
-        {isochrone?.properties.blindspots && (
-          <section>
-            <h2>图层</h2>
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={showHeatmap}
-                onChange={(e) => setShowHeatmap(e.target.checked)}
-              />
-              步行耗时热力图
-            </label>
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={showBlindspots}
-                onChange={(e) => setShowBlindspots(e.target.checked)}
-              />
-              服务盲区点位
-            </label>
-          </section>
-        )}
+        </details>
 
         {error && <div className="banner error">{error}</div>}
         {notice && !error && <div className="banner notice">{notice}</div>}
 
         {isochrone && <MetricsPanel props={isochrone.properties} />}
         {isochrone?.properties.report && (
-          <ReportCard report={isochrone.properties.report} rays={isochrone.properties.rays} />
+          <ReportCard
+            report={isochrone.properties.report}
+            coverage={isochrone.properties.coverage}
+            rays={isochrone.properties.rays}
+          />
         )}
       </aside>
 
@@ -215,14 +254,14 @@ export default function App() {
             isochrone={isochrone}
             showHeatmap={showHeatmap}
             showBlindspots={showBlindspots}
+            pickEnabled={pickEnabled}
             onPickCenter={(lat, lng) => run(lat, lng)}
             onError={setError}
           />
         ) : (
-          <div className="placeholder">
-            {error ?? '正在载入地图配置…'}
-          </div>
+          <div className="placeholder">{error ?? '正在载入地图配置…'}</div>
         )}
+        {busy && <div className="busy-mask">正在按真实路网计算…</div>}
       </main>
     </div>
   )
