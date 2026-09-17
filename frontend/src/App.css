@@ -655,6 +655,75 @@ button.primary:disabled {
   border: 1px solid #b91c1c;
 }
 
+.legend-swatch.plan {
+  background: rgb(31 111 235 / 35%);
+  border: 1px solid #1f6feb;
+  border-radius: 50%;
+}
+
+.plan {
+  margin-top: 14px;
+  padding: 10px 12px;
+  background: #f6f8fa;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.plan h3 {
+  margin: 0 0 4px;
+  font-size: 13px;
+}
+
+.plan-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.plan-list li {
+  margin-bottom: 10px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.plan-list strong {
+  display: block;
+  margin: 2px 0 4px;
+}
+
+.plan-list p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.plan-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 10px;
+  color: #fff;
+}
+
+.plan-tag.action-connect {
+  background: #1f6feb;
+}
+
+.plan-tag.action-site {
+  background: #9a6700;
+}
+
+.plan-tag.action-densify {
+  background: #8250df;
+}
+
+.plan-tag.action-network {
+  background: #0969da;
+}
+
+.plan-tag.action-maintain {
+  background: #1a7f37;
+}
+
 .info-window {
   font-size: 12px;
   line-height: 1.7;

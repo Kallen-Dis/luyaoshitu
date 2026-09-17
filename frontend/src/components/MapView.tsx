@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { loadBaiduMap } from '../baiduMap'
-import type { GridCell, IsochroneFeature } from '../types'
+import type { GridCell, IsochroneFeature, Prescription } from '../types'
 
 interface Props {
   ak: string
@@ -18,6 +18,30 @@ interface Props {
 // 而网格判定本就产出规则点阵，直接把每个网格画成方块即可——
 // 既不必引入 mapvgl 这类额外依赖，色块边界也正好对应判定粒度，不会因插值而虚化。
 const HEAT_COLORS = ['#1a9850', '#91cf60', '#d9ef8b', '#fee08b', '#fc8d59', '#d73027']
+
+const PLAN_COLORS: Record<string, string> = {
+  connect: '#1f6feb',
+  site: '#9a6700',
+  densify: '#8250df',
+  network: '#0969da',
+  maintain: '#1a7f37',
+}
+
+const ACTION_SHORT: Record<string, string> = {
+  connect: '打通',
+  site: '补设',
+  densify: '加密',
+  network: '路网',
+  maintain: '维持',
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+}
 
 function heatColor(reachS: number | null, maxS: number): string {
   if (reachS === null) return '#9ca3af' // 测距失败，灰色示意「未知」而非「很远」
@@ -183,20 +207,65 @@ export function MapView({
     }
 
     add(new BMapGL.Marker(new BMapGL.Point(center.lng, center.lat)))
+
+    const prescriptions = (isochrone?.properties.report?.prescriptions ?? []).filter(
+      (p: Prescription) => p.lat != null && p.lng != null,
+    )
+    for (const p of prescriptions) {
+      const point = new BMapGL.Point(p.lng, p.lat)
+      const color = PLAN_COLORS[p.action] ?? '#1f6feb'
+      const ring = new BMapGL.Circle(point, 90, {
+        strokeColor: color,
+        strokeWeight: 2,
+        strokeOpacity: 0.95,
+        fillColor: color,
+        fillOpacity: 0.22,
+      })
+      const label = new BMapGL.Label(ACTION_SHORT[p.action] ?? p.action, {
+        position: point,
+        offset: new BMapGL.Size(-14, -10),
+      })
+      label.setStyle({
+        color: '#fff',
+        background: color,
+        border: 'none',
+        borderRadius: '10px',
+        padding: '2px 6px',
+        fontSize: '11px',
+        fontWeight: '600',
+      })
+      const openPlan = () => {
+        suppressPickRef.current = true
+        map.openInfoWindow(
+          new BMapGL.InfoWindow(
+            `<div class="info-window"><b>${escapeHtml(p.title)}</b><br/><span>${escapeHtml(p.reason)}</span></div>`,
+            { width: 260, title: ACTION_SHORT[p.action] ?? '规划建议' },
+          ),
+          point,
+        )
+      }
+      ring.addEventListener('click', openPlan)
+      label.addEventListener('click', openPlan)
+      add(ring)
+      add(label)
+    }
   }, [center, isochrone, showHeatmap, showBlindspots])
 
   const blindspots = isochrone?.properties.blindspots
+  const planCount = (isochrone?.properties.report?.prescriptions ?? []).filter(
+    (p) => p.lat != null && p.lng != null,
+  ).length
   return (
     <div className="map-shell">
       <div ref={containerRef} className="map-canvas" />
       <div className={`map-mode ${pickEnabled ? 'live' : 'browse'}`}>
         {pickEnabled
           ? '点击地图将按新中心点重新计算（消耗配额）'
-          : '浏览模式：点击盲区色块看详情，点击地图不会算路'}
+          : '浏览模式：点击盲区或规划圆点看详情，点击地图不会算路'}
       </div>
-      {blindspots && (
+      {(blindspots || planCount > 0) && (
         <div className="map-legend">
-          {showHeatmap && (
+          {showHeatmap && blindspots && (
             <div className="legend-row">
               <span className="legend-title">步行耗时</span>
               <span className="legend-scale">
@@ -214,19 +283,25 @@ export function MapView({
               </span>
             </div>
           )}
-          {showHeatmap && (
+          {showHeatmap && blindspots && (
             <div className="legend-row">
               <span className="legend-swatch unknown" />
               <span>灰色为测距失败，不是「很远」</span>
             </div>
           )}
-          {showBlindspots && (
+          {showBlindspots && blindspots && (
             <div className="legend-row">
               <span className="legend-swatch blind" />
               <span>
                 服务盲区 {blindspots.blind_count} / {blindspots.cell_count} 个网格
                 （点击色块看缺哪类）
               </span>
+            </div>
+          )}
+          {planCount > 0 && (
+            <div className="legend-row">
+              <span className="legend-swatch plan" />
+              <span>规划建议 {planCount} 处（点击圆点看开方）</span>
             </div>
           )}
         </div>

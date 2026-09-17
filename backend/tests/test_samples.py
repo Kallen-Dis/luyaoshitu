@@ -34,3 +34,31 @@ def test_meta_survives_snapshot_without_report(tmp_path: Path):
     meta = _meta_from(tmp_path / "isochrone-empty.geojson", payload)
     assert meta.grade is None
     assert meta.facilities_in is None
+
+
+def test_snapshots_open_into_actionable_prescriptions():
+    """加载快照后必须能开方，且桃浦优先打通、建议点落在网格范围内。"""
+    from app.report.score import build_report
+    from app.samples import load_sample
+
+    tao = load_sample("isochrone-taopu-15min")
+    tao_report = build_report(
+        tao["properties"],
+        tao["properties"].get("coverage"),
+        tao["properties"].get("blindspots"),
+    )
+    tao_actions = {p["action"] for p in tao_report["prescriptions"]}
+    assert "connect" in tao_actions
+    assert "site" not in tao_actions
+    located = [p for p in tao_report["prescriptions"] if p["lat"] is not None]
+    assert located
+
+    cao = load_sample("isochrone-caoyang-15min")
+    cao_report = build_report(
+        cao["properties"],
+        cao["properties"].get("coverage"),
+        cao["properties"].get("blindspots"),
+    )
+    assert cao_report["prescriptions"]
+    densify_or_connect = {p["action"] for p in cao_report["prescriptions"]}
+    assert densify_or_connect & {"densify", "network", "maintain", "connect"}

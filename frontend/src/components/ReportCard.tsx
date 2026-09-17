@@ -7,6 +7,14 @@ interface Props {
   rays?: RayMetric[]
 }
 
+const ACTION_LABEL: Record<string, string> = {
+  connect: '打通',
+  site: '补设',
+  densify: '加密',
+  network: '路网',
+  maintain: '维持',
+}
+
 const DIM_LABEL: Record<string, string> = {
   reach: '路网可达',
   compact: '方向均衡',
@@ -77,6 +85,24 @@ export function ReportCard({ report, coverage, rays }: Props) {
       </ul>
 
       {rays && rays.length > 0 && <DirectionRadar rays={rays} />}
+
+      {report.prescriptions && report.prescriptions.length > 0 && (
+        <div className="plan">
+          <h3>自动诊疗</h3>
+          <p className="hint">
+            由盲区网格与圈内外设施对照生成，不另耗配额。圈外有、圈内无则优先打通路网。
+          </p>
+          <ol className="plan-list">
+            {report.prescriptions.map((p) => (
+              <li key={`${p.action}-${p.category}-${p.lat}-${p.lng}`}>
+                <span className={`plan-tag action-${p.action}`}>{ACTION_LABEL[p.action]}</span>
+                <strong>{p.title}</strong>
+                <p>{p.reason}</p>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
 
       {report.blinds.length > 0 && (
         <div className="blinds">

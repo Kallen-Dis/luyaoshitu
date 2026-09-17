@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .prescribe import prescribe
+
 # 常人步行速度，与前端 MetricsPanel 保持一致，便于两边数字对得上
 WALK_SPEED_M_PER_S = 1.2
 
@@ -171,4 +173,7 @@ def build_report(
         "coverage_source": coverage.get("source") if coverage else None,
         "coverage_pending": coverage is None,
         "blindspots_pending": blindspots is None,
+        "prescriptions": prescribe(
+            properties, coverage, blindspots, blinds, failed_categories
+        ),
     }

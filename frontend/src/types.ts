@@ -156,6 +156,17 @@ export interface ExamReport {
   coverage_source: string | null
   coverage_pending: boolean
   blindspots_pending: boolean
+  prescriptions?: Prescription[]
+}
+
+export interface Prescription {
+  action: 'connect' | 'site' | 'densify' | 'network' | 'maintain'
+  title: string
+  reason: string
+  category: string | null
+  lat: number | null
+  lng: number | null
+  covers: number
 }
 
 export interface ApiErrorDetail {
