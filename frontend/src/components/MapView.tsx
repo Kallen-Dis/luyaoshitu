@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { loadBaiduMap } from '../baiduMap'
 import type { GridCell, IsochroneFeature, Prescription } from '../types'
 
@@ -81,6 +81,9 @@ export function MapView({
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<any>(null)
   const overlaysRef = useRef<any[]>([])
+  // 地图实例是异步建好的，而快照往往先到：只用 ref 持有实例的话，
+  // 绘制 effect 会在实例就绪前空跑一次，此后再无触发，首屏就成了一张白底底图。
+  const [ready, setReady] = useState(false)
   // 点击回调里要用到最新的处理函数，但地图监听只注册一次，故用 ref 转发
   const pickRef = useRef(onPickCenter)
   pickRef.current = onPickCenter
@@ -111,6 +114,7 @@ export function MapView({
           if (e.latlng) pickRef.current(e.latlng.lat, e.latlng.lng)
         })
         mapRef.current = map
+        setReady(true)
       })
       .catch((err: Error) => {
         if (!cancelled) onError(err.message)
@@ -159,25 +163,6 @@ export function MapView({
       }
     }
 
-    if (isochrone) {
-      const ring = isochrone.geometry.coordinates[0] ?? []
-      const points = ring.map(([lng, lat]) => new BMapGL.Point(lng, lat))
-      const polygon = new BMapGL.Polygon(points, {
-        strokeColor: '#1f6feb',
-        strokeWeight: 2,
-        strokeOpacity: 0.9,
-        fillColor: '#1f6feb',
-        // 叠了热力网格后填充会盖住色阶，此时只保留轮廓
-        fillOpacity: blindspots && showHeatmap ? 0 : 0.18,
-      })
-      add(polygon)
-      // 视野贴合等时圈范围，比固定缩放级别更实用——
-      // 不同社区的可达范围差异很大，桃浦镇比曹杨新村小了近三成
-      map.setViewport(points)
-    } else {
-      map.setCenter(new BMapGL.Point(center.lng, center.lat))
-    }
-
     if (blindspots && showBlindspots) {
       for (const cell of blindspots.cells) {
         if (cell.missing.length === 0) continue
@@ -186,11 +171,12 @@ export function MapView({
         )
         const patch = new BMapGL.Polygon(corners, {
           strokeColor: '#b91c1c',
-          strokeWeight: 2,
-          strokeOpacity: 0.95,
+          strokeWeight: 1.5,
+          strokeOpacity: 0.8,
           fillColor: '#dc2626',
-          // 缺的品类越多填得越实，浏览时不必逐个点开也能看出严重程度
-          fillOpacity: 0.2 + 0.2 * Math.min(3, cell.missing.length),
+          // 缺的品类越多填得越实，浏览时不必逐个点开也能看出严重程度。
+          // 上限压在 0.5：桃浦镇整片皆盲，填太实会把热力层与等时圈一起糊掉。
+          fillOpacity: 0.14 + 0.12 * Math.min(3, cell.missing.length),
         })
         patch.addEventListener('click', () => {
           suppressPickRef.current = true
@@ -206,33 +192,63 @@ export function MapView({
       }
     }
 
+    // 等时圈轮廓画在网格之上：盲区连成片时，压在下面的边界会被整片红色吃掉
+    if (isochrone) {
+      const ring = isochrone.geometry.coordinates[0] ?? []
+      const points = ring.map(([lng, lat]) => new BMapGL.Point(lng, lat))
+      add(
+        new BMapGL.Polygon(points, {
+          strokeColor: '#0b3f9e',
+          strokeWeight: 3,
+          strokeOpacity: 1,
+          fillColor: '#1f6feb',
+          // 叠了热力网格后填充会盖住色阶，此时只保留轮廓
+          fillOpacity: blindspots && showHeatmap ? 0 : 0.18,
+        }),
+      )
+      // 视野贴合等时圈范围，比固定缩放级别更实用——
+      // 不同社区的可达范围差异很大，桃浦镇比曹杨新村小了近三成
+      map.setViewport(points)
+    } else {
+      map.setCenter(new BMapGL.Point(center.lng, center.lat))
+    }
+
     add(new BMapGL.Marker(new BMapGL.Point(center.lng, center.lat)))
 
     const prescriptions = (isochrone?.properties.report?.prescriptions ?? []).filter(
       (p: Prescription) => p.lat != null && p.lng != null,
     )
-    for (const p of prescriptions) {
+    // 多条处方常落在同一个盲区质心附近（桃浦三类设施都指向同一片）。
+    // 标签按簇堆叠在同一锚点上，否则互相压着谁都看不清；圆圈仍留在各自坐标。
+    const anchors = labelAnchors(prescriptions)
+    prescriptions.forEach((p, i) => {
       const point = new BMapGL.Point(p.lng, p.lat)
+      const anchor = anchors[i]
       const color = PLAN_COLORS[p.action] ?? '#1f6feb'
-      const ring = new BMapGL.Circle(point, 90, {
+      const ring = new BMapGL.Circle(point, 110, {
         strokeColor: color,
         strokeWeight: 2,
         strokeOpacity: 0.95,
         fillColor: color,
         fillOpacity: 0.22,
       })
-      const label = new BMapGL.Label(ACTION_SHORT[p.action] ?? p.action, {
-        position: point,
-        offset: new BMapGL.Size(-14, -10),
+      const text = p.category
+        ? `${ACTION_SHORT[p.action] ?? p.action}·${p.category}`
+        : (ACTION_SHORT[p.action] ?? p.action)
+      const label = new BMapGL.Label(text, {
+        position: new BMapGL.Point(anchor.lng, anchor.lat),
+        offset: new BMapGL.Size(-30, -12 + anchor.slot * 24),
       })
       label.setStyle({
         color: '#fff',
         background: color,
-        border: 'none',
+        border: '1px solid rgba(255, 255, 255, 0.85)',
         borderRadius: '10px',
-        padding: '2px 6px',
+        padding: '2px 7px',
         fontSize: '11px',
         fontWeight: '600',
+        boxShadow: '0 1px 4px rgba(0, 0, 0, 0.25)',
+        whiteSpace: 'nowrap',
       })
       const openPlan = () => {
         suppressPickRef.current = true
@@ -248,8 +264,8 @@ export function MapView({
       label.addEventListener('click', openPlan)
       add(ring)
       add(label)
-    }
-  }, [center, isochrone, showHeatmap, showBlindspots])
+    })
+  }, [ready, center, isochrone, showHeatmap, showBlindspots])
 
   const blindspots = isochrone?.properties.blindspots
   const planCount = (isochrone?.properties.report?.prescriptions ?? []).filter(
@@ -258,13 +274,14 @@ export function MapView({
   return (
     <div className="map-shell">
       <div ref={containerRef} className="map-canvas" />
-      <div className={`map-mode ${pickEnabled ? 'live' : 'browse'}`}>
+      <div className={`map-mode floating ${pickEnabled ? 'live' : 'browse'}`}>
+        <i />
         {pickEnabled
           ? '点击地图将按新中心点重新计算（消耗配额）'
           : '浏览模式：点击盲区或规划圆点看详情，点击地图不会算路'}
       </div>
       {(blindspots || planCount > 0) && (
-        <div className="map-legend">
+        <div className="map-legend floating">
           {showHeatmap && blindspots && (
             <div className="legend-row">
               <span className="legend-title">步行耗时</span>
@@ -308,6 +325,26 @@ export function MapView({
       )}
     </div>
   )
+}
+
+/** 把相距不到 250 米的处方并成一簇，返回每条处方的标签锚点与簇内层号。 */
+function labelAnchors(items: Prescription[]) {
+  const clusters: { lat: number; lng: number; size: number }[] = []
+  return items.map((p) => {
+    const lat = p.lat as number
+    const lng = p.lng as number
+    const hit = clusters.find((c) => {
+      const dLat = (c.lat - lat) * 111_320
+      const dLng = (c.lng - lng) * 111_320 * Math.cos((lat * Math.PI) / 180)
+      return Math.hypot(dLat, dLng) < 250
+    })
+    if (!hit) {
+      clusters.push({ lat, lng, size: 1 })
+      return { lat, lng, slot: 0 }
+    }
+    hit.size += 1
+    return { lat: hit.lat, lng: hit.lng, slot: hit.size - 1 }
+  })
 }
 
 /** 盲区详情的信息窗内容。距离取真实路网步行距离，不是直线距离。 */
