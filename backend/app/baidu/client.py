@@ -46,6 +46,21 @@ PAIRS_PER_TOKEN = 20.0
 MAX_INFLIGHT_MATRIX = 1
 
 
+def _endpoint_label(endpoint: str) -> str:
+    """把接口路径归并为短名，供配额统计按接口类别展示。"""
+    if "/place/v2/search" in endpoint:
+        return "poi"
+    if "geocoding" in endpoint:
+        return "geocode"
+    if "geoconv" in endpoint:
+        return "geoconv"
+    if "routematrix" in endpoint:
+        return "matrix"
+    if "directionlite" in endpoint:
+        return "route"
+    return endpoint.strip("/").rsplit("/", 1)[-1]
+
+
 class TokenBucket:
     """最简令牌桶：把出口速率钳在 qps 以内。
 
@@ -85,12 +100,27 @@ class BaiduMapClient:
         # 实测一天发出约 140 次请求、共 2479 个点对即触发 302，而同日的地点检索
         # 只用掉 38 次（额度 3000）。省配额要盯的是这个数，不是请求数。
         self.matrix_pairs = 0
+        # 按接口归类的实发 HTTP 请求数。与 matrix_pairs 一起构成配额消耗证据链：
+        # 前端展示「本次消耗多少」靠它与调用前的快照做差（客户端是进程级共享的）。
+        self.request_counts: dict[str, int] = {}
         # 配额一旦耗尽，同一进程内不再重复试探该接口，避免每次调用都白等一轮重试
         self._exhausted: set[str] = set()
 
     @property
     def failed_matrix_blocks(self) -> int:
         return len(self.matrix_failures)
+
+    def usage_snapshot(self) -> dict[str, Any]:
+        """配额消耗快照，供单次计算在调用前后做差，得出「本次」实发量。
+
+        客户端是进程级单例，matrix_pairs 与 request_counts 都是累计值；
+        不取差值就会把一天的总消耗当成单次计算的结果。
+        """
+        return {
+            "matrix_pairs": self.matrix_pairs,
+            "matrix_failures": len(self.matrix_failures),
+            "requests": dict(self.request_counts),
+        }
 
     async def __aenter__(self) -> Self:
         limits = httpx.Limits(
@@ -123,6 +153,10 @@ class BaiduMapClient:
             await self._bucket.acquire(cost)
             try:
                 resp = await self._client.get(BASE_URL + endpoint, params=payload)
+                # 每次实际发出的 HTTP 请求都计数（含失败后的重试），
+                # 这是配额消耗证据链里「请求数」一侧的原始数据。
+                label = _endpoint_label(endpoint)
+                self.request_counts[label] = self.request_counts.get(label, 0) + 1
                 body = resp.json()
                 status = int(body.get("status", -1))
                 if status == 0:
@@ -159,6 +193,30 @@ class BaiduMapClient:
         body = await self._request("/geocoding/v3/", {"address": address, "output": "json"})
         loc = body["result"]["location"]
         return float(loc["lat"]), float(loc["lng"])
+
+    async def geoconv(
+        self, coords: Sequence[tuple[float, float]], from_sys: str = "wgs84"
+    ) -> list[tuple[float, float]]:
+        """坐标转换到 BD09。from_sys 取值 wgs84 / gcj02 / bd09。
+
+        支持 WGS84(GPS) 与 GCJ02(高德/腾讯) 输入是本项目的入口能力：
+        命题只说「输入中心点坐标」，不限定坐标系，收窄到 BD09 会把一
+        大批用户挡在门外。geoconv 接口无日配额限制，转换开销可忽略。
+        """
+        codes = {"wgs84": "1", "gcj02": "3", "bd09": "5"}
+        if from_sys not in codes:
+            raise ValueError(f"未知坐标系：{from_sys}")
+        if not coords:
+            return []
+        coord_str = ";".join(f"{lng:.6f},{lat:.6f}" for lat, lng in coords)
+        body = await self._request(
+            "/geoconv/v1/",
+            {"coords": coord_str, "from": codes[from_sys], "to": "5", "output": "json"},
+        )
+        out: list[tuple[float, float]] = []
+        for item in body.get("result", []):
+            out.append((float(item["y"]), float(item["x"])))  # 内部保持 (lat, lng)
+        return out
 
     async def search_poi(
         self,

@@ -95,6 +95,11 @@ class BlindspotResult:
     config: BlindspotConfig
     # 品类 -> 被判为盲区的网格占比（0~1）。只统计判定成功的网格。
     blind_ratio: dict[str, float] = field(default_factory=dict)
+    # 直线剪枝直接完成判定的次数（网格 × 品类）：直线就超标的候选无需任何请求。
+    pruned_decisions: int = 0
+    # 朴素做法的点对数（网格数 × 设施数 × 品类数）。与实发点对数对比，
+    # 是「配额优化省下多少」最直观的口径。值为 None 表示未做盲区判定。
+    naive_matrix_pairs: int = 0
 
     @property
     def blind_cells(self) -> list[CellResult]:
@@ -111,6 +116,8 @@ class BlindspotResult:
             "max_reach_s": round(max_reach) if max_reach is not None else None,
             "blind_ratio": {k: round(v, 3) for k, v in self.blind_ratio.items()},
             "cells": [c.as_dict() for c in cells],
+            "pruned_decisions": self.pruned_decisions,
+            "naive_matrix_pairs": self.naive_matrix_pairs,
         }
 
 
@@ -138,8 +145,12 @@ async def _judge_category(
     category: Category,
     coverage: CoverageResult,
     cfg: BlindspotConfig,
-) -> None:
-    """就地填充各网格对某一品类的判定结果。"""
+) -> tuple[int, int]:
+    """就地填充各网格对某一品类的判定结果。
+
+    返回 (直线剪枝判定数, 朴素点对数)：前者是零请求完成的网格 × 品类判定，
+    后者是「每个网格对每个设施测一次」的朴素口径，两者一起量化省下的配额。
+    """
     name = category.name
 
     if name in coverage.failed:
@@ -147,7 +158,7 @@ async def _judge_category(
         for cell in cells:
             cell.nearest_m[name] = None
             cell.unknown.append(name)
-        return
+        return 0, 0
 
     pois = coverage.pois_of(name)
     if not pois:
@@ -155,10 +166,11 @@ async def _judge_category(
         for cell in cells:
             cell.nearest_m[name] = None
             cell.missing.append(name)
-        return
+        return len(cells), 0
 
     ranked = {i: rank_candidates(cell, pois, cfg.walk_limit_m) for i, cell in enumerate(cells)}
     pending: list[int] = []
+    pruned = 0
     for i, cell in enumerate(cells):
         if ranked[i]:
             pending.append(i)
@@ -166,6 +178,7 @@ async def _judge_category(
             # 连最近的设施直线距离都超标，步行只会更远，无需测距
             cell.nearest_m[name] = None
             cell.missing.append(name)
+            pruned += 1
 
     # 测距失败过的网格：即便最终未决也只能判"未知"，不能判盲区
     failed: set[int] = set()
@@ -224,6 +237,8 @@ async def _judge_category(
             # 轮数用尽或测距失败：只能说"最近的几家走不到"，不能断言"一家都走不到"
             cell.unknown.append(name)
 
+    return pruned, len(cells) * len(pois)
+
 
 async def identify_blindspots(
     client: BaiduMapClient,
@@ -247,8 +262,12 @@ async def identify_blindspots(
         cell.reach_s = entry["duration_s"] if entry else None
 
     # 品类之间串行：并发会让多个大矩阵同时挤令牌桶，反而更容易撞上并发限流
+    total_pruned = 0
+    total_naive = 0
     for category in categories:
-        await _judge_category(client, cells, category, coverage, cfg)
+        pruned, naive = await _judge_category(client, cells, category, coverage, cfg)
+        total_pruned += pruned
+        total_naive += naive
 
     blind_ratio: dict[str, float] = {}
     for category in categories:
@@ -257,4 +276,11 @@ async def identify_blindspots(
             blind = sum(1 for c in judged if category.name in c.missing)
             blind_ratio[category.name] = blind / len(judged)
 
-    return BlindspotResult(center=center, cells=cells, config=cfg, blind_ratio=blind_ratio)
+    return BlindspotResult(
+        center=center,
+        cells=cells,
+        config=cfg,
+        blind_ratio=blind_ratio,
+        pruned_decisions=total_pruned,
+        naive_matrix_pairs=total_naive,
+    )

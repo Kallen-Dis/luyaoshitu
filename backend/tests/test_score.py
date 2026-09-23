@@ -1,4 +1,4 @@
-from app.isochrone.algorithm import RaySample, _solve_boundary
+from app.isochrone.algorithm import RayResult, RaySample, _polygon_at, _solve_boundary
 from app.isochrone.geometry import offset_point, polygon_area_m2
 from app.report.score import (
     build_report,
@@ -111,6 +111,31 @@ def test_offset_north_increases_latitude():
     lat, lng = offset_point(31.28, 121.37, 0, 1113.2)
     assert lat > 31.28
     assert abs(lng - 121.37) < 1e-9
+
+
+def test_inner_ring_uses_the_same_samples_and_stays_inside():
+    """5 分钟圈必须落在 15 分钟圈内侧，且不再发一次算路。"""
+    center = (31.25, 121.42)
+    rays = []
+    for bearing in (0, 90, 180, 270):
+        samples = [
+            RaySample(200, 0, 0, duration_s=200),
+            RaySample(600, 0, 0, duration_s=600),
+            RaySample(1200, 0, 0, duration_s=1200),
+        ]
+        rays.append(
+            RayResult(
+                bearing_deg=bearing,
+                boundary_m=900,
+                boundary_lat=0,
+                boundary_lng=0,
+                samples=samples,
+            )
+        )
+    inner = _polygon_at(center, rays, 300, 1)
+    outer = _polygon_at(center, rays, 900, 1)
+    # 正北方向：内圈纬度增量应明显小于外圈
+    assert inner[0][0] - center[0] < outer[0][0] - center[0]
 
 
 def test_square_area_is_positive():

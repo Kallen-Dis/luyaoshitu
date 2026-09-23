@@ -7,8 +7,7 @@
 但仍然必要：它让评审方零 API 消耗即可跑通演示，也让首屏不受网络与配额波动影响，
 正对应交付要求中"配置好示例数据，保证评审方能快速跑通演示"。
 
-快照只含派生结果，不含 POI 原始记录（店名、地址、电话）——
-原始记录随开源仓库分发的合规性尚未获得书面答复，按保守口径处理。
+快照带设施名称和坐标，打开样例就能在地图上打点；不含电话和街道地址。
 """
 
 from __future__ import annotations
@@ -18,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import PROJECT_ROOT
+from .report.score import build_report
+from .report.wide_grid import polygon_of
 
 SAMPLES_DIR = PROJECT_ROOT / "data" / "samples"
 
@@ -48,7 +49,15 @@ def _count_facilities(categories: dict | None) -> int | None:
 
 def _meta_from(path: Path, payload: dict) -> SampleMeta:
     props = payload.get("properties", {})
-    report = props.get("report") or {}
+    # 有覆盖数据时按地图同一套方格重算分数，列表和打开后的报告一致。
+    # 连报告都没有的空快照保持空白，不凭路网单独造一个等级。
+    report = (
+        build_report(
+            props, props.get("coverage"), props.get("blindspots"), polygon_of(payload)
+        )
+        if props.get("report") or props.get("coverage")
+        else {}
+    )
     coverage = props.get("coverage") or {}
     return SampleMeta(
         id=path.stem,

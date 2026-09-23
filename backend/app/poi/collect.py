@@ -107,6 +107,17 @@ class CoverageResult:
         两者的差额本身就是有价值的信息——设施明明在附近，只是走不进这个 15 分钟圈。
         """
         inside = counts_within(self, polygon) if polygon is not None else self.categories
+        places = [
+            {
+                "category": r.category,
+                "name": p.name,
+                "lat": round(p.lat, 6),
+                "lng": round(p.lng, 6),
+                "in_circle": point_in_polygon(p.lat, p.lng, polygon) if polygon else True,
+            }
+            for r in self.results
+            for p in r.pois
+        ]
         return {
             "categories": inside,
             "nearby_categories": self.categories,
@@ -114,6 +125,8 @@ class CoverageResult:
             "searches": self.searches,
             "radius_m": self.radius_m,
             "clean_stats": {r.category: r.stats.as_dict() for r in self.results},
+            # 只随本次响应给地图打点，不写入对外分发的快照文件。
+            "places": places,
         }
 
 

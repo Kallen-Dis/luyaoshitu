@@ -20,6 +20,8 @@ export interface IsochroneProperties {
   failed_points: number
   name?: string
   center?: { lat: number; lng: number }
+  /** 本次计算的输入坐标系（实时计算返回；非 bd09 时中心点已被转换）。 */
+  input_coord_sys?: string
   generated_at?: string
   mode?: string
   mode_label?: string
@@ -27,6 +29,47 @@ export interface IsochroneProperties {
   speed_m_per_s?: number
   factors?: string[]
   blindspots_skipped?: string
+  /** 等时圈算法质量诊断（实时计算返回完整值；快照由射线表推导，saturated 为 null）。 */
+  quality?: IsochroneQuality
+  /** 本次计算的配额消耗（仅实时计算返回；快照零消耗不携带）。 */
+  quota?: QuotaStats
+  /** 离线模拟标记：为 true 时结果由确定性伪随机生成，不代表真实路网。 */
+  simulated?: boolean
+  /** 同一次采样插出的内圈。快照若是旧格式则没有。 */
+  rings?: { minutes: number; coordinates: [number, number][] }[]
+}
+
+/** 等时圈质量诊断：让用户知道哪些方向是截断/饱和，而不是把多边形当确定结果。 */
+export interface IsochroneQuality {
+  directions: number
+  /** 采样上界内始终未超时的方向数；真实边界可能更远。快照无法区分，为 null。 */
+  saturated: number | null
+  /** 被不可达点截断的方向数（算路失败视为屏障）。 */
+  barrier_truncated: number
+  /** 首个采样点即不可达或超时、边界半径为 0 的方向数。 */
+  zero_radius: number
+}
+
+/** 一次实时计算的配额消耗证据链。 */
+export interface QuotaStats {
+  /** 实发批量算路点对数。批量算路日配额按点对计量，这是最该盯的数。 */
+  matrix_pairs: number
+  /** 实发批量算路请求数（含失败重试）。 */
+  matrix_requests: number
+  /** 整块失败的矩阵请求数；相关网格按「未知」处理。 */
+  matrix_failed_blocks: number
+  /** 实发地点检索请求数。 */
+  poi_queries: number
+  /** 实发地理编码请求数。 */
+  geocode_queries: number
+  /** 实发坐标转换请求数（geoconv 无日配额限制）。 */
+  geoconv_queries?: number
+  /** 朴素做法点对数（网格 × 设施 × 品类）；null 表示未做盲区判定。 */
+  naive_matrix_pairs: number | null
+  /** 直线剪枝零请求完成判定的次数（网格 × 品类）。 */
+  pruned_decisions: number | null
+  /** 盲区判定网格数。 */
+  grid_cells: number | null
 }
 
 export interface IsochroneFeature {
@@ -54,6 +97,44 @@ export interface SampleMeta {
   area_ratio: number | null
   facilities_in: number | null
   facilities_nearby: number | null
+}
+
+/** 实时分析历史条目（轻量元数据）。 */
+export interface HistoryMeta {
+  id: number
+  created_at: string
+  lat: number
+  lng: number
+  minutes: number
+  mode: string
+  area_km2: number | null
+  score: number | null
+}
+
+/** 一条完整的历史分析记录。 */
+export interface HistoryRecord extends HistoryMeta {
+  payload: Record<string, unknown>
+  result: IsochroneFeature
+}
+
+/** 模拟新建：某一侧（前/后）的统计快照。 */
+export interface SimulateStats {
+  score: number | null
+  grade: string | null
+  blind_count: number | null
+  blind_ratio: Record<string, number> | null
+}
+
+/** 模拟新建结果：在指定位置放设施后的前后对比（本地计算，零 API 消耗）。 */
+export interface SimulationResult {
+  category: string
+  lat: number
+  lng: number
+  covered_cells: { lat: number; lng: number }[]
+  covered_count: number
+  before: SimulateStats
+  after: SimulateStats
+  approximation: string
 }
 
 export interface CategoryMeta {
@@ -98,9 +179,19 @@ export interface CleanStats {
   dropped: number
 }
 
+export interface Place {
+  category: string
+  name: string
+  lat: number
+  lng: number
+  in_circle: boolean
+}
+
 export interface Coverage {
   /** 等时圈**内**的设施数。 */
   categories: Record<string, number>
+  /** 设施点，供地图打点。样例快照也带名称和坐标。 */
+  places?: Place[]
   /** 检索半径内的设施数。与 categories 的差额即「在附近但走不进圈里」。 */
   nearby_categories: Record<string, number>
   /** 检索失败的品类。数量未知，绝不可当作零。 */

@@ -17,8 +17,9 @@ from __future__ import annotations
 from typing import Any
 
 from .prescribe import prescribe
+from .wide_grid import wide_grid
 
-# 常人步行速度，与前端 MetricsPanel 保持一致，便于两边数字对得上
+# 常人步行速度。直线距离除以它，是步行时间的下界。
 WALK_SPEED_M_PER_S = 1.2
 
 # 覆盖层权重：命题点名菜市场、药店、小学，这三类权重大于其余
@@ -123,6 +124,7 @@ def build_report(
     properties: dict[str, Any],
     coverage: dict[str, Any] | None = None,
     blindspots: dict[str, Any] | None = None,
+    polygon: list[tuple[float, float]] | None = None,
 ) -> dict[str, Any]:
     """由等时圈属性、可选的覆盖统计与网格盲区判定生成体检报告。"""
     minutes = float(properties.get("minutes") or 15)
@@ -139,7 +141,15 @@ def build_report(
         categories = coverage.get("categories")
         failed_categories = list(coverage.get("failed_categories") or [])
 
-    blind_ratio = blindspots.get("blind_ratio") if blindspots else None
+    # 有设施坐标时，分数和处方改用地图上那套 200 米方格。
+    # 旧的圈内步行格仍留在 properties.blindspots 里，供耗时热力使用，不再拿来打分。
+    places = (coverage or {}).get("places") or []
+    center = properties.get("center")
+    grid = blindspots
+    if places and center and polygon and len(polygon) >= 3:
+        grid = wide_grid(center, places, polygon)
+
+    blind_ratio = grid.get("blind_ratio") if grid else None
 
     r = reach_score(area, minutes, speed)
     c = compact_score(compactness)
@@ -168,12 +178,13 @@ def build_report(
         # 检索失败的品类：数量未知，前端须显示为「查询失败」而非缺失
         "failed_categories": failed_categories,
         "blind_ratio": blind_ratio,
-        "blind_cell_count": blindspots.get("blind_count") if blindspots else None,
-        "cell_count": blindspots.get("cell_count") if blindspots else None,
+        "blind_cell_count": grid.get("blind_count") if grid else None,
+        "cell_count": grid.get("cell_count") if grid else None,
+        "grid_basis": grid.get("basis") if grid else None,
         "coverage_source": coverage.get("source") if coverage else None,
         "coverage_pending": coverage is None,
-        "blindspots_pending": blindspots is None,
+        "blindspots_pending": grid is None,
         "prescriptions": prescribe(
-            properties, coverage, blindspots, blinds, failed_categories
+            properties, coverage, grid, blinds, failed_categories
         ),
     }

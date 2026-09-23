@@ -461,7 +461,1458 @@
           "dropped": 0
         }
       },
-      "source": "预生成快照，检索半径 1910 米"
+      "source": "预生成快照，检索半径 1910 米",
+      "places": [
+        {
+          "category": "生鲜采买",
+          "name": "鲜满仓生鲜集智慧菜场",
+          "lat": 31.251847,
+          "lng": 121.412094,
+          "in_circle": true
+        },
+        {
+          "category": "生鲜采买",
+          "name": "桂巷驿站",
+          "lat": 31.244892,
+          "lng": 121.410173,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "集鲜菜市",
+          "lat": 31.254319,
+          "lng": 121.408934,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "梅川农贸市场",
+          "lat": 31.24493,
+          "lng": 121.401168,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "中心集市",
+          "lat": 31.261664,
+          "lng": 121.412034,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "长风二村菜场",
+          "lat": 31.239025,
+          "lng": 121.403039,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "永昌真西菜场",
+          "lat": 31.252899,
+          "lng": 121.400146,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "新岚菜场",
+          "lat": 31.25334,
+          "lng": 121.433495,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "永昌集市",
+          "lat": 31.251258,
+          "lng": 121.428538,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "永昌怒江路菜市场",
+          "lat": 31.238752,
+          "lng": 121.405457,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "黑龙江炒货",
+          "lat": 31.254047,
+          "lng": 121.400604,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "优益鲜生鲜超市",
+          "lat": 31.244354,
+          "lng": 121.416234,
+          "in_circle": true
+        },
+        {
+          "category": "生鲜采买",
+          "name": "文华生鲜超市",
+          "lat": 31.248795,
+          "lng": 121.413829,
+          "in_circle": true
+        },
+        {
+          "category": "生鲜采买",
+          "name": "蔬多园生鲜",
+          "lat": 31.248783,
+          "lng": 121.413158,
+          "in_circle": true
+        },
+        {
+          "category": "生鲜采买",
+          "name": "生鲜大卖场",
+          "lat": 31.241295,
+          "lng": 121.417017,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "亿佰鲜生鲜超市",
+          "lat": 31.261743,
+          "lng": 121.411955,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "猛发生鲜超市",
+          "lat": 31.248535,
+          "lng": 121.408862,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "齐佰惠超市",
+          "lat": 31.247927,
+          "lng": 121.408847,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "蔬果生鲜超市",
+          "lat": 31.242183,
+          "lng": 121.410487,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "盒马鲜生",
+          "lat": 31.244446,
+          "lng": 121.429387,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "元华生鲜超市",
+          "lat": 31.244747,
+          "lng": 121.403975,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "清美生鲜",
+          "lat": 31.239649,
+          "lng": 121.414725,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "毛胡子生鲜超市",
+          "lat": 31.252414,
+          "lng": 121.404148,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "清美生鲜",
+          "lat": 31.252272,
+          "lng": 121.405813,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "小丁生鲜超市",
+          "lat": 31.245735,
+          "lng": 121.399127,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "崇明蔬菜生鲜超市",
+          "lat": 31.240938,
+          "lng": 121.428255,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "清美生鲜",
+          "lat": 31.257318,
+          "lng": 121.433569,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "天添生鲜超市",
+          "lat": 31.24827,
+          "lng": 121.433529,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "生鲜超市",
+          "lat": 31.236615,
+          "lng": 121.423933,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "农家乐生鲜超市",
+          "lat": 31.252474,
+          "lng": 121.407503,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "极米客优鲜生活超市",
+          "lat": 31.250858,
+          "lng": 121.428693,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "徐辉每日鲜生活超市",
+          "lat": 31.248371,
+          "lng": 121.432387,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "清美生鲜",
+          "lat": 31.239919,
+          "lng": 121.425615,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "杨柳青生鲜大卖场",
+          "lat": 31.242767,
+          "lng": 121.407856,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "清美鲜食",
+          "lat": 31.248614,
+          "lng": 121.434477,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "育丰生鲜",
+          "lat": 31.235152,
+          "lng": 121.426333,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "绿翡翠生鲜超市",
+          "lat": 31.261748,
+          "lng": 121.411953,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "好邻居生鲜",
+          "lat": 31.245728,
+          "lng": 121.397272,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "清美鲜家",
+          "lat": 31.254364,
+          "lng": 121.435082,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "时时鲜水果大卖场",
+          "lat": 31.248197,
+          "lng": 121.432466,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "鲜丰生鲜",
+          "lat": 31.245621,
+          "lng": 121.399401,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "乐购生鲜",
+          "lat": 31.235479,
+          "lng": 121.427297,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "上海崇明生鲜",
+          "lat": 31.243151,
+          "lng": 121.398768,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "小丁蔬菜店",
+          "lat": 31.245413,
+          "lng": 121.39951,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "盒马生鲜奥莱",
+          "lat": 31.244185,
+          "lng": 121.417859,
+          "in_circle": true
+        },
+        {
+          "category": "生鲜采买",
+          "name": "承得·生鲜预制菜",
+          "lat": 31.252991,
+          "lng": 121.427928,
+          "in_circle": false
+        },
+        {
+          "category": "生鲜采买",
+          "name": "签佰味冻品",
+          "lat": 31.253072,
+          "lng": 121.427948,
+          "in_circle": false
+        },
+        {
+          "category": "医药",
+          "name": "益丰大药房",
+          "lat": 31.248766,
+          "lng": 121.416953,
+          "in_circle": true
+        },
+        {
+          "category": "医药",
+          "name": "第一医药",
+          "lat": 31.248377,
+          "lng": 121.411169,
+          "in_circle": true
+        },
+        {
+          "category": "医药",
+          "name": "复美大药房",
+          "lat": 31.245372,
+          "lng": 121.421644,
+          "in_circle": true
+        },
+        {
+          "category": "医药",
+          "name": "国大药房",
+          "lat": 31.245872,
+          "lng": 121.411408,
+          "in_circle": true
+        },
+        {
+          "category": "医药",
+          "name": "益丰大药房",
+          "lat": 31.251492,
+          "lng": 121.412187,
+          "in_circle": true
+        },
+        {
+          "category": "医药",
+          "name": "第一医药",
+          "lat": 31.248567,
+          "lng": 121.409189,
+          "in_circle": true
+        },
+        {
+          "category": "医药",
+          "name": "北京同仁堂",
+          "lat": 31.240651,
+          "lng": 121.419764,
+          "in_circle": false
+        },
+        {
+          "category": "医药",
+          "name": "益丰大药房",
+          "lat": 31.241852,
+          "lng": 121.410169,
+          "in_circle": false
+        },
+        {
+          "category": "医药",
+          "name": "复美大药房",
+          "lat": 31.239722,
+          "lng": 121.414356,
+          "in_circle": false
+        },
+        {
+          "category": "医药",
+          "name": "老百姓大药房",
+          "lat": 31.243078,
+          "lng": 121.4077,
+          "in_circle": false
+        },
+        {
+          "category": "医药",
+          "name": "复美大药房",
+          "lat": 31.242026,
+          "lng": 121.426626,
+          "in_circle": false
+        },
+        {
+          "category": "医药",
+          "name": "复美大药房",
+          "lat": 31.254215,
+          "lng": 121.42692,
+          "in_circle": false
+        },
+        {
+          "category": "医药",
+          "name": "复美大药房",
+          "lat": 31.245693,
+          "lng": 121.429447,
+          "in_circle": false
+        },
+        {
+          "category": "医药",
+          "name": "医保定点零售药店",
+          "lat": 31.245769,
+          "lng": 121.429494,
+          "in_circle": false
+        },
+        {
+          "category": "医药",
+          "name": "复美大药房",
+          "lat": 31.234645,
+          "lng": 121.417021,
+          "in_circle": false
+        },
+        {
+          "category": "医药",
+          "name": "益丰大药房",
+          "lat": 31.256424,
+          "lng": 121.406396,
+          "in_circle": false
+        },
+        {
+          "category": "医药",
+          "name": "复美大药房",
+          "lat": 31.238502,
+          "lng": 121.405466,
+          "in_circle": false
+        },
+        {
+          "category": "医药",
+          "name": "益丰大药房",
+          "lat": 31.245306,
+          "lng": 121.402057,
+          "in_circle": false
+        },
+        {
+          "category": "医药",
+          "name": "神象大药房",
+          "lat": 31.260811,
+          "lng": 121.412916,
+          "in_circle": false
+        },
+        {
+          "category": "医药",
+          "name": "复美大药房",
+          "lat": 31.254017,
+          "lng": 121.432125,
+          "in_circle": false
+        },
+        {
+          "category": "医药",
+          "name": "百联第一医药",
+          "lat": 31.248421,
+          "lng": 121.432356,
+          "in_circle": false
+        },
+        {
+          "category": "医药",
+          "name": "海王星辰健康药房",
+          "lat": 31.252774,
+          "lng": 121.401762,
+          "in_circle": false
+        },
+        {
+          "category": "医药",
+          "name": "百合缘大药房",
+          "lat": 31.236962,
+          "lng": 121.402535,
+          "in_circle": false
+        },
+        {
+          "category": "医药",
+          "name": "复美大药房",
+          "lat": 31.253212,
+          "lng": 121.400196,
+          "in_circle": false
+        },
+        {
+          "category": "医药",
+          "name": "益丰大药房",
+          "lat": 31.253659,
+          "lng": 121.435538,
+          "in_circle": false
+        },
+        {
+          "category": "医药",
+          "name": "海王星辰健康药房",
+          "lat": 31.235601,
+          "lng": 121.427601,
+          "in_circle": false
+        },
+        {
+          "category": "医药",
+          "name": "零售药店",
+          "lat": 31.25371,
+          "lng": 121.435577,
+          "in_circle": false
+        },
+        {
+          "category": "医药",
+          "name": "华氏大药房",
+          "lat": 31.257582,
+          "lng": 121.433042,
+          "in_circle": false
+        },
+        {
+          "category": "基础教育",
+          "name": "上海市朝春中心小学",
+          "lat": 31.247457,
+          "lng": 121.413386,
+          "in_circle": true
+        },
+        {
+          "category": "基础教育",
+          "name": "曹杨新村第六小学",
+          "lat": 31.241875,
+          "lng": 121.414527,
+          "in_circle": true
+        },
+        {
+          "category": "基础教育",
+          "name": "真如文英中心小学",
+          "lat": 31.254402,
+          "lng": 121.410955,
+          "in_circle": false
+        },
+        {
+          "category": "基础教育",
+          "name": "武宁路小学",
+          "lat": 31.246501,
+          "lng": 121.430046,
+          "in_circle": false
+        },
+        {
+          "category": "基础教育",
+          "name": "上海市普陀区洵阳路小学",
+          "lat": 31.252704,
+          "lng": 121.429092,
+          "in_circle": false
+        },
+        {
+          "category": "基础教育",
+          "name": "上海市希望进修学院",
+          "lat": 31.236824,
+          "lng": 121.412074,
+          "in_circle": false
+        },
+        {
+          "category": "基础教育",
+          "name": "新普陀小学东校",
+          "lat": 31.247472,
+          "lng": 121.400826,
+          "in_circle": false
+        },
+        {
+          "category": "基础教育",
+          "name": "上海市洵阳路小学",
+          "lat": 31.25547,
+          "lng": 121.431547,
+          "in_circle": false
+        },
+        {
+          "category": "基础教育",
+          "name": "华东师范大学-附属小学",
+          "lat": 31.232666,
+          "lng": 121.416654,
+          "in_circle": false
+        },
+        {
+          "category": "基础教育",
+          "name": "中山北路第一小学",
+          "lat": 31.255456,
+          "lng": 121.434576,
+          "in_circle": false
+        },
+        {
+          "category": "基础教育",
+          "name": "上海市金沙江路小学",
+          "lat": 31.234288,
+          "lng": 121.405,
+          "in_circle": false
+        },
+        {
+          "category": "基础医疗",
+          "name": "棠浦路中医药特色社区卫生服务站",
+          "lat": 31.246858,
+          "lng": 121.413917,
+          "in_circle": true
+        },
+        {
+          "category": "基础医疗",
+          "name": "白兰路社区卫生服务站",
+          "lat": 31.241782,
+          "lng": 121.421441,
+          "in_circle": false
+        },
+        {
+          "category": "基础医疗",
+          "name": "上海市普陀区长风街道白玉社区卫生服务中心",
+          "lat": 31.24229,
+          "lng": 121.42613,
+          "in_circle": false
+        },
+        {
+          "category": "基础医疗",
+          "name": "兰田路社区卫生服务站家庭医生工作站",
+          "lat": 31.249962,
+          "lng": 121.428106,
+          "in_circle": false
+        },
+        {
+          "category": "基础医疗",
+          "name": "兰田路社区卫生服务站",
+          "lat": 31.250029,
+          "lng": 121.42818,
+          "in_circle": false
+        },
+        {
+          "category": "基础医疗",
+          "name": "白玉一委社区卫生服务站",
+          "lat": 31.238355,
+          "lng": 121.420478,
+          "in_circle": false
+        },
+        {
+          "category": "基础医疗",
+          "name": "上海市普陀区石泉路街道社区卫生服务中心铜川路社区卫生服务站",
+          "lat": 31.258846,
+          "lng": 121.42057,
+          "in_circle": false
+        },
+        {
+          "category": "基础医疗",
+          "name": "上海市普陀区真如镇社区卫生服务中心",
+          "lat": 31.252795,
+          "lng": 121.404634,
+          "in_circle": false
+        },
+        {
+          "category": "基础医疗",
+          "name": "普陀区长风街道长风社区卫生服务中心",
+          "lat": 31.238152,
+          "lng": 121.403434,
+          "in_circle": false
+        },
+        {
+          "category": "基础医疗",
+          "name": "上海市普陀区中心医院",
+          "lat": 31.247439,
+          "lng": 121.410709,
+          "in_circle": true
+        },
+        {
+          "category": "基础医疗",
+          "name": "睿宝儿科",
+          "lat": 31.241934,
+          "lng": 121.423715,
+          "in_circle": false
+        },
+        {
+          "category": "基础医疗",
+          "name": "健康管理爱眼护眼",
+          "lat": 31.253221,
+          "lng": 121.400288,
+          "in_circle": false
+        },
+        {
+          "category": "基础医疗",
+          "name": "上海巴士第三公共交通有限公司门诊部",
+          "lat": 31.247255,
+          "lng": 121.419332,
+          "in_circle": true
+        },
+        {
+          "category": "基础医疗",
+          "name": "上海市普陀区中心医院-门诊楼",
+          "lat": 31.247339,
+          "lng": 121.410398,
+          "in_circle": true
+        },
+        {
+          "category": "基础医疗",
+          "name": "普陀区中心医院犬伤处置门诊",
+          "lat": 31.247976,
+          "lng": 121.410854,
+          "in_circle": true
+        },
+        {
+          "category": "基础医疗",
+          "name": "上海市普陀区中医医院-门诊",
+          "lat": 31.254094,
+          "lng": 121.413979,
+          "in_circle": true
+        },
+        {
+          "category": "基础医疗",
+          "name": "上海瑞铂妮医疗美容门诊部",
+          "lat": 31.239022,
+          "lng": 121.419233,
+          "in_circle": false
+        },
+        {
+          "category": "基础医疗",
+          "name": "白兰路社区卫生服务站-发热门诊",
+          "lat": 31.241841,
+          "lng": 121.421374,
+          "in_circle": false
+        },
+        {
+          "category": "基础医疗",
+          "name": "上海市普陀区中医医院-发热门诊",
+          "lat": 31.254002,
+          "lng": 121.414031,
+          "in_circle": true
+        },
+        {
+          "category": "基础医疗",
+          "name": "兰田路社区卫生服务站-发热门诊",
+          "lat": 31.249944,
+          "lng": 121.428068,
+          "in_circle": false
+        },
+        {
+          "category": "基础医疗",
+          "name": "白玉一委社区卫生服务站-发热门诊",
+          "lat": 31.238222,
+          "lng": 121.420542,
+          "in_circle": false
+        },
+        {
+          "category": "基础医疗",
+          "name": "上海市普陀区长征镇社区卫生服务中心星梅社区卫生服务站-发热门诊",
+          "lat": 31.248244,
+          "lng": 121.399502,
+          "in_circle": false
+        },
+        {
+          "category": "基础医疗",
+          "name": "OUTPATIENT",
+          "lat": 31.254166,
+          "lng": 121.414291,
+          "in_circle": true
+        },
+        {
+          "category": "基础医疗",
+          "name": "铜川路社区卫生服务站-发热门诊",
+          "lat": 31.258852,
+          "lng": 121.420411,
+          "in_circle": false
+        },
+        {
+          "category": "基础医疗",
+          "name": "世纪同乐社区卫生服务站-发热门诊",
+          "lat": 31.237177,
+          "lng": 121.425828,
+          "in_circle": false
+        },
+        {
+          "category": "基础医疗",
+          "name": "上海嘉漾医疗美容门诊部",
+          "lat": 31.235334,
+          "lng": 121.41593,
+          "in_circle": false
+        },
+        {
+          "category": "基础医疗",
+          "name": "上海鸿宁口腔门诊部",
+          "lat": 31.258514,
+          "lng": 121.413742,
+          "in_circle": false
+        },
+        {
+          "category": "基础医疗",
+          "name": "上海市普陀区中医医院",
+          "lat": 31.253994,
+          "lng": 121.41404,
+          "in_circle": true
+        },
+        {
+          "category": "基础医疗",
+          "name": "曹杨红十字地段医院",
+          "lat": 31.244112,
+          "lng": 121.413081,
+          "in_circle": true
+        },
+        {
+          "category": "基础医疗",
+          "name": "华东师范大学-校医院",
+          "lat": 31.235674,
+          "lng": 121.413016,
+          "in_circle": false
+        },
+        {
+          "category": "基础医疗",
+          "name": "华尔康口腔医院",
+          "lat": 31.25339,
+          "lng": 121.435292,
+          "in_circle": false
+        },
+        {
+          "category": "养老服务",
+          "name": "上海城怡养护院",
+          "lat": 31.240414,
+          "lng": 121.406613,
+          "in_circle": false
+        },
+        {
+          "category": "养老服务",
+          "name": "上海普陀区信仪敬老院",
+          "lat": 31.254815,
+          "lng": 121.430198,
+          "in_circle": false
+        },
+        {
+          "category": "养老服务",
+          "name": "白玉敬老院",
+          "lat": 31.238704,
+          "lng": 121.420544,
+          "in_circle": false
+        },
+        {
+          "category": "养老服务",
+          "name": "长风敬老院",
+          "lat": 31.239333,
+          "lng": 121.404067,
+          "in_circle": false
+        },
+        {
+          "category": "养老服务",
+          "name": "颐长敬老院",
+          "lat": 31.239827,
+          "lng": 121.406455,
+          "in_circle": false
+        },
+        {
+          "category": "养老服务",
+          "name": "曹杨敬老院",
+          "lat": 31.245427,
+          "lng": 121.421025,
+          "in_circle": true
+        },
+        {
+          "category": "养老服务",
+          "name": "沙田外设路一敬老院",
+          "lat": 31.24986,
+          "lng": 121.426222,
+          "in_circle": false
+        },
+        {
+          "category": "养老服务",
+          "name": "曹安敬老院",
+          "lat": 31.241654,
+          "lng": 121.405311,
+          "in_circle": false
+        },
+        {
+          "category": "养老服务",
+          "name": "石岚敬老院",
+          "lat": 31.255572,
+          "lng": 121.43328,
+          "in_circle": false
+        },
+        {
+          "category": "养老服务",
+          "name": "上海市一级敬老院",
+          "lat": 31.241718,
+          "lng": 121.405151,
+          "in_circle": false
+        },
+        {
+          "category": "养老服务",
+          "name": "云集新曹杨颐养院",
+          "lat": 31.243109,
+          "lng": 121.400653,
+          "in_circle": false
+        },
+        {
+          "category": "养老服务",
+          "name": "上海市普陀区颐长敬老院中环人寿堂",
+          "lat": 31.239927,
+          "lng": 121.406299,
+          "in_circle": false
+        },
+        {
+          "category": "养老服务",
+          "name": "上海普陀区沙田敬老院岚西长者照护之家",
+          "lat": 31.253439,
+          "lng": 121.428586,
+          "in_circle": false
+        },
+        {
+          "category": "养老服务",
+          "name": "普陀区曹杨新村街道社区事务受理服务中心",
+          "lat": 31.247933,
+          "lng": 121.416434,
+          "in_circle": true
+        },
+        {
+          "category": "养老服务",
+          "name": "长寿西沙综合为老服务中心",
+          "lat": 31.242576,
+          "lng": 121.430107,
+          "in_circle": false
+        },
+        {
+          "category": "养老服务",
+          "name": "上海市社区综合为老服务中心",
+          "lat": 31.250974,
+          "lng": 121.432554,
+          "in_circle": false
+        },
+        {
+          "category": "养老服务",
+          "name": "普陀区真如镇街道社区事务受理服务中心",
+          "lat": 31.262564,
+          "lng": 121.40715,
+          "in_circle": false
+        },
+        {
+          "category": "养老服务",
+          "name": "曹杨社区长者照护之家",
+          "lat": 31.24688,
+          "lng": 121.413803,
+          "in_circle": true
+        },
+        {
+          "category": "养老服务",
+          "name": "长寿路街道社区事务受理服务分中心",
+          "lat": 31.242278,
+          "lng": 121.430876,
+          "in_circle": false
+        },
+        {
+          "category": "养老服务",
+          "name": "云集养老院",
+          "lat": 31.256041,
+          "lng": 121.432461,
+          "in_circle": false
+        },
+        {
+          "category": "养老服务",
+          "name": "宁川养老院",
+          "lat": 31.254566,
+          "lng": 121.424496,
+          "in_circle": false
+        },
+        {
+          "category": "养老服务",
+          "name": "彩园康养服务中心",
+          "lat": 31.244308,
+          "lng": 121.421996,
+          "in_circle": true
+        },
+        {
+          "category": "养老服务",
+          "name": "上海市普陀区长风街道白玉社区卫生服务中心",
+          "lat": 31.24229,
+          "lng": 121.42613,
+          "in_circle": false
+        },
+        {
+          "category": "养老服务",
+          "name": "上海市普陀区真如镇社区卫生服务中心",
+          "lat": 31.252795,
+          "lng": 121.404634,
+          "in_circle": false
+        },
+        {
+          "category": "养老服务",
+          "name": "普陀区长风街道长风社区卫生服务中心",
+          "lat": 31.238152,
+          "lng": 121.403434,
+          "in_circle": false
+        },
+        {
+          "category": "养老服务",
+          "name": "真如镇街道真如党群服务中心",
+          "lat": 31.262034,
+          "lng": 121.407361,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "曹杨公园",
+          "lat": 31.245903,
+          "lng": 121.415344,
+          "in_circle": true
+        },
+        {
+          "category": "文体休闲",
+          "name": "武宁公园",
+          "lat": 31.252021,
+          "lng": 121.421753,
+          "in_circle": true
+        },
+        {
+          "category": "文体休闲",
+          "name": "兰溪青年公园",
+          "lat": 31.246777,
+          "lng": 121.411357,
+          "in_circle": true
+        },
+        {
+          "category": "文体休闲",
+          "name": "武宁公园-北区",
+          "lat": 31.252912,
+          "lng": 121.421178,
+          "in_circle": true
+        },
+        {
+          "category": "文体休闲",
+          "name": "枣阳公园",
+          "lat": 31.240893,
+          "lng": 121.410412,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "真如公园",
+          "lat": 31.25887,
+          "lng": 121.405887,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "桃溪公园",
+          "lat": 31.257488,
+          "lng": 121.407735,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "普陀公园",
+          "lat": 31.25105,
+          "lng": 121.434122,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "梅川梅花主题公园",
+          "lat": 31.251011,
+          "lng": 121.399348,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "大渡河路口袋公园",
+          "lat": 31.256927,
+          "lng": 121.404449,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "普陀区真如体育场-羽毛球馆",
+          "lat": 31.254003,
+          "lng": 121.406146,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "热致篮球",
+          "lat": 31.242338,
+          "lng": 121.42713,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "优复拉伸UPFit",
+          "lat": 31.256521,
+          "lng": 121.416905,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "新武派功夫馆",
+          "lat": 31.245096,
+          "lng": 121.410226,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "上海青羽体育羽毛球培训",
+          "lat": 31.257819,
+          "lng": 121.403894,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "曹杨社区公共运动场",
+          "lat": 31.245801,
+          "lng": 121.414874,
+          "in_circle": true
+        },
+        {
+          "category": "文体休闲",
+          "name": "华东师范大学-体育馆",
+          "lat": 31.233295,
+          "lng": 121.415955,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "上海市体育宫",
+          "lat": 31.258222,
+          "lng": 121.40273,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "普陀体育馆",
+          "lat": 31.242322,
+          "lng": 121.427387,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "普陀区真如体育场",
+          "lat": 31.253607,
+          "lng": 121.405955,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "麦禾羽毛球篮球馆",
+          "lat": 31.251882,
+          "lng": 121.411413,
+          "in_circle": true
+        },
+        {
+          "category": "文体休闲",
+          "name": "普陀体育馆-羽毛球馆",
+          "lat": 31.242175,
+          "lng": 121.42714,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "威宝运动中心",
+          "lat": 31.26301,
+          "lng": 121.413648,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "华东政法大学体育场",
+          "lat": 31.234913,
+          "lng": 121.423366,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "赛搏跆拳道",
+          "lat": 31.244621,
+          "lng": 121.412399,
+          "in_circle": true
+        },
+        {
+          "category": "文体休闲",
+          "name": "文贞羽毛球培训",
+          "lat": 31.242146,
+          "lng": 121.427482,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "华东师范大学中山北路校区共青场",
+          "lat": 31.234462,
+          "lng": 121.410885,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "曹杨社区图书馆",
+          "lat": 31.242286,
+          "lng": 121.41274,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "长风新村街道图书馆",
+          "lat": 31.24012,
+          "lng": 121.405775,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "上海市普陀区图书馆",
+          "lat": 31.256939,
+          "lng": 121.403414,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "祥麟书苑",
+          "lat": 31.233847,
+          "lng": 121.412625,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "中田健身工作室",
+          "lat": 31.251221,
+          "lng": 121.416613,
+          "in_circle": true
+        },
+        {
+          "category": "文体休闲",
+          "name": "PASSION健身",
+          "lat": 31.251184,
+          "lng": 121.418493,
+          "in_circle": true
+        },
+        {
+          "category": "文体休闲",
+          "name": "春天健身连锁",
+          "lat": 31.244789,
+          "lng": 121.412346,
+          "in_circle": true
+        },
+        {
+          "category": "文体休闲",
+          "name": "琪航健身工作室",
+          "lat": 31.245433,
+          "lng": 121.42026,
+          "in_circle": true
+        },
+        {
+          "category": "文体休闲",
+          "name": "乐刻运动健身",
+          "lat": 31.245937,
+          "lng": 121.411341,
+          "in_circle": true
+        },
+        {
+          "category": "文体休闲",
+          "name": "TryGym尝试健身",
+          "lat": 31.243714,
+          "lng": 121.421471,
+          "in_circle": true
+        },
+        {
+          "category": "文体休闲",
+          "name": "乐刻运动健身",
+          "lat": 31.241652,
+          "lng": 121.424271,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "NRG健身私教CLUB",
+          "lat": 31.255177,
+          "lng": 121.417218,
+          "in_circle": true
+        },
+        {
+          "category": "文体休闲",
+          "name": "普拉达游泳健身",
+          "lat": 31.25619,
+          "lng": 121.415676,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "猩球健身",
+          "lat": 31.242603,
+          "lng": 121.424122,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "DK健身工作室",
+          "lat": 31.23708,
+          "lng": 121.419856,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "乐刻运动健身",
+          "lat": 31.249775,
+          "lng": 121.4027,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "XS健身工作室",
+          "lat": 31.24673,
+          "lng": 121.42523,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "魔兽健身",
+          "lat": 31.253058,
+          "lng": 121.400874,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "乐刻运动健身",
+          "lat": 31.262849,
+          "lng": 121.413299,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "请个私教·健身工作室",
+          "lat": 31.259889,
+          "lng": 121.419305,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "九时运动中心",
+          "lat": 31.233847,
+          "lng": 121.426323,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "中田健身",
+          "lat": 31.235678,
+          "lng": 121.416985,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "中田健身工作室",
+          "lat": 31.24144,
+          "lng": 121.427406,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "帕姆猫·普拉提",
+          "lat": 31.248884,
+          "lng": 121.402451,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "弗博健身",
+          "lat": 31.240254,
+          "lng": 121.40554,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "琪航健身工作室",
+          "lat": 31.248506,
+          "lng": 121.402406,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "普陀共享健身房",
+          "lat": 31.242328,
+          "lng": 121.427131,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "凯悦24小时健身房",
+          "lat": 31.23779,
+          "lng": 121.418992,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "玛索健身工作室",
+          "lat": 31.243957,
+          "lng": 121.424665,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "跃动运动馆·跳绳·体适能",
+          "lat": 31.262931,
+          "lng": 121.413656,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "健美天地游泳健身会所",
+          "lat": 31.247799,
+          "lng": 121.434376,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "美格菲健身中心",
+          "lat": 31.262416,
+          "lng": 121.409837,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "IN健身工作坊",
+          "lat": 31.260045,
+          "lng": 121.430455,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "魔联健身UnitedMonster",
+          "lat": 31.252835,
+          "lng": 121.401036,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "中田健身工作室",
+          "lat": 31.241402,
+          "lng": 121.399054,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "飞卓健身工作室",
+          "lat": 31.262524,
+          "lng": 121.40912,
+          "in_circle": false
+        },
+        {
+          "category": "文体休闲",
+          "name": "琪航健身工作室",
+          "lat": 31.231285,
+          "lng": 121.418114,
+          "in_circle": false
+        }
+      ]
     },
     "blindspots": {
       "grid_spacing_m": 150.0,
@@ -1482,6 +2933,314 @@
       "coverage_source": "预生成快照，检索半径 1910 米",
       "coverage_pending": false,
       "blindspots_pending": false
-    }
+    },
+    "rings": [
+      {
+        "minutes": 5,
+        "coordinates": [
+          [
+            121.416775,
+            31.250405846432063
+          ],
+          [
+            121.41726057554001,
+            31.250333337247554
+          ],
+          [
+            121.41765943770511,
+            31.250056456905575
+          ],
+          [
+            121.41793365660016,
+            31.249694718404776
+          ],
+          [
+            121.41806809642641,
+            31.24929649211313
+          ],
+          [
+            121.41828398046341,
+            31.249061499713406
+          ],
+          [
+            121.41851760311435,
+            31.248839138725923
+          ],
+          [
+            121.41865674030275,
+            31.24856453950014
+          ],
+          [
+            121.41873755212329,
+            31.24827484934616
+          ],
+          [
+            121.4188114986664,
+            31.247979
+          ],
+          [
+            121.41907310492327,
+            31.247632566990205
+          ],
+          [
+            121.41916731024253,
+            31.247234586893935
+          ],
+          [
+            121.41888296788186,
+            31.24693851935742
+          ],
+          [
+            121.4184224910101,
+            31.24679713675557
+          ],
+          [
+            121.41802971732595,
+            31.24670061105128
+          ],
+          [
+            121.41760371492296,
+            31.246751853453343
+          ],
+          [
+            121.41724051221813,
+            31.24688555772973
+          ],
+          [
+            121.41695599363076,
+            31.24710144334536
+          ],
+          [
+            121.416775,
+            31.24689175820585
+          ],
+          [
+            121.41651190148731,
+            31.246703353726303
+          ],
+          [
+            121.4161497954818,
+            31.24651045627303
+          ],
+          [
+            121.41578328995523,
+            31.246510493131108
+          ],
+          [
+            121.41534903063791,
+            31.246526128157072
+          ],
+          [
+            121.41509705953186,
+            31.246775293179464
+          ],
+          [
+            121.41499619303868,
+            31.24710099126653
+          ],
+          [
+            121.41509973648988,
+            31.247457709704584
+          ],
+          [
+            121.4149739116308,
+            31.24770749087162
+          ],
+          [
+            121.41490003206962,
+            31.247979
+          ],
+          [
+            121.41495220289491,
+            31.248253781660736
+          ],
+          [
+            121.41501773501041,
+            31.248525806624755
+          ],
+          [
+            121.4151370325978,
+            31.248787491149148
+          ],
+          [
+            121.4151903320766,
+            31.24911579574687
+          ],
+          [
+            121.41529685463993,
+            31.249485032198514
+          ],
+          [
+            121.41544094330354,
+            31.24995444779604
+          ],
+          [
+            121.41576670232062,
+            31.250347391764382
+          ],
+          [
+            121.41626549264113,
+            31.250449371866015
+          ],
+          [
+            121.416775,
+            31.250405846432063
+          ]
+        ]
+      },
+      {
+        "minutes": 10,
+        "coordinates": [
+          [
+            121.416775,
+            31.2529326885703
+          ],
+          [
+            121.41775655712406,
+            31.25273812871912
+          ],
+          [
+            121.41872757674697,
+            31.252565410126135
+          ],
+          [
+            121.4194356843756,
+            31.25191889483328
+          ],
+          [
+            121.41995725949401,
+            31.251221296320434
+          ],
+          [
+            121.42045043707044,
+            31.250615654132943
+          ],
+          [
+            121.42075956146074,
+            31.249945756279708
+          ],
+          [
+            121.42119238616708,
+            31.249353554227493
+          ],
+          [
+            121.42128108933073,
+            31.24865828059918
+          ],
+          [
+            121.42163823981471,
+            31.247979
+          ],
+          [
+            121.42189997752347,
+            31.247206423704373
+          ],
+          [
+            121.4222117251155,
+            31.24628725895483
+          ],
+          [
+            121.4216988368462,
+            31.24554862287244
+          ],
+          [
+            121.42080909647845,
+            31.245085053797492
+          ],
+          [
+            121.41963020090498,
+            31.245069932588702
+          ],
+          [
+            121.41854530988971,
+            31.245357556114467
+          ],
+          [
+            121.4180352309829,
+            31.245018841762864
+          ],
+          [
+            121.4173069032567,
+            31.24540004050524
+          ],
+          [
+            121.416775,
+            31.244638988382096
+          ],
+          [
+            121.4160736310901,
+            31.24457837782533
+          ],
+          [
+            121.41506715694591,
+            31.2439674451716
+          ],
+          [
+            121.41426021648842,
+            31.244255152611345
+          ],
+          [
+            121.41348745254133,
+            31.244629429341614
+          ],
+          [
+            121.41277060288718,
+            31.24510635927862
+          ],
+          [
+            121.41232742673458,
+            31.24578370379603
+          ],
+          [
+            121.41229125579638,
+            31.246583797199754
+          ],
+          [
+            121.41206534755688,
+            31.24726903282033
+          ],
+          [
+            121.41195747344517,
+            31.247979
+          ],
+          [
+            121.41183436233966,
+            31.248723787567204
+          ],
+          [
+            121.41218226228361,
+            31.24940811821721
+          ],
+          [
+            121.41260422805875,
+            31.250037668686
+          ],
+          [
+            121.41296700954281,
+            31.25071074416667
+          ],
+          [
+            121.41346654407052,
+            31.25134987359051
+          ],
+          [
+            121.41386290827532,
+            31.252291174433527
+          ],
+          [
+            121.41473526387911,
+            31.252770138895812
+          ],
+          [
+            121.41574614991103,
+            31.252967431020505
+          ],
+          [
+            121.416775,
+            31.2529326885703
+          ]
+        ]
+      }
+    ]
   }
 }

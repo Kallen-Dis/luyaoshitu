@@ -89,6 +89,8 @@ class Isochrone:
     sampled_points: int
     failed_points: int
     mode: TravelMode = WALK
+    # 同一批采样再插值出的内圈（5/10 分钟）。不另耗配额。
+    nested: list[tuple[float, list[tuple[float, float]]]] = field(default_factory=list)
 
     @property
     def compactness(self) -> float:
@@ -134,6 +136,21 @@ class Isochrone:
                         "barrier": r.truncated_by_barrier,
                     }
                     for r in self.rays
+                ],
+                # 算法质量诊断：等时圈是插值逼近，必须让用户知道哪些方向是
+                # 截断/饱和/首点即失败，而不是把多边形当成确定结果。
+                "quality": {
+                    "directions": len(self.rays),
+                    "saturated": sum(1 for r in self.rays if r.saturated),
+                    "barrier_truncated": sum(
+                        1 for r in self.rays if r.truncated_by_barrier
+                    ),
+                    "zero_radius": sum(1 for r in self.rays if r.boundary_m <= 0),
+                },
+                # 内圈与外圈来自同一次批量算路，只是阈值不同
+                "rings": [
+                    {"minutes": minutes, "coordinates": _closed_ring(poly)}
+                    for minutes, poly in self.nested
                 ],
             },
         }
@@ -229,6 +246,11 @@ async def compute_isochrone(
         )
 
     positive = [r for r in radii if r > 0] or [0.0]
+    nested = [
+        (m, _polygon_at(center, results, m * 60.0, cfg.smooth_window))
+        for m in (5.0, 10.0)
+        if m < cfg.minutes - 0.1
+    ]
     return Isochrone(
         center=center,
         minutes=cfg.minutes,
@@ -241,4 +263,28 @@ async def compute_isochrone(
         sampled_points=len(flat),
         failed_points=failed,
         mode=cfg.mode,
+        nested=nested,
     )
+
+
+def _closed_ring(polygon: list[tuple[float, float]]) -> list[list[float]]:
+    ring = [[lng, lat] for lat, lng in polygon]
+    if ring and ring[0] != ring[-1]:
+        ring.append(ring[0])
+    return ring
+
+
+def _polygon_at(
+    center: tuple[float, float],
+    rays: list[RayResult],
+    target_s: float,
+    smooth_window: int,
+) -> list[tuple[float, float]]:
+    """用已经测好的采样点再插值一圈。采样没变，所以不产生新的算路。"""
+    raw = [_solve_boundary(ray.samples, target_s)[0] for ray in rays]
+    radii = smooth_radii(raw, smooth_window)
+    lat0, lng0 = center
+    return [
+        offset_point(lat0, lng0, ray.bearing_deg, radius)
+        for ray, radius in zip(rays, radii, strict=True)
+    ]

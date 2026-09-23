@@ -38,6 +38,10 @@ class Settings:
     max_retries: int = 3
     retry_backoff: float = 0.5
 
+    # 单次完整分析的总时长上限（秒）。矩阵串行 + 令牌桶限速下，
+    # 36 方向等时圈 + 覆盖 + 盲区通常几十秒；超时即终止，避免请求无限挂起。
+    analysis_timeout_s: float = 120.0
+
     # 批量算路单次终点数上限，实测硬上限 100（101 起返回 status=2 参数非法）
     matrix_batch_size: int = 100
 
@@ -64,4 +68,5 @@ def get_settings() -> Settings:
         max_retries=int(os.environ.get("BAIDU_MAX_RETRIES", "3")),
         retry_backoff=float(os.environ.get("BAIDU_RETRY_BACKOFF", "0.5")),
         matrix_batch_size=int(os.environ.get("BAIDU_MATRIX_BATCH_SIZE", "100")),
+        analysis_timeout_s=float(os.environ.get("BAIDU_ANALYSIS_TIMEOUT", "120")),
     )
