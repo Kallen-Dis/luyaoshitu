@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { loadBaiduMap } from '../baiduMap'
+import { dissolveCells } from '../lib/dissolve'
+import { HEAT_COLORS, buildHeatTile } from '../lib/heatRaster'
 import type { GridCell, IsochroneFeature, Prescription } from '../types'
 
 interface Props {
@@ -8,16 +10,21 @@ interface Props {
   isochrone: IsochroneFeature | null
   showHeatmap: boolean
   showBlindspots: boolean
+  /** 'all' 表示「缺任一关键设施」，否则为某个品类名。 */
+  blindCategory: string
   onPickCenter: (lat: number, lng: number) => void
   onError: (message: string) => void
   /** 关闭时点击地图不改中心、不算路，避免演示误触烧配额。 */
   pickEnabled: boolean
 }
 
-// 热力图色阶：由近及远。JS API GL 不自带热力图图层，
-// 而网格判定本就产出规则点阵，直接把每个网格画成方块即可——
-// 既不必引入 mapvgl 这类额外依赖，色块边界也正好对应判定粒度，不会因插值而虚化。
-const HEAT_COLORS = ['#1a9850', '#91cf60', '#d9ef8b', '#fee08b', '#fc8d59', '#d73027']
+/** 盲区按品类分色。同时看三类会糊成一片，故界面上一次只画一层。 */
+const BLIND_COLORS: Record<string, string> = {
+  all: '#dc2626',
+  生鲜采买: '#ea580c',
+  医药: '#dc2626',
+  基础教育: '#7c3aed',
+}
 
 const PLAN_COLORS: Record<string, string> = {
   connect: '#1f6feb',
@@ -43,13 +50,7 @@ function escapeHtml(value: string): string {
     .replaceAll('"', '&quot;')
 }
 
-function heatColor(reachS: number | null, maxS: number): string {
-  if (reachS === null) return '#9ca3af' // 测距失败，灰色示意「未知」而非「很远」
-  const t = maxS > 0 ? Math.min(1, reachS / maxS) : 0
-  return HEAT_COLORS[Math.min(HEAT_COLORS.length - 1, Math.floor(t * HEAT_COLORS.length))]
-}
-
-/** 把网格点扩成正方形色块。经度方向的度距随纬度收缩，必须按纬度换算，否则方块会走形。 */
+/** 把网格点扩成正方形色块。用于标出测距失败的网格。 */
 function cellCorners(cell: GridCell, spacingM: number) {
   const half = spacingM / 2
   const dLat = half / 111_320
@@ -62,8 +63,14 @@ function cellCorners(cell: GridCell, spacingM: number) {
   ] as const
 }
 
+function cellsMissing(cells: GridCell[], category: string): GridCell[] {
+  return category === 'all'
+    ? cells.filter((c) => c.missing.length > 0)
+    : cells.filter((c) => c.missing.includes(category))
+}
+
 /**
- * 地图视图：渲染等时圈多边形、中心点标注，并支持点击改选中心点。
+ * 地图视图：渲染等时圈、步行耗时热力图、服务盲区与规划建议，并支持点击改选中心点。
  *
  * 百度地图实例通过 ref 持有而非放进 state——它是命令式的可变对象，
  * 放进 state 会触发无意义的重渲染，还可能导致地图被反复销毁重建。
@@ -74,11 +81,13 @@ export function MapView({
   isochrone,
   showHeatmap,
   showBlindspots,
+  blindCategory,
   onPickCenter,
   onError,
   pickEnabled,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
+  const heatRef = useRef<HTMLCanvasElement>(null)
   const mapRef = useRef<any>(null)
   const overlaysRef = useRef<any[]>([])
   // 地图实例是异步建好的，而快照往往先到：只用 ref 持有实例的话，
@@ -87,7 +96,7 @@ export function MapView({
   // 点击回调里要用到最新的处理函数，但地图监听只注册一次，故用 ref 转发
   const pickRef = useRef(onPickCenter)
   pickRef.current = onPickCenter
-  // 点击盲区色块只应弹出详情。若任其冒泡到地图，就会被当成「改选中心点」
+  // 点击盲区或规划圆点只应弹出详情。若任其冒泡到地图，就会被当成「改选中心点」
   // 而触发一次完整的实时计算——白烧配额，且用户根本没打算换点。
   const suppressPickRef = useRef(false)
   const pickEnabledRef = useRef(pickEnabled)
@@ -127,7 +136,7 @@ export function MapView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ak])
 
-  // 绘制热力网格、等时圈轮廓、盲区点位与中心点
+  // 绘制热力图、盲区轮廓、等时圈与规划建议
   useEffect(() => {
     const map = mapRef.current
     const BMapGL = window.BMapGL
@@ -143,52 +152,52 @@ export function MapView({
 
     const blindspots = isochrone?.properties.blindspots
     const spacing = blindspots?.grid_spacing_m ?? 150
-    // 色阶按本次结果的最大耗时归一，而不是按时间阈值——
-    // 障碍截断会让最远网格远低于阈值，按阈值归一时整张图会偏冷、看不出层次
-    const maxReach = blindspots?.max_reach_s ?? 0
 
+    // 测距失败的网格单独标出来：热力层里它们没有值，不能让人误读成「很近」
     if (blindspots && showHeatmap) {
       for (const cell of blindspots.cells) {
+        if (cell.reach_s !== null) continue
         const corners = cellCorners(cell, spacing).map(
           ([lng, lat]) => new BMapGL.Point(lng, lat),
         )
         add(
           new BMapGL.Polygon(corners, {
             strokeWeight: 0,
-            strokeOpacity: 0,
-            fillColor: heatColor(cell.reach_s, maxReach),
-            fillOpacity: 0.55,
+            fillColor: '#9ca3af',
+            fillOpacity: 0.45,
           }),
         )
       }
     }
 
     if (blindspots && showBlindspots) {
-      for (const cell of blindspots.cells) {
-        if (cell.missing.length === 0) continue
-        const corners = cellCorners(cell, spacing).map(
-          ([lng, lat]) => new BMapGL.Point(lng, lat),
-        )
-        const patch = new BMapGL.Polygon(corners, {
-          strokeColor: '#b91c1c',
-          strokeWeight: 1.5,
-          strokeOpacity: 0.8,
-          fillColor: '#dc2626',
-          // 缺的品类越多填得越实，浏览时不必逐个点开也能看出严重程度。
-          // 上限压在 0.5：桃浦镇整片皆盲，填太实会把热力层与等时圈一起糊掉。
-          fillOpacity: 0.14 + 0.12 * Math.min(3, cell.missing.length),
+      const blindCells = cellsMissing(blindspots.cells, blindCategory)
+      const color = BLIND_COLORS[blindCategory] ?? BLIND_COLORS.all
+      // 相邻盲区格子并成连片轮廓。画的仍是被判定格子的并集，只是不再是棋盘格
+      for (const ring of dissolveCells(blindCells, spacing)) {
+        const points = ring.path.map((p) => new BMapGL.Point(p.lng, p.lat))
+        const area = new BMapGL.Polygon(points, {
+          strokeColor: color,
+          strokeWeight: ring.hole ? 2 : 3.5,
+          strokeOpacity: 1,
+          strokeStyle: ring.hole ? 'dashed' : 'solid',
+          fillColor: color,
+          // 空洞是被盲区围住的达标区域，填上就等于把好的一片说成坏的
+          fillOpacity: ring.hole ? 0 : 0.34,
         })
-        patch.addEventListener('click', () => {
+        area.addEventListener('click', (e: any) => {
           suppressPickRef.current = true
+          const hit = nearestCell(blindCells, e.latlng?.lat, e.latlng?.lng)
+          if (!hit) return
           map.openInfoWindow(
-            new BMapGL.InfoWindow(describeCell(cell, blindspots.walk_limit_m), {
-              width: 240,
-              title: '服务盲区',
+            new BMapGL.InfoWindow(describeCell(hit, blindspots.walk_limit_m), {
+              width: 250,
+              title: blindCategory === 'all' ? '服务盲区' : `服务盲区·${blindCategory}`,
             }),
-            new BMapGL.Point(cell.lng, cell.lat),
+            new BMapGL.Point(hit.lng, hit.lat),
           )
         })
-        add(patch)
+        add(area)
       }
     }
 
@@ -202,7 +211,7 @@ export function MapView({
           strokeWeight: 3,
           strokeOpacity: 1,
           fillColor: '#1f6feb',
-          // 叠了热力网格后填充会盖住色阶，此时只保留轮廓
+          // 叠了热力层后填充会盖住色阶，此时只保留轮廓
           fillOpacity: blindspots && showHeatmap ? 0 : 0.18,
         }),
       )
@@ -265,15 +274,73 @@ export function MapView({
       add(ring)
       add(label)
     })
-  }, [ready, center, isochrone, showHeatmap, showBlindspots])
+  }, [ready, center, isochrone, showHeatmap, showBlindspots, blindCategory])
+
+  // 热力层：栅格放大 + 双线性插值，裁剪在等时圈内。
+  // 它是独立画布而非地图覆盖物——覆盖物只能画矢量，铺不出连续色场。
+  useEffect(() => {
+    const map = mapRef.current
+    const canvas = heatRef.current
+    const BMapGL = window.BMapGL
+    if (!map || !canvas || !BMapGL) return
+
+    const blindspots = isochrone?.properties.blindspots
+    const tile =
+      showHeatmap && blindspots
+        ? buildHeatTile(blindspots.cells, blindspots.grid_spacing_m, blindspots.max_reach_s ?? 0)
+        : null
+    const ring = isochrone?.geometry.coordinates[0] ?? []
+
+    const paint = () => {
+      const width = canvas.clientWidth
+      const height = canvas.clientHeight
+      const dpr = window.devicePixelRatio || 1
+      if (canvas.width !== Math.round(width * dpr)) {
+        canvas.width = Math.round(width * dpr)
+        canvas.height = Math.round(height * dpr)
+      }
+      const ctx = canvas.getContext('2d')
+      if (!ctx) return
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      ctx.clearRect(0, 0, width, height)
+      if (!tile) return
+
+      ctx.save()
+      if (ring.length > 2) {
+        // 裁剪到等时圈：圈外没有测过，插值不该把颜色铺出去
+        ctx.beginPath()
+        ring.forEach(([lng, lat], i) => {
+          const p = map.pointToPixel(new BMapGL.Point(lng, lat))
+          if (i === 0) ctx.moveTo(p.x, p.y)
+          else ctx.lineTo(p.x, p.y)
+        })
+        ctx.closePath()
+        ctx.clip()
+      }
+      const nw = map.pointToPixel(new BMapGL.Point(tile.west, tile.north))
+      const se = map.pointToPixel(new BMapGL.Point(tile.east, tile.south))
+      ctx.imageSmoothingEnabled = true
+      ctx.imageSmoothingQuality = 'high'
+      ctx.drawImage(tile.image, nw.x, nw.y, se.x - nw.x, se.y - nw.y)
+      ctx.restore()
+    }
+
+    paint()
+    const events = ['moving', 'moveend', 'zooming', 'zoomend', 'resize']
+    events.forEach((e) => map.addEventListener(e, paint))
+    return () => events.forEach((e) => map.removeEventListener(e, paint))
+  }, [ready, isochrone, showHeatmap])
 
   const blindspots = isochrone?.properties.blindspots
+  const shownBlind = blindspots ? cellsMissing(blindspots.cells, blindCategory).length : 0
   const planCount = (isochrone?.properties.report?.prescriptions ?? []).filter(
     (p) => p.lat != null && p.lng != null,
   ).length
+
   return (
     <div className="map-shell">
       <div ref={containerRef} className="map-canvas" />
+      <canvas ref={heatRef} className="heat-canvas" />
       <div className={`map-mode floating ${pickEnabled ? 'live' : 'browse'}`}>
         <i />
         {pickEnabled
@@ -308,10 +375,16 @@ export function MapView({
           )}
           {showBlindspots && blindspots && (
             <div className="legend-row">
-              <span className="legend-swatch blind" />
+              <span
+                className="legend-swatch blind"
+                style={{
+                  background: `${BLIND_COLORS[blindCategory] ?? BLIND_COLORS.all}44`,
+                  borderColor: BLIND_COLORS[blindCategory] ?? BLIND_COLORS.all,
+                }}
+              />
               <span>
-                服务盲区 {blindspots.blind_count} / {blindspots.cell_count} 个网格
-                （点击色块看缺哪类）
+                {blindCategory === 'all' ? '服务盲区' : `${blindCategory}盲区`} {shownBlind} /{' '}
+                {blindspots.cell_count} 个网格连片（点击看详情）
               </span>
             </div>
           )}
@@ -325,6 +398,22 @@ export function MapView({
       )}
     </div>
   )
+}
+
+/** 轮廓是连片的，点哪儿就取最近的那个网格来解释，细节不因融合而丢失。 */
+function nearestCell(cells: GridCell[], lat?: number, lng?: number): GridCell | null {
+  if (cells.length === 0) return null
+  if (lat === undefined || lng === undefined) return cells[0]
+  let best = cells[0]
+  let bestD = Number.POSITIVE_INFINITY
+  for (const cell of cells) {
+    const d = (cell.lat - lat) ** 2 + (cell.lng - lng) ** 2
+    if (d < bestD) {
+      bestD = d
+      best = cell
+    }
+  }
+  return best
 }
 
 /** 把相距不到 250 米的处方并成一簇，返回每条处方的标签锚点与簇内层号。 */

@@ -382,6 +382,10 @@ button.primary:disabled {
   margin-bottom: 6px;
 }
 
+.mode-pills.tight {
+  margin: 8px 0 0;
+}
+
 .pill {
   padding: 5px 10px;
   font-size: 12px;
@@ -939,6 +943,17 @@ button.primary:disabled {
 
 .map-shell {
   position: relative;
+}
+
+/* 热力色场画在地图之上、浮层之下；不吃点击，否则会挡住盲区与改选中心点 */
+.heat-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  /* canvas 是替换元素，只给 inset 不会被拉伸，必须显式写宽高 */
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
 }
 
 .busy-mask {

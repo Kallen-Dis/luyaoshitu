@@ -27,6 +27,7 @@ export default function App() {
   const [withCoverage, setWithCoverage] = useState(true)
   const [pickEnabled, setPickEnabled] = useState(false)
   const [mode, setMode] = useState('walk')
+  const [blindCategory, setBlindCategory] = useState('all')
 
   // 启动时载入配置与样例列表，并默认展示第一个样例。
   // 默认走预生成快照而不是实时计算，是为了让首屏不消耗任何 API 配额。
@@ -99,6 +100,10 @@ export default function App() {
     }
   }
 
+  // 品类词表由后端下发，图层筛选与判定口径因此不会各写一份而对不上
+  const keyCategories = (config?.categories ?? [])
+    .filter((c) => c.key_facility)
+    .map((c) => c.name)
   const props = isochrone?.properties
   const report = props?.report
   const coverage = props?.coverage
@@ -181,8 +186,29 @@ export default function App() {
                 checked={showBlindspots}
                 onChange={(e) => setShowBlindspots(e.target.checked)}
               />
-              服务盲区点位
+              服务盲区连片范围
             </label>
+            {showBlindspots && keyCategories.length > 0 && (
+              <>
+                <div className="mode-pills tight">
+                  {[{ name: 'all', label: '缺任一类' }].
+                    concat(keyCategories.map((n) => ({ name: n, label: n })))
+                    .map((c) => (
+                      <button
+                        key={c.name}
+                        type="button"
+                        className={blindCategory === c.name ? 'pill active' : 'pill'}
+                        onClick={() => setBlindCategory(c.name)}
+                      >
+                        {c.label}
+                      </button>
+                    ))}
+                </div>
+                <p className="hint">
+                  相邻盲区网格已并成连片轮廓，面积即被判定网格的并集，不做插值平滑。
+                </p>
+              </>
+            )}
           </section>
 
           <details className="card live-panel">
@@ -301,6 +327,7 @@ export default function App() {
               isochrone={isochrone}
               showHeatmap={showHeatmap}
               showBlindspots={showBlindspots}
+              blindCategory={blindCategory}
               pickEnabled={pickEnabled}
               onPickCenter={(lat, lng) => run(lat, lng)}
               onError={setError}
