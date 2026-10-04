@@ -1,24 +1,70 @@
+import math
+
 from app.isochrone.algorithm import RayResult, RaySample, _polygon_at, _solve_boundary
 from app.isochrone.geometry import offset_point, polygon_area_m2
 from app.report.score import (
+    GRID_COMPACTNESS,
+    GRID_DETOUR,
     build_report,
+    compact_score,
     cover_score,
     detour_score,
     equity_score,
     grade,
+    grid_area_km2,
+    ideal_area_km2,
     reach_score,
 )
 
 
-def test_reach_score_matches_taopu_ballpark():
-    # 桃浦镇实测 1.304 km² / 3.66 km² ≈ 36
-    assert 34 <= reach_score(1.304, 15) <= 38
+def test_reach_score_is_relative_to_grid_diamond():
+    # 15 分钟 × 1.2 m/s：半径 1080 米，菱形 2r² ≈ 2.333 km²，直线圆 πr² ≈ 3.664 km²
+    assert abs(grid_area_km2(15) - 2.333) < 0.001
+    assert abs(grid_area_km2(15) / ideal_area_km2(15) - 2 / math.pi) < 1e-9
+    assert reach_score(grid_area_km2(15), 15) == 100
+    # 曹杨实测 1.413 km²：占菱形约 61%（占直线圆只有 39%）
+    assert 60 <= reach_score(1.413, 15) <= 61
+    # 比方格路网还大（斜路、放射路）也封顶
+    assert reach_score(3.0, 15) == 100
+
+
+def test_compact_score_full_marks_at_grid_ratio():
+    assert compact_score(GRID_COMPACTNESS) == 100
+    assert compact_score(1.0) == 100
+    assert compact_score(0.0) == 0
+    assert 86 <= compact_score(0.615) <= 88
 
 
 def test_detour_score_bounds():
-    assert detour_score(1.0) == 100
+    assert detour_score(GRID_DETOUR) == 100
+    assert detour_score(1.0) == 100  # 比方格路网还直，封顶
     assert detour_score(2.25) == 0
+    assert detour_score(3.0) == 0
     assert detour_score(None) is None
+
+
+def test_ideal_grid_community_can_reach_top_grade():
+    """方格路网 + 设施全部走得到 = 满分。校准前这样的社区只有 80 分，「优」谁都拿不到。"""
+    report = build_report(
+        {
+            "minutes": 15,
+            "area_km2": grid_area_km2(15),
+            "compactness": GRID_COMPACTNESS,
+            "mean_detour": GRID_DETOUR,
+        },
+        {"categories": {"生鲜采买": 3, "医药": 2, "基础教育": 1}},
+        {"blind_ratio": {"生鲜采买": 0.0, "医药": 0.0, "基础教育": 0.0}, "blind_count": 0},
+    )
+    assert report["total"] == 100
+    assert report["grade"] == "优"
+    # 直线圆的对比照旧单列：方格路网也只有直线圆的 2/π
+    assert abs(report["area_ratio"] - 2 / math.pi) < 0.001
+    assert report["grid_area_km2"] == round(grid_area_km2(15), 3)
+
+
+def test_crossing_waits_still_cost_points():
+    """满分假设一路畅通；过街等待缩小的面积照样扣分。曹杨不计等待 1.75 km²、计入后 1.41 km²。"""
+    assert reach_score(1.41, 15) < reach_score(1.75, 15)
 
 
 def test_cover_score_marks_zero_as_blind():

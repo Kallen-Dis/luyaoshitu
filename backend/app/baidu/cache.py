@@ -1,7 +1,8 @@
 """按坐标量化的磁盘缓存。
 
-地点检索的日配额是全项目最紧的约束（见 reports/quota-report.md 第四节），
-一次耗尽就得等次日 0 点。因此缓存不是性能优化，而是功能可用性的前提：
+日配额是全项目最紧的约束：批量算路按点对计、每天约 2500 个点对，地点检索曾只有约 150 次
+（见 docs/api-optimization.md 第 4.1 节），一次耗尽就得等次日 0 点。
+因此缓存不是性能优化，而是功能可用性的前提：
 它让重复演示零消耗，也让配额耗尽后的重跑能断点续上。
 
 量化策略：坐标按 cache_grid_m（默认 50 米）对齐到网格。步行可达性在 50 米
@@ -12,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -41,16 +43,37 @@ class DiskCache:
         return self._path(
             namespace,
             [
-                self._quantize(o_lat), self._quantize(o_lng),
-                self._quantize(d_lat), self._quantize(d_lng),
+                self._quantize(o_lat),
+                self._quantize(o_lng),
+                self._quantize(d_lat),
+                self._quantize(d_lng),
                 *extra,
             ],
         )
 
     @staticmethod
-    def read(path: Path) -> Any | None:
+    def age_s(path: Path) -> float | None:
+        """条目写入至今的秒数；不存在返回 None。"""
+        try:
+            return max(0.0, time.time() - path.stat().st_mtime)
+        except OSError:
+            return None
+
+    @staticmethod
+    def read(path: Path, max_age_s: float | None = None) -> Any | None:
+        """读缓存。max_age_s 给定时，超过这个年龄的条目视为过期、回源重取。
+
+        路网会变：新开的过街通道、施工封路，只有重新查询才会体现。
+        没有过期时间的缓存会把一次查询的结论永久冻结，驾车「实时路况」尤其如此。
+        """
         if not path.exists():
             return None
+        if max_age_s is not None:
+            try:
+                if time.time() - path.stat().st_mtime > max_age_s:
+                    return None
+            except OSError:
+                return None
         try:
             return json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):

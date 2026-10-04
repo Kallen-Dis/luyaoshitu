@@ -2,10 +2,17 @@
 .env
 .env.local
 百度地图API.md
+ai_15_nIsJ99EN3y.pdf
 
 # 运行时缓存（可再生，不入库）
 .cache/
 *.log
+
+# 第三方 AI 助手技能（百度地图 Agent Plan 的 baidu-ai-map，由 clawhub 安装，开发期参考用，不入库）
+.agent-plan/
+
+# 用户提交的共享标注与照片（用户数据，不入库；部署时单独备份）
+data/user/
 
 # 注意：reports/ 与 data/samples/ 刻意纳入版本管理——
 # 前者是实测分析报告（技术设计文档的组成部分），

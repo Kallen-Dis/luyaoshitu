@@ -135,6 +135,44 @@ body {
   min-height: 0;
 }
 
+/* 标注模式：侧栏收成窄条，地图让出来；点窄条可以临时展开 */
+.layout.rail {
+  grid-template-columns: 44px 1fr;
+}
+
+.layout.rail .sidebar {
+  display: none;
+}
+
+.sidebar-rail {
+  order: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+}
+
+.sidebar-rail button {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-color: var(--text);
+  border-radius: 8px;
+}
+
+.sidebar-rail span {
+  font-family: var(--font-serif);
+  font-size: 12px;
+  letter-spacing: 0.3em;
+  color: var(--muted);
+  writing-mode: vertical-rl;
+}
+
 .sidebar {
   order: 1;
   display: flex;
@@ -200,6 +238,20 @@ details.card {
   margin: 0;
   font-size: 13px;
   font-weight: 700;
+}
+
+/* 地名下的一行出处：快照 / 实时 / 离线模拟 · 生成时间 · 出行方式 */
+.verdict-source {
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 离线模拟不代表真实路网，必须一眼看得出来；不只靠颜色，文字里也写明了 */
+.verdict-source.simulated {
+  color: var(--danger);
+  font-weight: 600;
 }
 
 .verdict-score {
@@ -338,10 +390,12 @@ details.card {
   line-height: 1.65;
 }
 
+/* 序号用阿拉伯数字 + 等宽字体，和卡片编号 01、02 一个口径。
+   原来是宋体的「一二三四」：宋体横细竖粗，一二三只有横画，看上去比四浅得多 */
 .verdict > ol > li::before {
   counter-increment: verdict;
-  content: counter(verdict, cjk-ideographic);
-  font-family: var(--font-serif);
+  content: counter(verdict);
+  font-family: var(--font-figure);
   font-weight: 700;
   color: var(--accent);
 }
@@ -1461,10 +1515,6 @@ button.primary:disabled {
   gap: 6px;
 }
 
-.map-mode {
-  top: 68px;
-}
-
 .map-tools {
   position: absolute;
   top: 14px;
@@ -1512,9 +1562,10 @@ button.primary:disabled {
   }
 }
 
+/* 放在搜索框下面：写成 top: 14px 时整条提示被搜索框盖住，用户看不到「点地图会算路」 */
 .map-mode {
   position: absolute;
-  top: 14px;
+  top: 66px;
   left: 14px;
   z-index: 10;
   display: flex;
@@ -1653,14 +1704,106 @@ button.primary:disabled {
   border-radius: 4px;
 }
 
+/* 测距失败：浅蓝，和「灰色区域」区分开 */
 .legend-swatch.unknown {
-  background: #9ca3af;
+  background: #93c5fd;
+  border: 1px solid #60a5fa;
+}
+
+/* 灰色区域（设施匮乏）：与地图上的灰色方格一致 */
+.legend-swatch.gray-region {
+  background: rgb(107 114 128 / 42%);
   border: 1px solid #6b7280;
+}
+
+.legend-swatch.region-outline {
+  background: rgb(107 114 128 / 20%);
+  border: 2px solid #374151;
 }
 
 .legend-swatch.blind {
   background: rgb(220 38 38 / 40%);
   border: 1px solid #b91c1c;
+}
+
+/* 降级说明：没有中断、但有环节没测全时展示 */
+.warn-card {
+  border-left: 3px solid #b45309;
+  background: #fffbeb;
+}
+
+.warn-list {
+  margin: 6px 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.warn-list li + li {
+  margin-top: 4px;
+}
+
+/* 不计过街等待的外圈：与地图上的虚线一致 */
+.legend-swatch.ring-raw {
+  background: transparent;
+  border: 1.5px dashed #1f7a42;
+  border-radius: 50%;
+}
+
+/* 施工围挡：与地图上的橙褐色虚线圆一致 */
+.legend-swatch.closure {
+  background: rgb(234 88 12 / 20%);
+  border: 1.5px dashed #9a3412;
+  border-radius: 50%;
+}
+
+/* 标注围挡的浮动面板 */
+.closure-panel {
+  position: absolute;
+  top: 120px;
+  left: 16px;
+  z-index: 20;
+  width: 260px;
+  padding: 12px 14px;
+  background: var(--panel, #fff);
+  border: 1px solid rgb(0 0 0 / 10%);
+  border-radius: 10px;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 12%);
+  font-size: 13px;
+}
+
+.closure-panel header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.closure-panel ul {
+  margin: 8px 0;
+  padding: 0;
+  list-style: none;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.closure-panel li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 0;
+  border-bottom: 1px dashed rgb(0 0 0 / 8%);
+}
+
+.closure-panel footer {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.closure-panel select {
+  margin-left: 6px;
 }
 
 .legend-swatch.ring-outer {
@@ -1931,6 +2074,8 @@ button.primary:disabled {
 /* ---------- 图签栏（工程图纸式签名） ---------- */
 
 .signature {
+  /* 当作页脚放在侧栏最末：排在折叠面板（order: 8）之后 */
+  order: 9;
   counter-increment: none;
   /* overflow:hidden 会让 flex item 的 min-height:auto 失效，
      sidebar 列的弹性收缩会把它压到接近 0，必须显式禁止收缩 */
@@ -2154,4 +2299,425 @@ button.primary:disabled {
 .cmp-close {
   display: block;
   margin-top: 10px;
+}
+
+/* ---------- 体检评分雷达 ---------- */
+
+.score-radar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 10px 16px;
+}
+
+.score-radar svg {
+  flex: none;
+  max-width: 100%;
+  height: auto;
+}
+
+.score-dims {
+  flex: 1 1 180px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.score-dims li {
+  display: grid;
+  grid-template-columns: 96px 1fr 34px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.score-dims li span:first-child {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.3;
+}
+
+.score-dims em {
+  font-style: normal;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.score-dims b {
+  font-family: var(--font-figure);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.score-bar {
+  position: relative;
+  height: 8px;
+  overflow: hidden;
+  background: var(--panel-soft);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+}
+
+.score-bar i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--accent);
+  border-radius: 999px;
+}
+
+/* ---------- 灰色区域列表 ---------- */
+
+.region-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.region-list > li {
+  padding: 9px 11px;
+  background: #f5f6f7;
+  border: 1px solid #d1d5db;
+  border-left: 3px solid #374151;
+  border-radius: 8px;
+}
+
+.region-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 10px;
+  font-size: 13px;
+}
+
+.region-head span {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.region-causes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.region-causes li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding-left: 8px;
+  font-size: 12px;
+  border-left: 2px solid transparent;
+}
+
+.region-causes li p {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.region-causes li.cause-barrier {
+  border-left-color: #2563eb;
+}
+
+.region-causes li.cause-supply {
+  border-left-color: #c2410c;
+}
+
+.region-causes li.cause-unknown {
+  border-left-color: #9ca3af;
+  color: var(--muted);
+}
+
+.region-cat {
+  min-width: 56px;
+  font-weight: 600;
+}
+
+.region-split {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.region-split em {
+  padding: 1px 6px;
+  font-style: normal;
+  font-size: 11px;
+  border-radius: 999px;
+}
+
+/* 供给缺口 = 该补设（橙），路网阻隔 = 该打通（蓝） */
+.region-split em.supply {
+  color: #9a3412;
+  background: #ffedd5;
+}
+
+.region-split em.barrier {
+  color: #1e40af;
+  background: #dbeafe;
+}
+
+/* ---------- 导出按钮（非样例结果用 button） ---------- */
+
+button.export-btn {
+  font: inherit;
+  font-size: 12px;
+}
+
+.export-btn:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+.error-text {
+  color: var(--danger);
+}
+
+/* ---------- 诊疗：打通目标、核验选址 ---------- */
+
+.plan-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.sim-btn.primary {
+  color: #fff;
+  background: var(--good);
+  border-color: var(--good);
+}
+
+.sim-btn.primary:hover {
+  background: var(--accent-dark);
+}
+
+.sim-btn:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+.plan-target {
+  margin: 4px 0 0;
+  font-size: 11.5px;
+  color: #1e40af;
+}
+
+.site-plan {
+  margin-top: 12px;
+  padding: 11px 12px;
+  background: #fffaf0;
+  border: 1px solid #f5d9a8;
+  border-radius: 9px;
+}
+
+.site-plan .sim-tag {
+  color: #b45309;
+}
+
+.site-candidates {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.site-candidates li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 6px;
+  font-size: 12px;
+  border-radius: 6px;
+}
+
+.site-candidates li.best {
+  font-weight: 600;
+  background: #fdecc8;
+}
+
+/* ---------- 综合结论 ---------- */
+
+/* ---------- AI 二次核对（Agent Plan） ---------- */
+
+.crosscheck {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+}
+
+.crosscheck-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.crosscheck-head .export-btn {
+  flex: none;
+}
+
+.crosscheck-rows {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.crosscheck-rows li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  padding: 4px 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.crosscheck-rows li b {
+  flex: none;
+  min-width: 5.5em;
+}
+
+.crosscheck-error {
+  color: var(--warn);
+}
+
+.crosscheck-suspects {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.crosscheck-suspects li {
+  margin-top: 8px;
+  padding: 9px 11px;
+  background: #fffaf0;
+  border: 1px solid #f5d9a8;
+  border-left: 3px solid var(--warn);
+  border-radius: 8px;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.crosscheck-suspects li > div:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.crosscheck-suspects li span {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.crosscheck-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.crosscheck-ok {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--good);
+  background: #f2faf4;
+  border: 1px solid #bfe5cb;
+  border-radius: 8px;
+}
+
+/* 实时分析逐段推送时，新的一段写好前先淡显上一段 */
+.narrative-text.updating {
+  opacity: 0.55;
+  transition: opacity 0.2s;
+}
+
+.narrative-text p {
+  margin: 0 0 8px;
+  font-size: 13px;
+  line-height: 1.75;
+}
+
+.narrative-text b {
+  font-family: var(--font-serif);
+}
+
+/* ---------- 围挡的自动线索 ---------- */
+
+.closure-panel {
+  max-height: calc(100% - 140px);
+  overflow-y: auto;
+}
+
+.closure-auto {
+  margin: 8px 0;
+  padding-top: 8px;
+  border-top: 1px dashed rgb(0 0 0 / 12%);
+}
+
+.closure-auto-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.closure-auto-actions button {
+  font-size: 12px;
+}
+
+.closure-panel ul.candidate-list {
+  max-height: 220px;
+}
+
+.candidate-list li {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.candidate-list li div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.candidate-list li span {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.candidate-list li p {
+  margin: 2px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.candidate-list li footer {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.legend-swatch.suspect {
+  background: rgb(124 58 237 / 12%);
+  border: 2px dashed #7c3aed;
+  border-radius: 50%;
 }

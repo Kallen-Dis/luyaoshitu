@@ -24,6 +24,7 @@ from typing import Any
 from ..baidu.client import BaiduMapClient
 from ..isochrone.geometry import haversine_m, point_in_polygon
 from .catalog import CATEGORIES, Category
+from .entries import as_tuples, facility_entries, lookup_gates
 
 # 同名设施视为同一家的坐标量化粒度（米）。与磁盘缓存的 50 米保持一致。
 DEDUP_GRID_M = 50.0
@@ -44,6 +45,15 @@ class Poi:
     lng: float
     category: str
     address: str | None = None
+    # baidu：地点检索；user：用户补录（见 markings.apply），marking_id 指回那条标注
+    source: str = "baidu"
+    marking_id: int | None = None
+    # 入口（纬度, 经度, 名称）：有面积的设施按入口测距，见 poi/entries.py；空表示按坐标点测
+    entries: tuple[tuple[float, float, str], ...] = ()
+    # 百度的分类标签（scope=2 才有），如「教育培训;小学」
+    tag: str | None = None
+    # 检索返回的原始名称（含「(岚西校区)」这类后缀），按校名查校门时用
+    raw_name: str | None = None
 
 
 @dataclass
@@ -77,6 +87,8 @@ class CategoryResult:
     pois: list[Poi]
     stats: CleanStats
     searched_keywords: int = 0
+    # 按校名查校门的次数（地点检索，缓存 30 天）
+    gate_lookups: int = 0
 
 
 @dataclass
@@ -114,6 +126,17 @@ class CoverageResult:
                 "lat": round(p.lat, 6),
                 "lng": round(p.lng, 6),
                 "in_circle": point_in_polygon(p.lat, p.lng, polygon) if polygon else True,
+                **({"source": p.source, "marking_id": p.marking_id} if p.source != "baidu" else {}),
+                **(
+                    {
+                        "entries": [
+                            {"lat": round(lat, 6), "lng": round(lng, 6), "name": name}
+                            for lat, lng, name in p.entries
+                        ]
+                    }
+                    if p.entries
+                    else {}
+                ),
             }
             for r in self.results
             for p in r.pois
@@ -123,6 +146,7 @@ class CoverageResult:
             "nearby_categories": self.categories,
             "failed_categories": self.failed,
             "searches": self.searches,
+            "gate_lookups": sum(r.gate_lookups for r in self.results),
             "radius_m": self.radius_m,
             "clean_stats": {r.category: r.stats.as_dict() for r in self.results},
             # 只随本次响应给地图打点，不写入对外分发的快照文件。
@@ -191,6 +215,10 @@ def clean(
         if any(word in raw_name for word in category.exclude):
             stats.excluded += 1
             continue
+        tag = str((item.get("detail_info") or {}).get("tag") or "") or None
+        if tag and category.exclude_tags and set(tag.split(";")) & set(category.exclude_tags):
+            stats.excluded += 1
+            continue
 
         if polygon is not None:
             if not point_in_polygon(lat, lng, polygon):
@@ -212,15 +240,16 @@ def clean(
                 lng=lng,
                 category=category.name,
                 address=str(item.get("address") or "") or None,
+                entries=as_tuples(facility_entries(item)) if category.entrances else (),
+                tag=tag,
+                raw_name=raw_name,
             )
         )
 
     return out, stats
 
 
-def counts_within(
-    coverage: CoverageResult, polygon: list[tuple[float, float]]
-) -> dict[str, int]:
+def counts_within(coverage: CoverageResult, polygon: list[tuple[float, float]]) -> dict[str, int]:
     """统计落在等时圈内的设施数。
 
     采集半径必须大于等时圈本身：圈边缘的网格走 900 米就能到圈外的药店，
@@ -241,9 +270,14 @@ async def collect_category(
     polygon: list[tuple[float, float]] | None = None,
 ) -> CategoryResult | None:
     """采集单个品类。任一关键词查询失败即返回 None（计数未知，不是零）。"""
+    # 关键品类要罩住圈内网格（最远约 1.5 公里）再加 1 公里判定阈值，检索半径约 2.5 公里；
+    # 每词 3 页（60 条）在曹杨这样的密集街区会被截断，漏掉的设施会凭空造出盲区
+    max_pages = 6 if category.key_facility else 3
+    # 按入口测距的品类要 scope=2：每条结果多带导航点与分类标签，请求次数不变
+    extra: dict[str, Any] = {"scope": 2} if category.entrances else {}
     pages = await asyncio.gather(
         *(
-            client.search_poi_all(kw, center[0], center[1], radius_m)
+            client.search_poi_all(kw, center[0], center[1], radius_m, max_pages=max_pages, **extra)
             for kw in category.keywords
         )
     )
@@ -254,11 +288,15 @@ async def collect_category(
     for page in pages:
         merged.extend(page or [])
     pois, stats = clean(merged, category, center, radius_m, polygon)
+    lookups = 0
+    if category.entrances and pois:
+        pois, lookups = await lookup_gates(client, pois, center)
     return CategoryResult(
         category=category.name,
         pois=pois,
         stats=stats,
         searched_keywords=len(category.keywords),
+        gate_lookups=lookups,
     )
 
 

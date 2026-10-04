@@ -92,7 +92,7 @@ METERS_PER_DEG_LAT = 111_320.0
 
 # 401/402 是瞬时并发噪声，退避后可恢复。
 # 302 则是按接口独立计算的「当日配额耗尽」，耗尽后持续返回，重试只会加速消耗，
-# 必须立即终止（详见 reports/quota-report.md 第四节）。
+# 必须立即终止（详见 docs/api-optimization.md 第 4.1 节）。
 RETRYABLE = {401, 402, 1}
 QUOTA_EXHAUSTED = {301, 302}
 MAX_RETRIES = 3
@@ -185,8 +185,13 @@ def cache_key(keyword: str, lat: float, lng: float) -> Path:
 
 
 async def count_poi(
-    client: httpx.AsyncClient, limiter: RateLimiter, ak: str, budget: Budget,
-    keyword: str, lat: float, lng: float,
+    client: httpx.AsyncClient,
+    limiter: RateLimiter,
+    ak: str,
+    budget: Budget,
+    keyword: str,
+    lat: float,
+    lng: float,
 ) -> int | None:
     """返回关键词在 (lat,lng) 周边 RADIUS_M 内的 POI 数量；查询失败返回 None。
 
@@ -217,8 +222,10 @@ async def count_poi(
                 total = int(body.get("total", len(body.get("results", []))))
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(
-                    json.dumps({"keyword": keyword, "lat": lat, "lng": lng, "total": total},
-                               ensure_ascii=False),
+                    json.dumps(
+                        {"keyword": keyword, "lat": lat, "lng": lng, "total": total},
+                        ensure_ascii=False,
+                    ),
                     encoding="utf-8",
                 )
                 return total
@@ -303,8 +310,11 @@ async def main() -> None:
     limits = httpx.Limits(max_connections=16, max_keepalive_connections=16, keepalive_expiry=120.0)
 
     est = len(CANDIDATES) * CALLS_PER_POINT + args.finalists * 4 * CALLS_PER_POINT
-    print(f"预算估算：阶段一 {len(CANDIDATES) * CALLS_PER_POINT} 次 + "
-          f"阶段二 {args.finalists * 4 * CALLS_PER_POINT} 次 = 约 {est} 次地点检索\n", flush=True)
+    print(
+        f"预算估算：阶段一 {len(CANDIDATES) * CALLS_PER_POINT} 次 + "
+        f"阶段二 {args.finalists * 4 * CALLS_PER_POINT} 次 = 约 {est} 次地点检索\n",
+        flush=True,
+    )
 
     aborted: str | None = None
     async with httpx.AsyncClient(timeout=30.0, limits=limits) as client:
@@ -415,9 +425,7 @@ async def main() -> None:
         "| --- | --- | --- | --- | --- | --- |",
     ]
     for i, (score, cand, covered, max_missing, missing) in enumerate(detailed, 1):
-        lines.append(
-            f"| {i} | {cand.name} | {score} | {covered} | {max_missing} | {missing} |"
-        )
+        lines.append(f"| {i} | {cand.name} | {score} | {covered} | {max_missing} | {missing} |")
 
     lines += [
         "",

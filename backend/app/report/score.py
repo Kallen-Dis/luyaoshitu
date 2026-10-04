@@ -2,22 +2,35 @@
 
 评分分三层，越往后越依赖地点检索配额，故都能独立缺失：
 
-1. **路网层** —— 只看等时圈本身：真实面积相对直线圆的比例、方向均衡度、绕行系数。
-   只消耗批量算路，实时计算立刻出分。
+1. **路网层** —— 只看等时圈本身：可达面积、方向均衡度、绕行系数。
+   只消耗批量算路，实时计算立刻出分。三项都以**理想方格路网**为满分（见下）。
 2. **覆盖层** —— 各品类设施在圈内的数量，计数为 0 即该品类盲区。
 3. **均衡层** —— 网格级判定的结果：圈内有设施，但有多少比例的居民点步行 1 公里
    内仍到不了。命题点名的菜市场、药店、小学按此逐点判定。
 
 第 2、3 层缺失时总分只按路网层的权重归一，而不是把缺失当零分——
 "没测"和"没有"是两件事，混同会让一次配额不足伪装成社区配套差。
+
+**路网层的满分基准是理想方格路网，不是直线。** 直线（以中心画圆、径直走过去）是任何真实路网
+都达不到的上界：拿它当满分时，一个路网完全规整、六类设施全部走得到的社区也只有 80 分，
+「优」形同虚设。
+方格路网（曼哈顿距离）是规划里常用的参照，同样走 r 米：
+
+- 可达范围是对角线 2r 的菱形，面积 2r²，是直线圆 πr² 的 2/π；
+- 最短方向半径（对角方向）÷ 最长方向半径（沿街方向）= 1/√2；
+- 各方向的绕行系数 |cos θ| + |sin θ|，平均为 4/π ≈ 1.27。
+
+这三个值各记 100 分，比方格路网还好（有斜路、放射路）的也封顶 100。红绿灯与过街等待照样扣分：
+满分假设的是一路畅通，等待是真实的损失。直线圆的对比不丢，仍作为「直线法高估几倍」单列在报告里。
 """
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from .prescribe import prescribe
-from .wide_grid import wide_grid
+from .regions import gray_regions
 
 # 常人步行速度。直线距离除以它，是步行时间的下界。
 WALK_SPEED_M_PER_S = 1.2
@@ -40,30 +53,50 @@ WEIGHT_COVER = 0.20
 WEIGHT_EQUITY = 0.15
 
 
+# 理想方格路网的三个参照值（推导见模块说明）
+GRID_COMPACTNESS = 1.0 / math.sqrt(2.0)
+GRID_DETOUR = 4.0 / math.pi
+# 绕行系数到这里记 0 分：平均要多走 1.25 倍，相当于每个方向都在绕大圈
+DETOUR_ZERO = 2.25
+
+
+def _radius_m(minutes: float, speed_m_per_s: float) -> float:
+    return minutes * 60.0 * speed_m_per_s
+
+
 def ideal_area_km2(minutes: float, speed_m_per_s: float = WALK_SPEED_M_PER_S) -> float:
-    radius = minutes * 60.0 * speed_m_per_s
-    return (3.141592653589793 * radius * radius) / 1e6
+    """直线画圆的面积：传统缓冲区法的口径，只用来说明直线法高估了几倍，不作评分基准。"""
+    radius = _radius_m(minutes, speed_m_per_s)
+    return (math.pi * radius * radius) / 1e6
+
+
+def grid_area_km2(minutes: float, speed_m_per_s: float = WALK_SPEED_M_PER_S) -> float:
+    """理想方格路网上同样时间走得到的菱形面积 2r²：路网可达一项的满分基准。"""
+    radius = _radius_m(minutes, speed_m_per_s)
+    return (2.0 * radius * radius) / 1e6
 
 
 def reach_score(
     area_km2: float, minutes: float, speed_m_per_s: float = WALK_SPEED_M_PER_S
 ) -> float:
-    """真实面积占直线圆的百分比，封顶 100。直线圆半径随出行方式的速度变化。"""
-    ideal = ideal_area_km2(minutes, speed_m_per_s)
-    if ideal <= 0:
+    """可达面积占理想方格路网菱形的百分比，封顶 100。半径随出行方式的速度变化。"""
+    grid = grid_area_km2(minutes, speed_m_per_s)
+    if grid <= 0:
         return 0.0
-    return round(min(100.0, 100.0 * area_km2 / ideal), 1)
+    return round(min(100.0, 100.0 * area_km2 / grid), 1)
 
 
 def compact_score(compactness: float) -> float:
-    return round(max(0.0, min(100.0, compactness * 100.0)), 1)
+    """最短 ÷ 最长方向半径，方格路网的 1/√2 记满分。"""
+    return round(max(0.0, min(100.0, 100.0 * compactness / GRID_COMPACTNESS)), 1)
 
 
 def detour_score(mean_detour: float | None) -> float | None:
-    """绕行系数 1.0（完全沿直线）得 100；2.25 得 0。"""
+    """平均绕行系数不超过方格路网的 4/π 得 100，到 2.25 得 0，中间线性。"""
     if mean_detour is None:
         return None
-    return round(max(0.0, min(100.0, 100.0 - (mean_detour - 1.0) * 80.0)), 1)
+    span = DETOUR_ZERO - GRID_DETOUR
+    return round(max(0.0, min(100.0, 100.0 * (DETOUR_ZERO - mean_detour) / span)), 1)
 
 
 def cover_score(categories: dict[str, int] | None) -> tuple[float | None, list[str]]:
@@ -120,13 +153,35 @@ def grade(score: float) -> str:
     return "弱"
 
 
+def grid_basis(blindspots: dict[str, Any] | None) -> str | None:
+    """用一句话说清网格判定的口径，报告、图例与导出共用。"""
+    if not blindspots:
+        return None
+    spacing = float(blindspots.get("grid_spacing_m") or 0)
+    limit_km = float(blindspots.get("walk_limit_m") or 1000) / 1000
+    if blindspots.get("layout") == "disc":
+        extent_km = float(blindspots.get("extent_m") or 1500) / 1000
+        return (
+            f"真实路网：中心 {extent_km:.1f} 公里内 {spacing:.0f} 米方格，"
+            f"逐格实测步行 {limit_km:.0f} 公里内能否到达"
+        )
+    scoped = "（较早的结果，只取其中落在圈内的格子）" if blindspots.get("scoped_from") else ""
+    return (
+        f"真实路网：15 分钟步行圈内 {spacing:.0f} 米方格，"
+        f"逐格实测步行 {limit_km:.0f} 公里内能否到达{scoped}"
+    )
+
+
 def build_report(
     properties: dict[str, Any],
     coverage: dict[str, Any] | None = None,
     blindspots: dict[str, Any] | None = None,
-    polygon: list[tuple[float, float]] | None = None,
 ) -> dict[str, Any]:
-    """由等时圈属性、可选的覆盖统计与网格盲区判定生成体检报告。"""
+    """由等时圈属性、可选的覆盖统计与网格盲区判定生成体检报告。
+
+    网格盲区只读真实路网的判定结果（blindspot.py）。没有做网格判定时均衡层记为待测，
+    不拿直线距离顶替——直线法恰恰会把「直线够近、走路绕远」的居民点漏判成有覆盖。
+    """
     minutes = float(properties.get("minutes") or 15)
     area = float(properties.get("area_km2") or 0)
     compactness = float(properties.get("compactness") or 0)
@@ -141,15 +196,10 @@ def build_report(
         categories = coverage.get("categories")
         failed_categories = list(coverage.get("failed_categories") or [])
 
-    # 有设施坐标时，分数和处方改用地图上那套 200 米方格。
-    # 旧的圈内步行格仍留在 properties.blindspots 里，供耗时热力使用，不再拿来打分。
-    places = (coverage or {}).get("places") or []
-    center = properties.get("center")
-    grid = blindspots
-    if places and center and polygon and len(polygon) >= 3:
-        grid = wide_grid(center, places, polygon)
-
+    grid = blindspots or None
+    cells = (grid or {}).get("cells") or []
     blind_ratio = grid.get("blind_ratio") if grid else None
+    in_circle = [c for c in cells if c.get("in_circle", True)]
 
     r = reach_score(area, minutes, speed)
     c = compact_score(compactness)
@@ -172,6 +222,8 @@ def build_report(
         },
         "blinds": blinds,
         "ideal_area_km2": round(ideal, 3),
+        # 路网可达一项的满分基准（理想方格路网的菱形），报告里用来说明评分口径
+        "grid_area_km2": round(grid_area_km2(minutes, speed), 3),
         "area_ratio": round(area / ideal, 3) if ideal else 0,
         "straight_inflation": inflation,
         "categories": categories,
@@ -180,11 +232,14 @@ def build_report(
         "blind_ratio": blind_ratio,
         "blind_cell_count": grid.get("blind_count") if grid else None,
         "cell_count": grid.get("cell_count") if grid else None,
-        "grid_basis": grid.get("basis") if grid else None,
+        # 15 分钟圈内的格子单独计数：圈内也缺设施，比圈外缺更说明问题
+        "blind_in_circle": sum(1 for c in in_circle if c.get("missing")) if cells else None,
+        "cells_in_circle": len(in_circle) if cells else None,
+        "grid_basis": grid_basis(grid),
+        # 自动标注的灰色区域（相邻盲区格合并成片）与逐片成因诊断
+        "gray_regions": gray_regions(grid, coverage),
         "coverage_source": coverage.get("source") if coverage else None,
         "coverage_pending": coverage is None,
         "blindspots_pending": grid is None,
-        "prescriptions": prescribe(
-            properties, coverage, grid, blinds, failed_categories
-        ),
+        "prescriptions": prescribe(properties, coverage, grid, blinds, failed_categories),
     }

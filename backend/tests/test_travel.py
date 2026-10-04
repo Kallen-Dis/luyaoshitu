@@ -23,6 +23,8 @@ def test_sampling_radius_grows_with_speed():
     assert max(WALK.radii_m) < max(RIDE.radii_m) < max(DRIVE_FREE.radii_m)
     assert WALK.allow_grid_blindspots
     assert not RIDE.allow_grid_blindspots
+
+
 def test_route_matrix_hits_riding_and_driving_endpoints(tmp_path, monkeypatch):
     """出行方式必须打到对应接口，且驾车路况策略不能跟步行缓存混用。"""
     import asyncio

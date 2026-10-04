@@ -26,10 +26,14 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
 
 from app.baidu.client import BaiduMapClient  # noqa: E402
-from app.isochrone.geometry import grid_points, haversine_m, point_in_polygon  # noqa: E402
+from app.isochrone.geometry import haversine_m, point_in_polygon  # noqa: E402
 from app.poi.catalog import CATEGORIES, KEY_CATEGORIES  # noqa: E402
 from app.poi.collect import collect_coverage  # noqa: E402
-from app.report.blindspot import BlindspotConfig, CellResult, rank_candidates  # noqa: E402
+from app.report.blindspot import (  # noqa: E402
+    BlindspotConfig,
+    layout_cells,
+    rank_candidates,
+)
 
 SAMPLES = ROOT / "data" / "samples"
 
@@ -49,8 +53,10 @@ async def main() -> None:
     radius = int(props["coverage"]["radius_m"])
 
     print(f"{props['name']}  中心 {center[0]:.6f},{center[1]:.6f}")
-    print(f"等时圈半径 {props['min_radius_m']:.0f}~{props['max_radius_m']:.0f} 米，"
-          f"检索半径 {radius} 米")
+    print(
+        f"等时圈半径 {props['min_radius_m']:.0f}~{props['max_radius_m']:.0f} 米，"
+        f"检索半径 {radius} 米"
+    )
 
     # 中心点必须落在自己的等时圈内，否则就是几何判定本身错了
     print(f"中心点在多边形内：{point_in_polygon(center[0], center[1], polygon)}")
@@ -64,9 +70,7 @@ async def main() -> None:
         if not pois:
             print(f"{category.name:<8}{0:>4}{0:>6}   —")
             continue
-        ranked = sorted(
-            pois, key=lambda p: haversine_m(center[0], center[1], p.lat, p.lng)
-        )
+        ranked = sorted(pois, key=lambda p: haversine_m(center[0], center[1], p.lat, p.lng))
         inside = sum(1 for p in pois if point_in_polygon(p.lat, p.lng, polygon))
         detail = "  ".join(
             f"{haversine_m(center[0], center[1], p.lat, p.lng):.0f}"
@@ -75,11 +79,14 @@ async def main() -> None:
         )
         print(f"{category.name:<8}{len(pois):>4}{inside:>6}   {detail}")
 
+    # 与实时分析同一套网格：15 分钟圈内、100 米一格
     cfg = BlindspotConfig()
-    cells = [
-        CellResult(lat=lat, lng=lng) for lat, lng in grid_points(polygon, cfg.grid_spacing_m)
-    ]
-    print(f"\n盲区判定的配额消耗估算（{len(cells)} 个网格，间距 {cfg.grid_spacing_m:.0f} 米）：")
+    cells = layout_cells(center, polygon, cfg)
+    scope = "15 分钟圈内" if cfg.layout == "polygon" else f"中心 {cfg.extent_m:.0f} 米内"
+    print(
+        f"\n盲区判定的配额消耗估算（{scope} {len(cells)} 个网格，"
+        f"间距 {cfg.grid_spacing_m:.0f} 米）："
+    )
 
     lower = upper = 0
     free = 0

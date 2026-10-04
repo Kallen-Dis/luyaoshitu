@@ -33,7 +33,12 @@ from app.baidu.client import BaiduMapClient  # noqa: E402
 from app.isochrone.geometry import point_in_polygon  # noqa: E402
 from app.poi.catalog import CATEGORIES, KEY_CATEGORIES  # noqa: E402
 from app.poi.collect import collect_coverage  # noqa: E402
-from app.report.blindspot import BlindspotConfig, CellResult, rank_candidates  # noqa: E402
+from app.report.blindspot import (  # noqa: E402
+    BlindspotConfig,
+    CellResult,
+    rank_candidates,
+    scope_to_circle,
+)
 from app.report.score import WALK_SPEED_M_PER_S  # noqa: E402
 
 SAMPLES = ROOT / "data" / "samples"
@@ -68,14 +73,16 @@ async def analyse(path: Path) -> dict:
 
     # 逐格比对：直线法说"覆盖"，实测说"走不到"
     cfg = BlindspotConfig()
-    blind = props.get("blindspots") or {}
+    # 只比 15 分钟圈内的方格（旧版 1.5 公里网格的快照也先截到圈内）
+    blind = scope_to_circle(props.get("blindspots")) or {}
     misjudged = []
     for category in KEY_CATEGORIES:
         pois = coverage.pois_of(category.name)
         straight_ok = truly_blind = unknown = 0
         for cell in blind.get("cells", []):
             probe = CellResult(lat=cell["lat"], lng=cell["lng"])
-            if not rank_candidates(probe, pois, cfg.walk_limit_m):
+            # 直线法看的是设施坐标点（传统做法就是这样），不用校门
+            if not rank_candidates(probe, pois, cfg.walk_limit_m, entrances=False):
                 continue  # 直线法也判为盲区，两种口径一致
             straight_ok += 1
             if category.name in cell.get("unknown", []):
@@ -96,6 +103,7 @@ async def analyse(path: Path) -> dict:
         "facilities": facilities,
         "misjudged": misjudged,
         "cell_count": blind.get("cell_count", 0),
+        "spacing_m": blind.get("grid_spacing_m"),
     }
 
 
@@ -151,11 +159,13 @@ def render(results: list[dict]) -> str:
         "",
         "直线法的判定规则是「直线 1 公里内有此类设施即算覆盖」。",
         "下表只统计直线法判为**覆盖**的居民点，看其中有多少实测走不到。",
+        "居民点取 15 分钟步行圈内的网格中心。",
         "",
     ]
     for r in results:
+        grid = f"{r['spacing_m']:.0f} 米方格" if r.get("spacing_m") else "网格"
         lines += [
-            f"### {r['name']}（共 {r['cell_count']} 个居民点网格）",
+            f"### {r['name']}（15 分钟圈内 {r['cell_count']} 个 {grid}）",
             "",
             "| 关键设施 | 直线法判为覆盖 | 实测走不到 | 漏判率 | 未判定 |",
             "| --- | --- | --- | --- | --- |",
@@ -163,9 +173,7 @@ def render(results: list[dict]) -> str:
         for name, straight_ok, truly_blind, unknown in r["misjudged"]:
             judged = straight_ok - unknown
             rate = f"{truly_blind / judged:.1%}" if judged else "—"
-            lines.append(
-                f"| {name} | {straight_ok} | {truly_blind} | {rate} | {unknown} |"
-            )
+            lines.append(f"| {name} | {straight_ok} | {truly_blind} | {rate} | {unknown} |")
         lines.append("")
 
     lines += [

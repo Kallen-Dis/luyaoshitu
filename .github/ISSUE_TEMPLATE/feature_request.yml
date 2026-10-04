@@ -1,0 +1,27 @@
+name: 功能建议
+description: 新的分析维度、交互改进、文档补充
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 想解决什么问题
+      description: 谁、在什么场景下、现在卡在哪里
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: 设想的做法
+  - type: dropdown
+    id: quota
+    attributes:
+      label: 会不会多花百度接口配额
+      description: 批量算路的日配额按点对计，只有约 2500 个，这一项决定能不能做成默认功能
+      options:
+        - 不会（只用已有结果或浏览器端地图）
+        - 会，但可以走缓存或按需触发
+        - 会，而且每次分析都要
+        - 不确定
+    validations:
+      required: true

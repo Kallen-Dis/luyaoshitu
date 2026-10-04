@@ -1,25 +1,51 @@
-import { wideCensus } from '../lib/wideBlind'
+import { gridCensus } from '../lib/grid'
+import { CrosscheckPanel } from './CrosscheckPanel'
+import { ScoreRadar } from './ScoreRadar'
 import type {
   Coverage,
+  CrosscheckResult,
+  CrosscheckSuspect,
   ExamReport,
   IsochroneProperties,
   Place,
   Prescription,
-  RayMetric,
   SimulationResult,
+  SitePlanResult,
 } from '../types'
 interface Props {
   report: ExamReport
   coverage?: Coverage
-  rays?: RayMetric[]
-  /** 等时圈原始属性，供图签栏展示可追溯信息。 */
+  /** 等时圈原始属性：过街等待、网格、质量等读数都从这里取。 */
   meta?: IsochroneProperties
-  /** 15 分钟圈外环，[经度, 纬度]。有它才能把方格数和地图对齐。 */
-  ring?: [number, number][]
   /** 模拟新建结果；有值时在自动诊疗卡片内展示前后对比。 */
   simulation?: SimulationResult | null
   onSimulate?: (p: Prescription) => void
   onClearSimulation?: () => void
+  /** 核验选址：对某一品类的补设处方做路网复核 */
+  onVerifySite?: (category: string) => void
+  sitePlan?: SitePlanResult | null
+  /** 正在核验的品类 */
+  sitePlanBusy?: string | null
+  /** AI 二次核对（Agent Plan）的结果；onCrosscheck 为空表示不可用（没配 Token 或离线模拟） */
+  crosscheck?: CrosscheckResult | null
+  crosscheckBusy?: boolean
+  onCrosscheck?: () => void
+  onSimulateSuspect?: (s: CrosscheckSuspect) => void
+  onShareSuspect?: (s: CrosscheckSuspect) => void
+}
+
+const STATUS_LABEL: Record<string, string> = {
+  verified: '路网实测',
+  estimated: '直线估算',
+  over_budget: '超出点对预算，未核验',
+}
+
+/** 处方右上角的效果读数：打通是估算的「能消去几格」，补设是估算的「能覆盖几个缺口格」。 */
+function coversText(p: Prescription): string | null {
+  if (p.covers <= 0) return null
+  if (p.action === 'connect' && p.basis) return `估算打通后消去 ${p.covers} 格`
+  if (p.action === 'site' && p.basis) return `估算覆盖 ${p.covers} 个缺口格`
+  return `覆盖 ${p.covers} 个居民点`
 }
 
 const ACTION_LABEL: Record<string, string> = {
@@ -41,9 +67,20 @@ interface FacilityRead {
   cellsMissing: number | null
 }
 
-function walkMinutes(straightM: number, detour: number | null): number {
+/**
+ * 从中心走到最近设施的估算分钟：直线 × 本圈平均绕行 ÷ 批量算路步速，再加每公里过街等待。
+ * 这只是报告里的参考读数；盲区判定用的是逐格实测的步行距离。
+ */
+function walkMinutes(
+  straightM: number,
+  detour: number | null,
+  speed: number,
+  delayPerKmS: number | null,
+): number {
   const factor = detour && detour > 0 ? detour : 1
-  return Math.round(((straightM * factor) / 1.2 / 60) * 10) / 10
+  const walkM = straightM * factor
+  const seconds = walkM / speed + ((delayPerKmS ?? 0) * walkM) / 1000
+  return Math.round((seconds / 60) * 10) / 10
 }
 
 function facilityReads(
@@ -51,6 +88,8 @@ function facilityReads(
   places: Place[],
   detour: number | null,
   census: { total: number; missing: Record<string, number> } | null,
+  speed: number,
+  delayPerKmS: number | null,
 ): FacilityRead[] {
   const present = new Set(places.map((place) => place.category))
   const names = [
@@ -76,7 +115,7 @@ function facilityReads(
         ? {
             name: nearest.name,
             straightM: best,
-            minutes: walkMinutes(best, detour),
+            minutes: walkMinutes(best, detour, speed, delayPerKmS),
             inside: nearest.in_circle,
           }
         : null,
@@ -99,19 +138,26 @@ function FacilitySheet({
   reads,
   detour,
   census,
+  delayPerKmS,
+  extentKm,
 }: {
   reads: FacilityRead[]
   detour: number | null
   census: { total: number; blind: number } | null
+  delayPerKmS: number | null
+  extentKm: string | null
 }) {
   return (
     <>
       <p className="exam-lead">
         每一类都写出最近的一处，以及按
-        {detour ? `本圈实测平均绕行 ${detour.toFixed(2)} 倍` : '直线 1.2 米/秒'}
-        估算的步行时间。
+        {detour ? `本圈实测平均绕行 ${detour.toFixed(2)} 倍` : '直线距离'}
+        {delayPerKmS ? `、每公里过街等待约 ${Math.round(delayPerKmS)} 秒` : ''}
+        估算的步行时间（参考读数）。
         {census
-          ? `菜场、药房、学校的方格与地图是同一套：周围 1.5 公里共 ${census.total} 格，其中 ${census.blind} 格缺至少一类。`
+          ? extentKm
+            ? `菜场、药店、小学的方格与地图是同一套：周围 ${extentKm} 公里共 ${census.total} 格，逐格实测步行距离，其中 ${census.blind} 格步行 1 公里内缺至少一类。`
+            : `菜场、药店、小学的方格与地图是同一套：15 分钟圈内共 ${census.total} 格，逐格实测步行距离，其中 ${census.blind} 格步行 1 公里内缺至少一类。`
           : ''}
       </p>
       <ul className="exam-list">
@@ -135,7 +181,7 @@ function FacilitySheet({
                 ? `最近「${item.nearest.name}」，直线 ${Math.round(item.nearest.straightM)} 米，估算步行 ${item.nearest.minutes} 分钟，${item.nearest.inside ? `已在 15 分钟圈内（圈内 ${item.inCircle} 处）` : '在 15 分钟圈外'}。`
                 : '检索范围内没有这一类。'}
               {item.cellsMissing != null && census
-                ? ` 地图上 ${item.cellsMissing} / ${census.total} 格，直线 1 公里内没有它。`
+                ? ` 地图上 ${item.cellsMissing} / ${census.total} 格，步行 1 公里内到不了它。`
                 : ''}
             </p>
           </li>
@@ -153,21 +199,35 @@ function sumCounts(table: Record<string, number> | null | undefined): number {
 export function ReportCard({
   report,
   coverage,
-  rays,
   meta,
-  ring,
   simulation,
   onSimulate,
   onClearSimulation,
+  onVerifySite,
+  sitePlan,
+  sitePlanBusy,
+  crosscheck,
+  crosscheckBusy,
+  onCrosscheck,
+  onSimulateSuspect,
+  onShareSuspect,
 }: Props) {
   const nearbyCount = sumCounts(coverage?.nearby_categories)
   const places = coverage?.places ?? []
   const center = meta?.center
-  const census =
-    center && ring && ring.length >= 3 && places.length > 0
-      ? wideCensus(center, places, ring)
+  const blindspots = meta?.blindspots
+  const census = gridCensus(blindspots)
+  const delay = meta?.delay
+  const delayPerKmS = delay?.applied ? delay.delay_per_km_s : null
+  const speed = delay?.base_speed_m_per_s ?? meta?.speed_m_per_s ?? 1.17
+  const extentKm =
+    blindspots?.layout === 'disc' ? ((blindspots.extent_m ?? 1500) / 1000).toFixed(1) : null
+  const reads =
+    center && places.length > 0
+      ? facilityReads(center, places, meta?.mean_detour ?? null, census, speed, delayPerKmS)
       : null
-  const reads = center && places.length > 0 ? facilityReads(center, places, meta?.mean_detour ?? null, census) : null
+  const quality = meta?.quality
+  const grayRegions = report.gray_regions?.regions ?? []
 
   // 覆盖对比条的共同量尺：以各品类「附近」最大值归一，圈内/附近可直接比长短
   const coverEntries = Object.entries(report.categories ?? {})
@@ -184,33 +244,180 @@ export function ReportCard({
         <p className="hint card-inline-hint">本次只算了等时圈，未做设施覆盖与盲区判定。</p>
       )}
 
+      <section className="card">
+        <h2 className="card-title">
+          体检评分 {report.total.toFixed(0)}（{report.grade}）
+        </h2>
+        <ScoreRadar report={report} />
+        <p className="hint">
+          路网三项以<b>理想方格路网</b>为满分：同样 {meta?.minutes ?? 15} 分钟走得到
+          {report.grid_area_km2 != null ? ` ${report.grid_area_km2.toFixed(2)} km² ` : ''}
+          的菱形、最短与最长方向半径之比 0.71、平均绕行 1.27 倍，红绿灯等待照常扣分。直线画圆
+          （{report.ideal_area_km2.toFixed(2)} km²）是任何路网都到不了的上界，只用来说明直线法高估了几倍。
+          没测的维度画在圆心、标「待测」，不按 0 分计；总分按实际参与的维度权重归一。
+        </p>
+      </section>
+
+      {grayRegions.length > 0 && (
+        <section className="card">
+          <h2 className="card-title">灰色区域（设施匮乏，自动标注）</h2>
+          <p className="hint">
+            相邻的盲区方格合并成片，按面积编号。成因按直线 1 公里内有没有同类设施区分：
+            有却走不到是<b>路网阻隔</b>（该打通），没有是<b>供给缺口</b>（该补设）。
+          </p>
+          <ol className="region-list">
+            {grayRegions
+              .filter((r) => r.id)
+              .map((r) => (
+                <li key={r.id}>
+                  <div className="region-head">
+                    <b>{r.label}</b>
+                    <span>
+                      {r.cells} 格 · 约 {r.area_km2} km²
+                      {r.in_circle_cells < r.cells ? ` · 圈内 ${r.in_circle_cells} 格` : ''}
+                    </span>
+                  </div>
+                  <ul className="region-causes">
+                    {r.diagnosis.map((d) => (
+                      <li key={d.category} className={`cause-${d.cause}`}>
+                        <span className="region-cat">{d.category}</span>
+                        <span className="region-split">
+                          {d.cause === 'unknown' ? (
+                            '成因未知'
+                          ) : (
+                            <>
+                              {d.supply_cells > 0 && <em className="supply">供给缺口 {d.supply_cells}</em>}
+                              {d.barrier_cells > 0 && (
+                                <em className="barrier">路网阻隔 {d.barrier_cells}</em>
+                              )}
+                            </>
+                          )}
+                        </span>
+                        {d.barrier_cells > 0 && d.nearby && (
+                          <p>
+                            往{d.nearby.direction}直线 {d.nearby.straight_m} 米就有「{d.nearby.place}」
+                            {d.nearby.walk_m ? `，步行却要 ${Math.round(d.nearby.walk_m)} 米` : ''}。
+                          </p>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </li>
+              ))}
+          </ol>
+          {grayRegions.some((r) => !r.id) && (
+            <p className="hint">另有 {grayRegions.filter((r) => !r.id).length} 处零散盲区，地图上同样标灰。</p>
+          )}
+          {onCrosscheck && onSimulateSuspect && (
+            <CrosscheckPanel
+              result={crosscheck ?? null}
+              busy={Boolean(crosscheckBusy)}
+              onRun={onCrosscheck}
+              onSimulate={onSimulateSuspect}
+              onShare={onShareSuspect}
+            />
+          )}
+        </section>
+      )}
+
       {report.prescriptions && report.prescriptions.length > 0 && (
         <section className="card">
           <h2 className="card-title">自动诊疗</h2>
           <p className="hint">
-            由盲区网格与圈内外设施对照生成，不另耗配额。圈外有、圈内无则优先打通路网。
+            {report.prescriptions.some((p) => p.basis)
+              ? '按灰色区域的逐格成因开方，不另耗配额：路网阻隔 → 打通，供给缺口 → 补设（最大覆盖贪心选址）。' +
+                '覆盖数按本圈典型绕行估算，补设点可「核验选址」用真实路网复核。'
+              : '由盲区网格与圈内外设施对照生成，不另耗配额。圈外有、圈内无则优先打通路网。'}
           </p>
           <ol className="plan-list">
-            {report.prescriptions.map((p) => (
-              <li
-                key={`${p.action}-${p.category}-${p.lat}-${p.lng}`}
-                className={`action-${p.action}`}
-              >
-                <div className="plan-head">
-                  <span className={`plan-tag action-${p.action}`}>{ACTION_LABEL[p.action]}</span>
-                  {p.category && <span>{p.category}</span>}
-                  {p.covers > 0 && <span className="plan-covers">覆盖 {p.covers} 个居民点</span>}
-                </div>
-                <strong>{p.title}</strong>
-                <p>{p.reason}</p>
-                {onSimulate && p.lat != null && p.lng != null && p.category && (
-                  <button type="button" className="sim-btn" onClick={() => onSimulate(p)}>
-                    模拟在此新建「{p.category}」
-                  </button>
-                )}
-              </li>
-            ))}
+            {report.prescriptions.map((p) => {
+              const covers = coversText(p)
+              return (
+                <li
+                  key={`${p.action}-${p.category}-${p.lat}-${p.lng}`}
+                  className={`action-${p.action}`}
+                >
+                  <div className="plan-head">
+                    <span className={`plan-tag action-${p.action}`}>{ACTION_LABEL[p.action]}</span>
+                    {p.category && <span>{p.category}</span>}
+                    {covers && <span className="plan-covers">{covers}</span>}
+                  </div>
+                  <strong>{p.title}</strong>
+                  <p>{p.reason}</p>
+                  {p.action === 'connect' && p.target && (
+                    <p className="plan-target">
+                      目标设施「{p.target.name}」· 在这片格子的{p.direction}侧
+                      {p.cells ? ` · 被挡在外面的有 ${p.cells} 格` : ''}
+                    </p>
+                  )}
+                  <div className="plan-actions">
+                    {p.action === 'site' && p.basis && p.category && onVerifySite && (
+                      <button
+                        type="button"
+                        className="sim-btn primary"
+                        disabled={sitePlanBusy != null}
+                        onClick={() => onVerifySite(p.category as string)}
+                      >
+                        {sitePlanBusy === p.category ? '核验中…' : `核验选址「${p.category}」`}
+                      </button>
+                    )}
+                    {/* 打通是修路不是建设施，模拟新建对它没有意义 */}
+                    {onSimulate &&
+                      p.action !== 'connect' &&
+                      p.lat != null &&
+                      p.lng != null &&
+                      p.category && (
+                        <button type="button" className="sim-btn" onClick={() => onSimulate(p)}>
+                          模拟在此新建「{p.category}」
+                        </button>
+                      )}
+                  </div>
+                </li>
+              )
+            })}
           </ol>
+
+          {sitePlan && (
+            <div className="site-plan">
+              <div className="sim-head">
+                <span className="sim-tag">核验选址 · {sitePlan.category}</span>
+                <span className="hint">
+                  缺口 {sitePlan.basis.demand_cells} 格 · 典型绕行 {sitePlan.basis.detour} 倍
+                </span>
+              </div>
+              <ol className="site-candidates">
+                {sitePlan.candidates.map((c) => {
+                  const best = c.lat === sitePlan.best.lat && c.lng === sitePlan.best.lng
+                  return (
+                    <li key={`${c.lat}-${c.lng}`} className={best ? 'best' : ''}>
+                      <span>
+                        备选 {c.rank_estimate}
+                        {c.region ? ` · 灰色区域 ${c.region}` : ''}
+                        {best ? ' · 推荐' : ''}
+                      </span>
+                      <span>
+                        估算 {c.estimated} 格 →{' '}
+                        {c.verified != null ? `实测消去 ${c.verified} 格` : STATUS_LABEL[c.status]}
+                      </span>
+                    </li>
+                  )
+                })}
+              </ol>
+              {sitePlan.best.place?.address && (
+                <p className="plan-target">
+                  推荐点位：{sitePlan.best.place.address}
+                  {sitePlan.best.place.description ? `（${sitePlan.best.place.description}）` : ''}
+                </p>
+              )}
+              <p className="hint">
+                {sitePlan.note}
+                {sitePlan.quota
+                  ? ` 本次消耗 ${sitePlan.quota.matrix_pairs} 个点对、${sitePlan.quota.regeo_queries} 次逆地理编码。`
+                  : ''}
+                推荐点的效果已画在地图上。
+              </p>
+            </div>
+          )}
 
           {simulation && (
             <div className="sim-result">
@@ -256,19 +463,123 @@ export function ReportCard({
                   </li>
                 )}
               </ul>
-              <p className="hint">{simulation.approximation}</p>
+              <p className="hint">
+                {simulation.basis === 'network'
+                  ? `候选 ${simulation.candidate_count} 格，实测步行够得着 ${simulation.covered_count} 格。`
+                  : '直线估算，是覆盖的上限。'}
+                {simulation.approximation}
+              </p>
             </div>
           )}
         </section>
       )}
 
+      {(meta?.warnings?.length ?? 0) > 0 && (
+        <section className="card warn-card" role="status" aria-label="本次分析的降级说明">
+          <h2 className="card-title">这次分析有 {meta?.warnings?.length} 处降级</h2>
+          <ul className="warn-list">
+            {meta?.warnings?.map((w, i) => (
+              <li key={`${w.stage}-${i}`}>
+                {w.stage_label && <b>{w.stage_label}：</b>}
+                {w.message}
+              </li>
+            ))}
+          </ul>
+          <p className="hint">
+            降级是为了不把「没测到」写成「没有」：未能判定的部分不计入评分，也不会被画成盲区。
+          </p>
+        </section>
+      )}
+
+      {meta?.traffic && (
+        <section className="card">
+          <h2 className="card-title">实时路况的时效</h2>
+          <p>
+            本次用到的路况里，最旧的是 <b>{meta.traffic.max_age_min}</b> 分钟前查到的
+            （{meta.traffic.fresh_ttl_min} 分钟内的缓存视为实时）。
+            {meta.traffic.stale_points > 0
+              ? ` 其中 ${meta.traffic.stale_points} 个采样点因接口失败用了旧路况兜底，最旧 ${meta.traffic.stale_max_age_min ?? '—'} 分钟前。`
+              : ''}
+          </p>
+        </section>
+      )}
+
+      {(delay || meta?.refine_skipped) && (
+        <section className="card">
+          <h2 className="card-title">过街等待与施工围挡</h2>
+          {delay?.applied ? (
+            <>
+              <ul className="sim-metrics">
+                <li>
+                  <span>取到步行路线的方向</span>
+                  <b>
+                    {delay.routes_ok} / {delay.routes_requested}
+                  </b>
+                </li>
+                <li>
+                  <span>每公里多出的等待</span>
+                  <b>{delay.delay_per_km_s != null ? `${Math.round(delay.delay_per_km_s)} 秒` : '—'}</b>
+                </li>
+                <li>
+                  <span>边界以内的过街次数（各方向合计）</span>
+                  <b>{delay.boundary_crossings} 次</b>
+                </li>
+                <li>
+                  <span>等时圈面积（不计等待 → 计入等待）</span>
+                  <b>
+                    {delay.raw_area_km2.toFixed(2)} → {delay.area_km2.toFixed(2)} km²
+                  </b>
+                </li>
+                {delay.closures.length > 0 && (
+                  <li>
+                    <span>施工围挡 · 被截断的方向</span>
+                    <b>
+                      {delay.closures.length} 处 · {quality?.closure_truncated ?? delay.closure_rays} 个
+                    </b>
+                  </li>
+                )}
+                {(quality?.route_failed ?? 0) > 0 && (
+                  <li>
+                    <span>路线没取到、按不含等待计算的方向</span>
+                    <b>{quality?.route_failed} 个</b>
+                  </li>
+                )}
+              </ul>
+              <p className="hint">
+                地图上的虚线是不计过街等待时的圈。{delay.note}
+              </p>
+            </>
+          ) : delay ? (
+            <p className="hint">
+              本次未补过街等待
+              {delay.closures.length > 0
+                ? `，只按 ${delay.closures.length} 处施工围挡截断受阻方向。`
+                : '。'}
+              {delay.note}
+            </p>
+          ) : (
+            <p className="hint">{meta?.refine_skipped}</p>
+          )}
+          {blindspots?.closure_check && (
+            <p className="hint">
+              围挡核验：取路线 {blindspots.closure_check.checked_pairs} 条，其中{' '}
+              {blindspots.closure_check.blocked_pairs} 条被挡住、改找下一家；
+              {blindspots.closure_check.unverified_pairs} 条无法核验，记为未知；
+              围挡内的设施 {blindspots.closure_check.excluded_places} 处视为暂不可用。
+            </p>
+          )}
+        </section>
+      )}
+
       <section className="card">
-        <h2 className="card-title">设施覆盖与盲区</h2>
-        {reads ? (
-          <FacilitySheet reads={reads} detour={meta?.mean_detour ?? null} census={census} />
-        ) : report.categories ? (
+        <h2 className="card-title">圈内各类民生设施覆盖</h2>
+        {report.categories ? (
           <>
-            <ul className="cover-bars">
+            <p className="exam-lead">
+              {meta?.minutes ?? 15} 分钟步行圈内的设施数（深色）与检索半径内的总数（浅色）。
+              浅色比深色长的部分，就是「附近有、走不进圈」的设施。
+            </p>
+            <ul className="cover-bars" aria-label="圈内各类设施数量">
               {coverEntries.map(([name, count]) => {
                 const nearby = Math.max(count, coverage?.nearby_categories?.[name] ?? count)
                 return (
@@ -306,7 +617,9 @@ export function ReportCard({
               </p>
             )}
           </>
-        ) : null}
+        ) : (
+          <p className="hint">本次没有做设施采集，覆盖统计待测。</p>
+        )}
 
         {report.failed_categories.length > 0 && (
           <p className="hint">
@@ -315,19 +628,23 @@ export function ReportCard({
           </p>
         )}
 
-        {!reads && report.blinds.length > 0 && (
+        {report.blinds.length > 0 && (
           <div className="blinds">
             <h3>圈内完全缺失</h3>
             <p>整个等时圈内未检索到：{report.blinds.join('、')}</p>
           </div>
         )}
 
-        {!reads && report.blind_ratio && Object.keys(report.blind_ratio).length > 0 && (
+        {report.blind_ratio && Object.keys(report.blind_ratio).length > 0 && (
           <div className="blinds grid">
-            <h3>网格盲区</h3>
+            <h3>网格盲区（步行 1 公里到不了的方格占比）</h3>
             <p>
-              {report.blind_cell_count} / {report.cell_count} 个居民点步行 1 公里内
-              至少缺一类关键设施。
+              {report.blind_cell_count} / {report.cell_count} 个方格步行 1 公里内
+              至少缺一类关键设施
+              {report.cells_in_circle != null
+                ? `，其中 15 分钟圈内 ${report.blind_in_circle} / ${report.cells_in_circle} 格`
+                : ''}
+              。
             </p>
             <ul className="ratio-list">
               {Object.entries(report.blind_ratio).map(([name, ratio]) => (
@@ -347,60 +664,16 @@ export function ReportCard({
         )}
       </section>
 
-      {meta && (
-        <section className="card signature">
-          <dl className="sig-grid">
-            <div>
-              <dt>图名</dt>
-              <dd>{meta.minutes} 分钟生活圈体检报告</dd>
-            </div>
-            <div>
-              <dt>中心点</dt>
-              <dd>
-                {meta.center
-                  ? `${meta.center.lat.toFixed(5)}, ${meta.center.lng.toFixed(5)}`
-                  : '—'}
-              </dd>
-            </div>
-            <div>
-              <dt>坐标系</dt>
-              <dd>
-                {meta.input_coord_sys && meta.input_coord_sys !== 'bd09'
-                  ? `BD-09（${meta.input_coord_sys.toUpperCase()} 输入）`
-                  : 'BD-09（百度）'}
-              </dd>
-            </div>
-            <div>
-              <dt>出行方式</dt>
-              <dd>{meta.mode_label ?? '步行'}</dd>
-            </div>
-            <div>
-              <dt>采样</dt>
-              <dd>
-                {meta.sampled_points} 点 · {rays?.length ?? 0} 方向
-              </dd>
-            </div>
-            <div>
-              <dt>数据来源</dt>
-              <dd>
-                {meta.simulated
-                  ? '离线模拟（非真实路网）'
-                  : report.coverage_source ?? '实时计算'}
-              </dd>
-            </div>
-            <div>
-              <dt>生成时间</dt>
-              <dd>
-                {meta.generated_at
-                  ? new Date(meta.generated_at).toLocaleString('zh-CN', { hour12: false })
-                  : '实时计算'}
-              </dd>
-            </div>
-            <div>
-              <dt>出图</dt>
-              <dd>路遥识途 · 真实路网口径</dd>
-            </div>
-          </dl>
+      {reads && (
+        <section className="card">
+          <h2 className="card-title">逐类最近设施</h2>
+          <FacilitySheet
+            reads={reads}
+            detour={meta?.mean_detour ?? null}
+            census={census}
+            delayPerKmS={delayPerKmS}
+            extentKm={extentKm}
+          />
         </section>
       )}
     </>

@@ -1,0 +1,4 @@
+# 开发与 CI：运行依赖 + 测试与代码检查工具。
+-r requirements.txt
+pytest==8.3.4
+ruff==0.8.4

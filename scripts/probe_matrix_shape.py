@@ -83,9 +83,7 @@ async def burst(client: httpx.AsyncClient, ak: str, m: int, n: int, times: int) 
     params = {"origins": origins, "destinations": dests, "output": "json", "ak": ak}
 
     async def one() -> int:
-        resp = await client.get(
-            "https://api.map.baidu.com/routematrix/v2/walking", params=params
-        )
+        resp = await client.get("https://api.map.baidu.com/routematrix/v2/walking", params=params)
         return int(resp.json().get("status", -1))
 
     statuses = await asyncio.gather(*(one() for _ in range(times)), return_exceptions=True)

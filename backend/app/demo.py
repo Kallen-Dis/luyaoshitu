@@ -10,7 +10,6 @@ UI、算法链路、评分、处方、导出全部照常运转。
 
 from __future__ import annotations
 
-import math
 import random
 from typing import Any
 
@@ -23,9 +22,8 @@ from .isochrone.geometry import (
 )
 from .poi.catalog import CATEGORIES, KEY_CATEGORIES
 from .report.blindspot import BlindspotConfig
-from .report.score import WALK_SPEED_M_PER_S, build_report
-
-GRID_SPACING_M = 150.0
+from .report.score import build_report
+from .travel import get_mode
 
 
 def _seed(lat: float, lng: float) -> int:
@@ -42,17 +40,16 @@ def build_demo_feature(
 ) -> dict[str, Any]:
     """生成一份完整的模拟 Feature，结构与实时 /api/isochrone 响应一致。"""
     rng = random.Random(_seed(lat, lng))
-    speed = WALK_SPEED_M_PER_S
+    mode = get_mode(mode_id)
+    speed = mode.speed_m_per_s
     base_m = minutes * 60.0 * speed
+    grid_cfg = BlindspotConfig()
 
     # 等时圈：各方向半径在基准值上做 0.45~1.0 的确定性扰动，
     # 再平滑出连续轮廓，观感接近真实采样插值结果。
     raw_radii = [base_m * (0.45 + 0.55 * rng.random()) for _ in range(directions)]
     radii = smooth_radii(raw_radii, 3)
-    polygon = [
-        offset_point(lat, lng, 360.0 * d / directions, r)
-        for d, r in enumerate(radii)
-    ]
+    polygon = [offset_point(lat, lng, 360.0 * d / directions, r) for d, r in enumerate(radii)]
     area_m2 = polygon_area_m2(polygon)
     positive = [r for r in radii if r > 0] or [0.0]
     mean_detour = round(1.05 + 0.35 * rng.random(), 3)
@@ -69,10 +66,12 @@ def build_demo_feature(
     categories[blind_cat] = 0
     nearby[blind_cat] = rng.randint(2, 6)
 
-    # 网格盲区：边缘网格更可能走不到（模拟屏障切割的局部性）。
+    # 网格盲区：与实时分析同一套口径，只在 15 分钟圈内按 100 米布点；
+    # 离中心越远越可能走不到（模拟屏障切割的局部性）。
     cells: list[dict[str, Any]] = []
-    max_r = max(positive)
-    for i, (clat, clng) in enumerate(grid_points(polygon, GRID_SPACING_M)):
+    grid = grid_points(polygon, grid_cfg.grid_spacing_m)
+    reach_m = max(positive)
+    for i, (clat, clng) in enumerate(grid if mode.allow_grid_blindspots else []):
         dist = haversine_m(lat, lng, clat, clng)
         cell_rng = random.Random(_seed(lat, lng) + i + 1)
         nearest: dict[str, float | None] = {}
@@ -84,16 +83,20 @@ def build_demo_feature(
             else:
                 d = round(cell_rng.uniform(250, 1500))
                 nearest[kc.name] = d
-                if d > 1000 and cell_rng.random() < 0.35 + 0.55 * (dist / max_r):
+                if d > 1000 and cell_rng.random() < 0.35 + 0.55 * min(1.0, dist / reach_m):
                     missing.append(kc.name)
+        raw_s = round(dist * mean_detour / speed)
         cells.append(
             {
                 "lat": round(clat, 6),
                 "lng": round(clng, 6),
-                "reach_s": round(dist / speed),
+                "reach_s": round(raw_s * 1.12),
+                "reach_raw_s": raw_s,
                 "nearest_m": nearest,
                 "missing": missing,
                 "unknown": [],
+                "in_circle": True,
+                "closure_blocked": False,
             }
         )
 
@@ -110,20 +113,27 @@ def build_demo_feature(
         "nearby_categories": nearby,
         "failed_categories": [],
         "searches": 0,
-        "radius_m": 1800,
+        "radius_m": 2500,
         "clean_stats": {},
         "source": "离线模拟数据（非真实 API）",
     }
     blindspots = {
-        "grid_spacing_m": GRID_SPACING_M,
-        "walk_limit_m": BlindspotConfig().walk_limit_m,
+        "basis": "simulated",
+        "layout": "polygon",
+        "grid_spacing_m": grid_cfg.grid_spacing_m,
+        "extent_m": None,
+        "walk_limit_m": grid_cfg.walk_limit_m,
         "cell_count": len(cells),
         "blind_count": blind_count,
+        "in_circle_count": sum(1 for c in cells if c["in_circle"]),
         "max_reach_s": max((c["reach_s"] for c in cells), default=None),
         "blind_ratio": blind_ratio,
         "cells": cells,
         "pruned_decisions": 0,
         "naive_matrix_pairs": 0,
+        "delay_applied": True,
+        "closures": [],
+        "closure_check": None,
     }
 
     props: dict[str, Any] = {
@@ -139,9 +149,9 @@ def build_demo_feature(
         "max_detour": round(mean_detour + 0.5 * rng.random(), 3),
         "sampled_points": directions * 7,
         "failed_points": 0,
-        "mode": mode_id,
-        "mode_label": "步行",
-        "uses_traffic": False,
+        "mode": mode.id,
+        "mode_label": mode.label,
+        "uses_traffic": mode.uses_traffic,
         "speed_m_per_s": speed,
         "factors": [
             "离线模拟：形状由确定性伪随机生成，不代表真实路网",
@@ -152,6 +162,10 @@ def build_demo_feature(
                 "radius_m": round(r, 1),
                 "detour": mean_detour,
                 "barrier": False,
+                "closure": False,
+                "delay_s": 0.0,
+                "crossings": 0,
+                "route": "skipped",
             }
             for d, r in enumerate(radii)
         ],
@@ -159,15 +173,19 @@ def build_demo_feature(
             "directions": directions,
             "saturated": 0,
             "barrier_truncated": 0,
+            "closure_truncated": 0,
             "zero_radius": 0,
+            "route_failed": 0,
         },
         "center": {"lat": round(lat, 6), "lng": round(lng, 6)},
         "coverage": coverage,
-        "blindspots": blindspots,
         "simulated": True,
         "generated_at": None,
+        "closures": [],
     }
-    props["report"] = build_report(props, coverage, blindspots)
+    if cells:
+        props["blindspots"] = blindspots
+    props["report"] = build_report(props, coverage, props.get("blindspots"))
     ring = [[lng, lat] for lat, lng in polygon]
     if ring and ring[0] != ring[-1]:
         ring.append(ring[0])

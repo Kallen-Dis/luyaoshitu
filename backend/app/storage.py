@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from .config import PROJECT_ROOT
@@ -51,7 +51,7 @@ def save_analysis(payload: dict[str, Any], result: dict[str, Any]) -> int:
     """保存一次实时计算。payload 是请求参数，result 是完整 Feature。"""
     props = result.get("properties", {})
     report = props.get("report") or {}
-    created = datetime.now(timezone.utc).isoformat()
+    created = datetime.now(UTC).isoformat()
     with _LOCK, _connect() as con:
         cur = con.execute(
             """
@@ -93,9 +93,7 @@ def list_analyses(limit: int = 20) -> list[dict[str, Any]]:
 def get_analysis(analysis_id: int) -> dict[str, Any] | None:
     init_db()
     with _connect() as con:
-        row = con.execute(
-            "SELECT * FROM analyses WHERE id=?", (analysis_id,)
-        ).fetchone()
+        row = con.execute("SELECT * FROM analyses WHERE id=?", (analysis_id,)).fetchone()
     if row is None:
         return None
     data = dict(row)

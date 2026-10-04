@@ -3,12 +3,17 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+    # .env 缺失时照常启动：样例、离线模拟与导出可用，
+    # /api/health 与页面顶部会明确提示缺哪个 AK（需 Docker Compose 2.24+）
     env_file:
-      - .env
+      - path: .env
+        required: false
     ports:
       - "8000:8000"
     volumes:
       - ./.cache:/app/.cache
+      # 用户共享标注与照片：不是缓存，重建容器也必须保留
+      - ./data/user:/app/data/user
     restart: unless-stopped
 
   web:

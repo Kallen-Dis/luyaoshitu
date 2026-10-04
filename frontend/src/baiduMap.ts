@@ -22,6 +22,8 @@ export function loadBaiduMap(ak: string): Promise<void> {
 
   loading = new Promise<void>((resolve, reject) => {
     const timer = window.setTimeout(() => {
+      // 清掉共享的 Promise，否则之后每次调用都拿到这个已失败的结果，页面刷新前再也加载不了
+      loading = null
       reject(
         new Error(
           '百度地图脚本加载超时。请确认网络可达，以及该 AK 的 Referer 白名单已包含 localhost/*',

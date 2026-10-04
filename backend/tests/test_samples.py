@@ -11,8 +11,11 @@ def test_list_samples_exposes_contrast_stats():
 
     cao = items["isochrone-caoyang-15min"]
     tao = items["isochrone-taopu-15min"]
-    assert cao.grade == "良"
+    # 对比要拉得开：曹杨明显好于桃浦。不钉死曹杨的等级：路网层按方格路网基准校准后约 84 分，
+    # 离「优」的 85 分只差一点，重新生成时一两分的波动就会跨线，不说明问题
     assert tao.grade == "弱"
+    assert cao.grade in ("优", "良")
+    assert cao.total is not None and tao.total is not None and cao.total - tao.total >= 30
     assert cao.area_ratio is not None and cao.area_ratio < 0.6
     assert tao.area_ratio is not None and tao.area_ratio < cao.area_ratio
     assert cao.facilities_in and cao.facilities_in > 0
@@ -37,7 +40,7 @@ def test_meta_survives_snapshot_without_report(tmp_path: Path):
 
 
 def test_snapshots_open_into_actionable_prescriptions():
-    """加载快照后必须能开方，且桃浦优先打通、建议点落在网格范围内。"""
+    """处方跟着灰色区域的成因走：桃浦两种成因都有，既要打通也要补设；曹杨全是路网阻隔，只打通。"""
     from app.report.score import build_report
     from app.samples import load_sample
 
@@ -47,11 +50,22 @@ def test_snapshots_open_into_actionable_prescriptions():
         tao["properties"].get("coverage"),
         tao["properties"].get("blindspots"),
     )
-    tao_actions = {p["action"] for p in tao_report["prescriptions"]}
-    assert "connect" in tao_actions
-    assert "site" not in tao_actions
-    located = [p for p in tao_report["prescriptions"] if p["lat"] is not None]
-    assert located
+    items = tao_report["prescriptions"]
+    tao_actions = {p["action"] for p in items}
+    assert {"connect", "site"} <= tao_actions
+    # 三类关键设施都有供给缺口，每类至少一处补设
+    assert {p["category"] for p in items if p["action"] == "site"} == {
+        "生鲜采买",
+        "医药",
+        "基础教育",
+    }
+    for p in items:
+        assert p["lat"] is not None
+        if p["action"] == "connect":
+            assert p["target"]["name"] and p["direction"]
+            assert "灰色区域 A" in p["title"]
+        if p["action"] == "site":
+            assert p["basis"] == "estimate" and p["covers"] >= 3
 
     cao = load_sample("isochrone-caoyang-15min")
     cao_report = build_report(
@@ -59,6 +73,6 @@ def test_snapshots_open_into_actionable_prescriptions():
         cao["properties"].get("coverage"),
         cao["properties"].get("blindspots"),
     )
-    assert cao_report["prescriptions"]
-    densify_or_connect = {p["action"] for p in cao_report["prescriptions"]}
-    assert densify_or_connect & {"densify", "network", "maintain", "connect"}
+    cao_actions = {p["action"] for p in cao_report["prescriptions"]}
+    assert "connect" in cao_actions
+    assert "site" not in cao_actions

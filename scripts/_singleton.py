@@ -2,7 +2,7 @@
 
 起因是一次真实事故——选址脚本被误启动 5 个实例并行运行 18 分钟，
 聚合速率达到单实例限速的 5 倍，直接烧光了地点检索的当日配额，
-同时也污染了并发与延迟的测量结果（详见 reports/quota-report.md）。
+同时也污染了并发与延迟的测量结果（详见 docs/api-optimization.md 第 4.1 节）。
 
 对配额受限的 API 来说，重复启动的代价是不可逆的：配额要等次日 0 点才重置。
 因此凡是会大量调用外部 API 的脚本，都应当持有单实例锁。
@@ -25,9 +25,7 @@ def _pid_alive(pid: int) -> bool:
 
         PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
         STILL_ACTIVE = 259
-        handle = ctypes.windll.kernel32.OpenProcess(
-            PROCESS_QUERY_LIMITED_INFORMATION, False, pid
-        )
+        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         if not handle:
             return False
         try:

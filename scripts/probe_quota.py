@@ -400,9 +400,7 @@ async def main() -> None:
         else:
             print("\n[3/3] qps ladder")
             for probe in probes:
-                if not probe.qps_test or not any(
-                    c["path"] == probe.path and c["ok"] for c in conn
-                ):
+                if not probe.qps_test or not any(c["path"] == probe.path and c["ok"] for c in conn):
                     continue
                 print(f" {probe.path}")
                 await warm_pool(client, probe, min(args.max_conc, 12))

@@ -17,8 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import PROJECT_ROOT
+from .report.blindspot import scope_to_circle
 from .report.score import build_report
-from .report.wide_grid import polygon_of
 
 SAMPLES_DIR = PROJECT_ROOT / "data" / "samples"
 
@@ -49,12 +49,10 @@ def _count_facilities(categories: dict | None) -> int | None:
 
 def _meta_from(path: Path, payload: dict) -> SampleMeta:
     props = payload.get("properties", {})
-    # 有覆盖数据时按地图同一套方格重算分数，列表和打开后的报告一致。
+    # 按当前评分口径重算，列表和打开后的报告一致。
     # 连报告都没有的空快照保持空白，不凭路网单独造一个等级。
     report = (
-        build_report(
-            props, props.get("coverage"), props.get("blindspots"), polygon_of(payload)
-        )
+        build_report(props, props.get("coverage"), scope_to_circle(props.get("blindspots")))
         if props.get("report") or props.get("coverage")
         else {}
     )

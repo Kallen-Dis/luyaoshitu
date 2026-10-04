@@ -1,0 +1,53 @@
+name: 问题反馈
+description: 计算结果不对、页面报错、接口异常
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        贴日志、截图前请确认里面**没有 AK、Token**。安全问题请按 SECURITY.md 私下报告，不要在这里提。
+  - type: textarea
+    id: what
+    attributes:
+      label: 发生了什么
+      description: 看到了什么，你原本期望看到什么
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 打开样例「曹杨新村街道」
+        2. 切到 3D 视角并打开步行耗时热力
+        3. ……
+    validations:
+      required: true
+  - type: dropdown
+    id: source
+    attributes:
+      label: 结果来源
+      options:
+        - 预生成样例
+        - 实时计算（调用百度接口）
+        - 离线模拟（没配 AK）
+        - 历史记录 / 导出文件
+    validations:
+      required: true
+  - type: input
+    id: status
+    attributes:
+      label: 百度接口状态码（如有）
+      description: 页面或日志里的 status，例如 302（当日配额用完）、401（并发超限）、240（服务未开通）
+  - type: input
+    id: env
+    attributes:
+      label: 环境
+      placeholder: Windows 11 / Chrome 130 / Python 3.13 / Node 22
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 确认
+      options:
+        - label: 我贴的内容里没有 AK、Token 或管理员口令
+          required: true

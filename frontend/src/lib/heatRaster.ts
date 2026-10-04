@@ -47,6 +47,12 @@ function rampColor(t: number): [number, number, number] {
   ]
 }
 
+/** 单格的热力颜色。3D 视角下色场画布对不上透视，改按方格逐个着色时用它。 */
+export function heatColor(value: number, maxReachS: number): string {
+  const [r, g, b] = rampColor(maxReachS > 0 ? value / maxReachS : 0)
+  return `rgb(${r}, ${g}, ${b})`
+}
+
 /** 栅格化为一格一像素的小图，调用方按经纬度边界放大绘制即可得到平滑色场。 */
 export function buildHeatTile(
   cells: readonly HeatCell[],

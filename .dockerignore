@@ -1,0 +1,16 @@
+# 构建上下文是仓库根目录。宿主机的依赖目录不能进镜像：
+# frontend/Dockerfile 里 `COPY frontend ./` 会把 Windows 下装的 node_modules
+# （含平台相关的原生二进制）盖到容器里 npm ci 装好的依赖上，导致构建失败。
+**/node_modules
+**/dist
+.venv
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+.cache
+# 用户标注走 compose 的数据卷挂载，不打进镜像
+data/user
+.git
+# 密钥只经 compose 的 env_file 注入，不进镜像
+.env
+*.pdf

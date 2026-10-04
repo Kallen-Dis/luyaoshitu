@@ -96,13 +96,27 @@ async def main() -> None:
 
         print("\n【二】串行连发（无间隔，测每秒可稳定发出的次数）")
         for label, path, mk in (
-            ("地点检索", "/place/v2/search", lambda i: {
-                "query": "药店", "location": f"{ANCHOR[0]+i*0.0009:.6f},{ANCHOR[1]:.6f}",
-                "radius": 1000, "output": "json", "ak": ak}),
-            ("批量算路", "/routematrix/v2/walking", lambda i: {
-                "origins": f"{ANCHOR[0]},{ANCHOR[1]}",
-                "destinations": f"{ANCHOR[0]+0.02+i*0.001:.6f},{ANCHOR[1]+0.01:.6f}",
-                "output": "json", "ak": ak}),
+            (
+                "地点检索",
+                "/place/v2/search",
+                lambda i: {
+                    "query": "药店",
+                    "location": f"{ANCHOR[0]+i*0.0009:.6f},{ANCHOR[1]:.6f}",
+                    "radius": 1000,
+                    "output": "json",
+                    "ak": ak,
+                },
+            ),
+            (
+                "批量算路",
+                "/routematrix/v2/walking",
+                lambda i: {
+                    "origins": f"{ANCHOR[0]},{ANCHOR[1]}",
+                    "destinations": f"{ANCHOR[0]+0.02+i*0.001:.6f},{ANCHOR[1]+0.01:.6f}",
+                    "output": "json",
+                    "ak": ak,
+                },
+            ),
         ):
             start = time.perf_counter()
             codes = []

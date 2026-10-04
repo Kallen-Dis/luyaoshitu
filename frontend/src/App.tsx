@@ -1,35 +1,75 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
-import { ApiError, computeIsochroneStream, fetchConfig, fetchDemo, fetchHistories, fetchHistory, fetchSample, fetchSamples, geocode, simulate } from './api'
-import { wideBlindCells, wideCensus } from './lib/wideBlind'
+import './components/markings/markings.css'
+import {
+  ApiError,
+  computeIsochroneStream,
+  constructionCandidates,
+  crosscheckFeature,
+  fetchConfig,
+  fetchDemo,
+  fetchHistories,
+  fetchHistory,
+  fetchMarkings,
+  fetchSample,
+  fetchSamples,
+  geocode,
+  recheck,
+  retractMarking,
+  simulate,
+  sitePlan,
+} from './api'
+import { erasedCount, gridCensus } from './lib/grid'
 import { CompareCard } from './components/CompareCard'
 import { DirectionRadar } from './components/DirectionRadar'
+import { ExportCard } from './components/ExportCard'
 import { MapView } from './components/MapView'
+import {
+  DEFAULT_LAYERS,
+  type ComposerPreset,
+  type LayerState,
+  type MapIntent,
+} from './components/map/context'
+import { algorithmView, viewSwitch, type ResultView } from './lib/resultView'
+import { NarrativeCard } from './components/NarrativeCard'
 import { ReportCard } from './components/ReportCard'
-import type { AppConfig, HistoryMeta, IsochroneFeature, Prescription, SampleMeta, SimulationResult } from './types'
+import { SignatureCard } from './components/SignatureCard'
+import { AdminReview } from './components/markings/AdminReview'
+import { applyMapClick, emptyDraft, useDraftHistory } from './components/markings/draft'
+import { Icon } from './components/markings/Icon'
+import { MarkingComposer, type ComposerStep } from './components/markings/MarkingComposer'
+import { MarkingEffectCard } from './components/markings/MarkingEffectCard'
+import { MarkingPanel } from './components/markings/MarkingPanel'
+import { UndoToast, type ToastSpec } from './components/markings/UndoToast'
+import type {
+  AppConfig,
+  ClosureSpec,
+  ConstructionResult,
+  CrosscheckResult,
+  CrosscheckSuspect,
+  HistoryMeta,
+  IsochroneFeature,
+  Marking,
+  MarkingType,
+  Prescription,
+  RecheckResult,
+  SampleMeta,
+  SimulationResult,
+  SitePlanResult,
+} from './types'
 
-function erasedCount(
-  feature: IsochroneFeature | null,
-  simulation: SimulationResult,
-  category: string,
-): number {
-  const center = feature?.properties.center
-  const ring = feature?.geometry.coordinates[0]
-  if (!center || !ring) return 0
-  const base = feature?.properties.coverage?.places ?? []
-  const virt = {
-    category: simulation.category,
-    name: '拟建',
-    lat: simulation.lat,
-    lng: simulation.lng,
-    in_circle: true,
-  }
-  const keep = (cells: { missing: string[] }[]) =>
-    category === 'all' ? cells : cells.filter((cell) => cell.missing.includes(category))
-  const before = keep(wideBlindCells(center, base, ring)).length
-  const after = keep(wideBlindCells(center, [...base, virt], ring)).length
-  return Math.max(0, before - after)
+/** 某份结果专属的派生数据：owner 不是当前结果时视为不存在。 */
+interface Scoped<T> {
+  owner: IsochroneFeature | null
+  value: T
 }
+
+function scoped<T>(entry: Scoped<T> | null, owner: IsochroneFeature | null): T | null {
+  return entry && entry.owner === owner ? entry.value : null
+}
+
+const NO_KEYS: string[] = []
+const NO_MARKINGS: Marking[] = []
 
 function shortName(name: string) {
   return name.replace(/^上海市普陀区/, '')
@@ -67,29 +107,56 @@ function Verdict({ feature }: { feature: IsochroneFeature }) {
     props.min_radius_m && props.max_radius_m
       ? `大约 ${(props.min_radius_m / 1000).toFixed(1)}–${(props.max_radius_m / 1000).toFixed(1)} 公里`
       : `大约 ${props.area_km2.toFixed(2)} km²`
+  const minutes = props.minutes ?? 15
+  // 数据来源放在第一眼：快照、实时、离线模拟的可信度差别很大，完整图签在侧栏最末
+  const source = props.simulated
+    ? '离线模拟（非真实路网）'
+    : props.history_id == null && props.generated_at
+      ? '预生成快照'
+      : '实时计算'
+  const generatedAt = props.generated_at
+    ? new Date(props.generated_at).toLocaleString('zh-CN', {
+        year: 'numeric',
+        month: 'numeric',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      })
+    : null
+  const sourceLine = [source, generatedAt, `${props.mode_label ?? '步行'} ${minutes} 分钟`]
+    .filter(Boolean)
+    .join(' · ')
   const missing =
     report.blinds.length > 0 && nearbyTotal > 0
-      ? `从这个落点步行 15 分钟走不到${report.blinds.join('、')}。周围 ${((props.coverage?.radius_m ?? 0) / 1000).toFixed(1)} 公里内有 ${nearbyTotal} 处${nearest ? `，最近的「${nearest.name}」直线 ${Math.round(nearest.meters)} 米，仍在圈外` : ''}。`
+      ? `从这个落点步行 ${minutes} 分钟走不到${report.blinds.join('、')}。周围 ${((props.coverage?.radius_m ?? 0) / 1000).toFixed(1)} 公里内有 ${nearbyTotal} 处${nearest ? `，最近的「${nearest.name}」直线 ${Math.round(nearest.meters)} 米，仍在圈外` : ''}。`
       : report.blinds.length > 0
-        ? `从这个落点步行 15 分钟走不到${report.blinds.join('、')}。`
+        ? `从这个落点步行 ${minutes} 分钟走不到${report.blinds.join('、')}。`
         : `圈内 ${inCount ?? 0} 处民生设施，六个品类都找得到。`
-  const ring = feature.geometry.coordinates[0] ?? []
-  const census =
-    props.center && places.length > 0 && ring.length >= 3
-      ? wideCensus(props.center, places, ring)
-      : null
+  const census = gridCensus(props.blindspots)
+  const delay = props.delay
+  const extentKm = ((props.blindspots?.extent_m ?? 1500) / 1000).toFixed(1)
+  const spacingM = Math.round(props.blindspots?.grid_spacing_m ?? 100)
   const lines = [
-    `图上是「${shortName(props.name ?? '当前地点')}」地名落点的 15 分钟步行范围，${reach}，面积 ${props.area_km2.toFixed(2)} km²。`,
+    `图上是「${shortName(props.name ?? '当前地点')}」地名落点的 ${minutes} 分钟步行范围，${reach}，面积 ${props.area_km2.toFixed(2)} km²。`,
+    ...(delay?.applied
+      ? [
+          `已按步行路线补回过街与路口等待（每公里约 ${Math.round(delay.delay_per_km_s ?? 0)} 秒），圈面积由 ${delay.raw_area_km2.toFixed(2)} 缩到 ${delay.area_km2.toFixed(2)} km²。`,
+        ]
+      : []),
     missing,
     census
-      ? `地图上 ${census.blind} / ${census.total} 个方格，在周围 1.5 公里内、直线 1 公里到不了菜场、药房或学校。`
-      : props.blindspots
-        ? `${props.blindspots.blind_count} / ${props.blindspots.cell_count} 个网格，步行 1 公里内缺关键设施。`
-        : '还没有做网格盲区判定。',
+      ? props.blindspots?.layout === 'disc'
+        ? `周围 ${extentKm} 公里 ${census.total} 个方格里，${census.blind} 格步行 1 公里到不了菜场、药店或小学（逐格实测路网，圈内 ${census.blindInCircle} / ${census.inCircle} 格）。`
+        : `15 分钟圈内 ${census.total} 个 ${spacingM} 米方格里，${census.blind} 格步行 1 公里到不了菜场、药店或小学（逐格实测路网）。`
+      : '还没有做网格盲区判定。',
   ]
   return (
     <section className="card verdict">
       <p className="verdict-place">{shortName(props.name ?? '当前地点')}</p>
+      <p className={props.simulated ? 'verdict-source simulated' : 'verdict-source'}>
+        {sourceLine}
+      </p>
       <div className="verdict-score">
         <span className={`grade-${report.grade}`}>{report.total.toFixed(0)}</span>
         <em>/ 100</em>
@@ -126,11 +193,10 @@ export default function App() {
   const [stageText, setStageText] = useState<string | null>(null)
   const [stageId, setStageId] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const searchInputRef = useRef<HTMLInputElement>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
-  const [showHeatmap, setShowHeatmap] = useState(false)
-  const [showOutsidePlaces, setShowOutsidePlaces] = useState(true)
-  const [showBlindspots, setShowBlindspots] = useState(true)
+  const [layers, setLayers] = useState<LayerState>(DEFAULT_LAYERS)
   const [withCoverage, setWithCoverage] = useState(true)
   const [pickEnabled, setPickEnabled] = useState(false)
   const [mode, setMode] = useState('walk')
@@ -145,6 +211,67 @@ export default function App() {
   const [latText, setLatText] = useState('31.247979')
   const [lngText, setLngText] = useState('121.416775')
   const [blindCategory, setBlindCategory] = useState('all')
+  // 施工围挡：在地图上点选标注，下次实时计算时随请求提交
+  const [closures, setClosures] = useState<ClosureSpec[]>([])
+  const [closurePlacing, setClosurePlacing] = useState(false)
+  const [closureRadius, setClosureRadius] = useState(50)
+  const [crossingDelay, setCrossingDelay] = useState(true)
+  // 下面几项都是针对「当前这份结果」算的：存的时候记下是哪份结果，
+  // 结果一换（新计算、切样例、载入历史）读出来就是空，不必在 effect 里逐个清空
+  // 围挡的自动线索：复测巡检（路线变长）与工地 POI。都只是候选，确认后才变成围挡
+  const [recheckEntry, setRecheckEntry] = useState<Scoped<RecheckResult> | null>(null)
+  const [constructionEntry, setConstructionEntry] = useState<Scoped<ConstructionResult> | null>(
+    null,
+  )
+  const [closureBusy, setClosureBusy] = useState<'recheck' | 'poi' | null>(null)
+  const [dismissedEntry, setDismissedEntry] = useState<Scoped<string[]> | null>(null)
+  // 诊疗的两项增强：核验选址结果与 AI 二次核对（Agent Plan 再找一遍缺口附近的设施）
+  const [sitePlanEntry, setSitePlanEntry] = useState<Scoped<SitePlanResult> | null>(null)
+  const [sitePlanBusy, setSitePlanBusy] = useState<string | null>(null)
+  const [crosscheckEntry, setCrosscheckEntry] = useState<Scoped<CrosscheckResult> | null>(null)
+  const [crosscheckBusy, setCrosscheckBusy] = useState(false)
+  const recheckResult = scoped(recheckEntry, isochrone)
+  const constructionResult = scoped(constructionEntry, isochrone)
+  const dismissed = scoped(dismissedEntry, isochrone) ?? NO_KEYS
+  const sitePlanResult = scoped(sitePlanEntry, isochrone)
+  const crosscheckResult = scoped(crosscheckEntry, isochrone)
+  const dismiss = (key: string) => setDismissedEntry({ owner: isochrone, value: [...dismissed, key] })
+  const currentRef = useRef(isochrone)
+  currentRef.current = isochrone
+
+  // ---------- 共享标注 ----------
+  // 附近标注按「查询中心 + 版本号」拉取；每次新建、修改、投票、审核后版本号加一，列表与地图随之刷新
+  const [nearbyEntry, setNearbyEntry] = useState<{ key: string; items: Marking[] } | null>(null)
+  const [markingsError, setMarkingsError] = useState<string | null>(null)
+  const [markingRevision, setMarkingRevision] = useState(0)
+  const [selectedMarkingId, setSelectedMarkingId] = useState<number | null>(null)
+  // 新建面板：key 变化即一个全新的面板（内部状态清零）。开着它就是「标注模式」
+  const [composer, setComposer] = useState<{
+    key: number
+    source: 'user' | 'recheck' | 'poi' | 'agent_plan'
+    step: ComposerStep
+    preset: ComposerPreset | null
+  } | null>(null)
+  // 标注模式下侧栏收成窄条，把地图让出来；用户点开窄条可以临时展开
+  const [railOpen, setRailOpen] = useState(false)
+  const sidebarRef = useRef<HTMLElement>(null)
+  const sidebarScrollRef = useRef(0)
+  const [reveal, setReveal] = useState<{
+    lat: number
+    lng: number
+    key: number
+    rightInset: number
+  } | null>(null)
+  // 地图看哪种结果：「含标注」是页面上的结果，「纯算法」由差异还原。换了结果就回到「含标注」
+  const [viewEntry, setViewEntry] = useState<Scoped<ResultView> | null>(null)
+  const draftHistory = useDraftHistory(emptyDraft('closure'))
+  const [toast, setToast] = useState<ToastSpec | null>(null)
+  // 分析时怎么用附近的标注：auto = 已核实 + 自己的 + 采纳的；none = 纯算法
+  const [markingMode, setMarkingMode] = useState<'auto' | 'none'>('auto')
+  const [adopted, setAdopted] = useState<number[]>([])
+  const [adminOpen, setAdminOpen] = useState(false)
+  const [mapFocus, setMapFocus] = useState<{ lat: number; lng: number; key: number } | null>(null)
+  const markingPanelRef = useRef<HTMLDivElement>(null)
 
   // 启动时载入配置与样例列表，并默认展示第一个样例。
   // 默认走预生成快照而不是实时计算，是为了让首屏不消耗任何 API 配额。
@@ -178,6 +305,8 @@ export default function App() {
       setLatText(String(feature.properties.center.lat))
       setLngText(String(feature.properties.center.lng))
     }
+    setClosures(feature.properties.closures ?? [])
+    setClosurePlacing(false)
     setPickEnabled(false)
     setPlacing(null)
     setNotice(null)
@@ -202,14 +331,29 @@ export default function App() {
           setLatText(String(p.center.lat))
           setLngText(String(p.center.lng))
         }
+        setClosures(p.closures ?? [])
+        setClosurePlacing(false)
+        setPlacing(null)
         setPickEnabled(false)
         setNotice(`已载入历史记录 #${id}（不消耗 API 配额）`)
       })
       .catch((e: Error) => setError(e.message))
   }
 
+  /**
+   * 实时计算。inputSys 是这组坐标的坐标系：地图点选与地址搜索得到的已经是 BD09，
+   * 只有手动输入才按用户选择的坐标系，否则 BD09 会被再转换一次、整体偏移。
+   */
   const run = useCallback(
-    async (lat: number, lng: number) => {
+    async (
+      lat: number,
+      lng: number,
+      inputSys: string = 'bd09',
+      markingOverride?: 'auto' | 'none',
+      /** 显示名：搜索的地址；同一中心点重算时沿用当前结果的名字 */
+      name?: string,
+    ) => {
+      const useMarkings = markingOverride ?? markingMode
       setBusy(true)
       setError(null)
       setNotice(null)
@@ -241,7 +385,11 @@ export default function App() {
             coverage: withCoverage,
             blindspots: withCoverage,
             mode,
-            coord_sys: coordSys,
+            coord_sys: inputSys,
+            crossing_delay: crossingDelay,
+            closures,
+            markings: { mode: useMarkings, include: adopted, exclude: [] },
+            ...(name ? { name } : {}),
           },
           {
             onStage: (stage, message) => {
@@ -269,8 +417,9 @@ export default function App() {
           if (abortRef.current === ctrl) setNotice('已取消。已画出的等时圈会保留。')
           return
         }
-        if (err instanceof ApiError && err.code === 'quota_exhausted') {
-          setError(`${err.message}（可继续查看右侧预生成样例）`)
+        // 后端的说明已经写清了服务、停在哪一步、何时恢复、现在能做什么，原样展示
+        if (err instanceof ApiError) {
+          setError(err.message)
         } else {
           setError(err instanceof Error ? err.message : String(err))
         }
@@ -282,17 +431,23 @@ export default function App() {
         }
       }
     },
-    [minutes, directions, withCoverage, mode, coordSys, dataMode],
+    [minutes, directions, withCoverage, mode, dataMode, crossingDelay, closures, markingMode, adopted],
   )
 
   async function onMapSearch() {
     const query = address.trim()
-    if (!query || busy) return
+    if (busy) return
+    if (!query) {
+      // 按钮不置灰（置灰像是坏了）：空着点就把光标放回输入框并说明
+      searchInputRef.current?.focus()
+      setNotice('先在输入框里写地址或小区名，再点「体检」；也可以直接点地图任意位置。')
+      return
+    }
     setError(null)
     try {
       const hit = await geocode(query)
       if (comparePicking) await runCompare(hit.lat, hit.lng)
-      else await run(hit.lat, hit.lng)
+      else await run(hit.lat, hit.lng, 'bd09', undefined, query)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
       setBusy(false)
@@ -305,7 +460,7 @@ export default function App() {
     setError(null)
     try {
       const hit = await geocode(address.trim())
-      await run(hit.lat, hit.lng)
+      await run(hit.lat, hit.lng, 'bd09', undefined, address.trim())
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
       setBusy(false)
@@ -353,7 +508,9 @@ export default function App() {
             coverage: withCoverage,
             blindspots: withCoverage,
             mode,
-            coord_sys: coordSys,
+            // 对比地点只来自地图点选或地址搜索，均为 BD09
+            coord_sys: 'bd09',
+            crossing_delay: crossingDelay,
           },
           {
             onStage: (stage, message) => {
@@ -370,35 +527,188 @@ export default function App() {
         )
       } catch (err) {
         if (err instanceof DOMException && err.name === 'AbortError') return
-        if (err instanceof ApiError && err.code === 'quota_exhausted') {
-          setError('配额不够，没法为这个新地点做实时体检。可以改选预生成样例做对比。')
-          return
-        }
-        setError(err instanceof Error ? err.message : String(err))
+        const message = err instanceof Error ? err.message : String(err)
+        setError(`对比地点：${message}`)
       } finally {
         if (abortRef.current === ctrl) {
           setBusy(false)
-          setStageId('done')
+          setStageId(null)
+          setStageText(null)
         }
       }
     },
-    [minutes, directions, withCoverage, mode, coordSys, dataMode],
+    [minutes, directions, withCoverage, mode, dataMode, crossingDelay],
   )
 
-  /** 模拟新建：在处方点位放一处设施，后端本地重算盲区与分数（零 API）。 */
+  /**
+   * 模拟新建：候选方格到拟建点做一次路网测距（通常不超过 100 个点对），
+   * 步行 1 公里内够得着的才消去。离线模拟数据只按直线估算上限。
+   */
   function handleSimulate(p: Prescription) {
-    if (!isochrone || p.lat == null || p.lng == null || !p.category) return
-    setPlacing(p.category)
-    simulate({ category: p.category, lat: p.lat, lng: p.lng, feature: isochrone })
+    if (p.lat == null || p.lng == null || !p.category) return
+    simulateAt(p.category, p.lat, p.lng)
+  }
+
+  function simulateAt(category: string, lat: number, lng: number) {
+    if (!isochrone) return
+    setPlacing(category)
+    simulate({
+      category,
+      lat,
+      lng,
+      feature: isochrone,
+      verify: !isochrone.properties.simulated,
+    })
       .then((result) => {
         setSimulation(result)
+        const how =
+          result.basis === 'network'
+            ? `路网实测，消耗 ${result.pairs_used} 个点对`
+            : '直线估算上限，零消耗'
         setNotice(
-          `模拟新建「${result.category}」：1 公里虚线圈内缺这一类的方格已消去，` +
-            `总分 ${result.before.score ?? '-'} → ${result.after.score ?? '-'}（直线估算，零消耗）`,
+          `模拟新建「${result.category}」：${result.candidate_count} 个候选方格中 ${result.covered_count} 格步行 1 公里内够得着，` +
+            `总分 ${result.before.score ?? '-'} → ${result.after.score ?? '-'}（${how}）`,
         )
       })
       .catch((err: Error) => setError(err.message))
   }
+
+  function addClosure(lat: number, lng: number, radius = closureRadius, label?: string) {
+    const limit = config?.closure_limits?.max_count ?? 20
+    if (closures.length >= limit) {
+      setNotice(`最多标注 ${limit} 处围挡。`)
+      return false
+    }
+    const lo = config?.closure_limits?.min_radius_m ?? 10
+    const hi = config?.closure_limits?.max_radius_m ?? 300
+    const r = Math.round(Math.min(hi, Math.max(lo, radius)))
+    setClosures([...closures, { lat, lng, radius_m: r, ...(label ? { label } : {}) }])
+    return true
+  }
+
+  /** 复测巡检：跳过缓存重取这份结果里各方向的步行路线，与保存的路线比。 */
+  async function runRecheck() {
+    if (!isochrone || closureBusy) return
+    setClosureBusy('recheck')
+    setError(null)
+    const owner = isochrone
+    try {
+      const result = await recheck(owner)
+      setRecheckEntry({ owner, value: result })
+      setNotice(
+        `复测了 ${result.checked} 个方向（${result.route_requests} 次步行路线规划）：` +
+          (result.suspects.length > 0
+            ? `${result.suspects.length} 处疑似新增阻断，请逐个确认。`
+            : `没有发现明显变长的路线${result.shorter ? `，${result.shorter} 个方向反而变短` : ''}。`),
+      )
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setClosureBusy(null)
+    }
+  }
+
+  /** 工地 POI 候选：2 次地点检索，按是否压在步行路线上排序。 */
+  async function runConstruction() {
+    if (closureBusy) return
+    const owner = isochrone
+    const c = owner?.properties.center ?? center
+    setClosureBusy('poi')
+    setError(null)
+    try {
+      const result = await constructionCandidates({
+        lat: c.lat,
+        lng: c.lng,
+        radius_m: owner?.properties.blindspots?.extent_m ?? 1500,
+        feature: owner,
+      })
+      setConstructionEntry({ owner, value: result })
+      setNotice(
+        `工地检索：${result.raw_count} 条结果，筛掉 ${result.dropped} 条店铺与公司，` +
+          `留下 ${result.candidates.length} 处候选（${result.poi_queries} 次地点检索）。`,
+      )
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setClosureBusy(null)
+    }
+  }
+
+  function confirmCandidate(key: string, lat: number, lng: number, radius: number, label: string) {
+    if (addClosure(lat, lng, radius, label)) dismiss(key)
+  }
+
+  /** 核验选址：对某一品类的补设处方取几个备选点做路网核验，最好的一处直接显示在地图上。 */
+  function handleVerifySite(category: string) {
+    if (!isochrone || sitePlanBusy) return
+    setSitePlanBusy(category)
+    setError(null)
+    const owner = isochrone
+    sitePlan({ feature: owner, category })
+      .then((result) => {
+        setSitePlanEntry({ owner, value: result })
+        // 等结果期间用户换了地点：不要把旧结果的模拟画到新结果上
+        if (currentRef.current !== owner) return
+        setSimulation(result.best.simulation)
+        const best = result.best
+        setNotice(
+          `核验选址「${category}」：` +
+            (result.verified
+              ? `${result.candidates.filter((c) => c.status === 'verified').length} 个备选点路网实测，` +
+                `最好的一处消去 ${best.verified ?? best.simulation.covered_count} 格（${result.pairs_used} 个点对）。`
+              : '未做路网核验，只按直线估算。'),
+        )
+      })
+      .catch((err: Error) => setError(err.message))
+      .finally(() => setSitePlanBusy(null))
+  }
+
+  /**
+   * AI 二次核对：用百度地图 Agent Plan 再找一遍每片灰色区域附近缺的关键设施。
+   * 只给线索：疑似漏收录的设施可以按补录模拟一次，或到现场确认后共享为「补录设施」标注。
+   */
+  function runCrosscheck() {
+    if (!isochrone || crosscheckBusy) return
+    setCrosscheckBusy(true)
+    setError(null)
+    const owner = isochrone
+    crosscheckFeature(owner)
+      .then((result) => {
+        setCrosscheckEntry({ owner, value: result })
+        if (currentRef.current !== owner) return
+        const asked = result.rows.length
+        const fresh = result.agent_plan.requests
+        const cost = fresh > 0 ? `新问 ${fresh} 个，其余读缓存` : '全部读缓存'
+        setNotice(
+          result.aborted
+            ? `AI 二次核对没有完成：${result.aborted}`
+            : `AI 二次核对：问了 ${asked} 个问题（${cost}），` +
+                (result.suspects.length > 0
+                  ? `发现 ${result.suspects.length} 处疑似漏收录的设施，请逐个确认。`
+                  : '缺口附近的同类设施都已收录，盲区不是漏检造成的。'),
+        )
+      })
+      .catch((err: Error) => setError(err.message))
+      .finally(() => setCrosscheckBusy(false))
+  }
+
+  /** 疑似漏收录的设施 → 新建「补录设施」标注：位置、类别、名称都带好，照片仍要到现场拍。 */
+  function shareSuspect(s: CrosscheckSuspect) {
+    openComposer({
+      type: 'facility_extra',
+      point: { lat: s.lat, lng: s.lng },
+      category: s.category,
+      name: s.name,
+      source: 'agent_plan',
+      context: '来自 AI 二次核对（百度地图 Agent Plan）',
+    })
+  }
+
+  // 标注的围挡与当前结果用到的不一致时，提醒要重新计算才生效
+  const appliedClosures = isochrone?.properties.closures ?? []
+  const closuresDirty =
+    JSON.stringify(appliedClosures.map((c) => [c.lat, c.lng, c.radius_m])) !==
+    JSON.stringify(closures.map((c) => [c.lat, c.lng, c.radius_m]))
 
   // 品类词表由后端下发，图层筛选与判定口径因此不会各写一份而对不上
   const keyCategories = (config?.categories ?? [])
@@ -407,6 +717,186 @@ export default function App() {
   const props = isochrone?.properties
   const report = props?.report
   const coverage = props?.coverage
+  // 复测要有路线基线：新版步行结果每个方向都存了路线，旧快照、离线模拟、非步行没有
+  const baselineRays = (props?.rays ?? []).filter((r) => (r.route_path?.length ?? 0) >= 2).length
+  const canRecheck = baselineRays > 0 && !props?.simulated && (props?.mode ?? 'walk') === 'walk'
+  // 传给地图的数组必须记忆化：每次渲染都新建数组会让地图覆盖物整层重建
+  const suspects = useMemo(
+    () => (recheckResult?.suspects ?? []).filter((s) => !dismissed.includes(s.id)),
+    [recheckResult, dismissed],
+  )
+  const sites = useMemo(
+    () =>
+      (constructionResult?.candidates ?? []).filter(
+        (c) => !dismissed.includes(`poi-${c.lat}-${c.lng}`),
+      ),
+    [constructionResult, dismissed],
+  )
+  const recheckRays = useMemo(
+    () => (recheckResult?.rays ?? []).filter((r) => r.status !== 'same'),
+    [recheckResult],
+  )
+
+  // ---------- 共享标注：拉取、选择、新建 ----------
+  const markingConfig = config?.markings
+  const markingCenter = props?.center ?? center
+  const mLat = markingCenter.lat
+  const mLng = markingCenter.lng
+  // 与后端分析时的查询半径一致：网格范围 + 1 公里判定阈值
+  const mRadius = (props?.blindspots?.extent_m ?? 1500) + (config?.walk_limit_m ?? 1000)
+  const nearbyKey = `${mLat.toFixed(6)},${mLng.toFixed(6)},${Math.round(mRadius)},${markingRevision}`
+  const markingsReady = Boolean(markingConfig)
+  useEffect(() => {
+    if (!markingsReady) return
+    let cancelled = false
+    const key = `${mLat.toFixed(6)},${mLng.toFixed(6)},${Math.round(mRadius)},${markingRevision}`
+    fetchMarkings(mLat, mLng, mRadius)
+      .then((items) => {
+        if (cancelled) return
+        setNearbyEntry({ key, items })
+        setMarkingsError(null)
+      })
+      .catch((err: Error) => {
+        if (!cancelled) setMarkingsError(err.message)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [markingsReady, mLat, mLng, mRadius, markingRevision])
+  const nearbyMarkings = nearbyEntry?.items ?? NO_MARKINGS
+  const markingsLoading = markingsReady && nearbyEntry?.key !== nearbyKey
+
+  const refreshMarkings = useCallback(() => setMarkingRevision((r) => r + 1), [])
+  const showToast = useCallback(
+    (t: Omit<ToastSpec, 'id'>) => setToast({ ...t, id: Date.now() + Math.random() }),
+    [],
+  )
+
+  function revealMarking(id: number) {
+    setSelectedMarkingId(id)
+    // 侧栏可能滚在很下面：把标注卡片滚进视野，点了地图上的徽标马上能看到详情
+    window.requestAnimationFrame(() =>
+      markingPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+    )
+  }
+
+  function locateMarking(m: Marking) {
+    setMapFocus({ lat: m.lat, lng: m.lng, key: Date.now() })
+    setSelectedMarkingId(m.id)
+  }
+
+  /** 打开新建标注（进入标注模式）。从地图上点进来时类型、位置、类别与原因已带好。 */
+  function openComposer(preset?: ComposerPreset) {
+    if (!markingConfig) return
+    setClosurePlacing(false)
+    setPlacing(null)
+    setComparePicking(false)
+    setSelectedMarkingId(null)
+    setSamplesOpen(false)
+    const [lo, hi] = markingConfig.limits.closure_radius_m
+    const radius = Math.min(hi, Math.max(lo, Math.round(preset?.radius ?? 50)))
+    const type: MarkingType = preset?.type ?? 'closure'
+    draftHistory.reset({
+      ...emptyDraft(type, radius),
+      point: preset?.point ?? null,
+      place: preset?.place ?? null,
+      vertices: preset?.vertices ?? [],
+    })
+    const step: ComposerStep = !preset
+      ? 'type'
+      : type === 'gray_area' && !preset.reason
+        ? 'why'
+        : type === 'facility_missing' && preset.place && preset.reason
+          ? 'details'
+          : 'place'
+    // 侧栏要收起：记下滚动位置，退出标注模式时回到原处
+    if (!composer) sidebarScrollRef.current = sidebarRef.current?.scrollTop ?? 0
+    setRailOpen(false)
+    setComposer({ key: Date.now(), source: preset?.source ?? 'user', step, preset: preset ?? null })
+    const anchor = preset?.point ?? preset?.vertices?.[0]
+    if (anchor) setReveal({ ...anchor, key: Date.now(), rightInset: 400 })
+  }
+
+  function handleIntent(intent: MapIntent) {
+    switch (intent.kind) {
+      case 'compose':
+        openComposer(intent.preset)
+        return
+      case 'temp-closure':
+        if (addClosure(intent.lat, intent.lng, intent.radius, intent.label)) {
+          dismiss(intent.key)
+          setNotice('已加入临时围挡：只算你这次，在左侧围挡面板里重新计算后生效。')
+        }
+        return
+      case 'dismiss':
+        dismiss(intent.key)
+        return
+      case 'select-marking':
+        revealMarking(intent.id)
+    }
+  }
+
+  const railMode = composer !== null && !railOpen
+  useLayoutEffect(() => {
+    if (railMode || !sidebarRef.current) return
+    sidebarRef.current.scrollTop = sidebarScrollRef.current
+  }, [railMode])
+
+  function handleMarkingCreated(marking: Marking) {
+    setComposer(null)
+    refreshMarkings()
+    revealMarking(marking.id)
+    showToast({
+      message: `已提交共享标注（附 ${marking.photo_count} 张现场照片）：对你立即生效，重新计算即可看到影响`,
+      tone: 'ok',
+      undoLabel: '撤回',
+      undo: async () => {
+        await retractMarking(marking.id)
+        refreshMarkings()
+      },
+    })
+  }
+
+  function toggleAdopt(id: number) {
+    setAdopted((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
+  }
+
+  function rerunWithMarkings(nextMode: 'auto' | 'none') {
+    setMarkingMode(nextMode)
+    void run(center.lat, center.lng, 'bd09', nextMode, isochrone?.properties.name)
+  }
+
+  // 这份结果之后新出现、按默认规则本该计入却没计入的附近标注（已核实的，或自己的）
+  const appliedIds = new Set((props?.markings?.applied ?? []).map((m) => m.id))
+  const unapplied =
+    isochrone && !props?.simulated && markingMode === 'auto'
+      ? nearbyMarkings.filter((m) => (m.status === 'verified' || m.mine) && !appliedIds.has(m.id))
+      : NO_MARKINGS
+  // 「纯算法 / 含标注」：能即时切换时地图用还原出来的纯算法结果，侧栏报告始终是页面上的结果
+  const switcher = viewSwitch(isochrone)
+  const switchKind = switcher.kind
+  const resultView: ResultView =
+    switchKind === 'instant'
+      ? (scoped(viewEntry, isochrone) ?? 'markings')
+      : switcher.kind === 'rerun' && switcher.to === 'auto'
+        ? 'algorithm'
+        : 'markings'
+  const mapFeature = useMemo(
+    () =>
+      isochrone && switchKind === 'instant' && resultView === 'algorithm'
+        ? algorithmView(isochrone)
+        : isochrone,
+    [isochrone, switchKind, resultView],
+  )
+  // 围挡改了圈时，另一种看法的外圈画成点线对比
+  const baselineRing = props?.markings?.baseline?.ring ?? null
+  const altRing =
+    baselineRing && isochrone
+      ? resultView === 'algorithm' && switchKind === 'instant'
+        ? (isochrone.geometry.coordinates[0] ?? null)
+        : baselineRing
+      : null
+  const composerPicking = composer?.step === 'place'
 
   return (
     <div className="app">
@@ -435,10 +925,34 @@ export default function App() {
               ? '离线模拟 · 非真实路网数据'
               : '实时计算结果'}
         </span>
+        {markingConfig?.admin_enabled && (
+          <button
+            type="button"
+            className="admin-entry"
+            aria-pressed={adminOpen}
+            onClick={() => setAdminOpen((v) => !v)}
+          >
+            <Icon name="shield" size={14} />
+            {adminOpen ? '关闭审核' : '标注审核'}
+          </button>
+        )}
       </header>
 
-      <div className="layout">
-        <aside className="sidebar">
+      <div className={railMode ? 'layout rail' : 'layout'}>
+        {railMode && (
+          <aside className="sidebar-rail" aria-label="侧栏已收起">
+            <button
+              type="button"
+              title="展开侧栏（标注模式下地图会变窄）"
+              aria-label="展开侧栏"
+              onClick={() => setRailOpen(true)}
+            >
+              <Icon name="chevron" size={16} />
+            </button>
+            <span>体检报告</span>
+          </aside>
+        )}
+        <aside className="sidebar" ref={sidebarRef}>
           {isochrone && <Verdict feature={isochrone} />}
 
           <details className="card">
@@ -531,14 +1045,14 @@ export default function App() {
                   onClick={() => {
                     const la = Number(latText)
                     const ln = Number(lngText)
-                    if (Number.isFinite(la) && Number.isFinite(ln)) run(la, ln)
+                    if (Number.isFinite(la) && Number.isFinite(ln)) run(la, ln, coordSys)
                   }}
                 >
                   计算
                 </button>
               </div>
               <p className="hint">
-                地图点选与地址搜索会自动回填（BD09）。手动输入时请按上方选择的坐标系。
+                地图点选与地址搜索会自动回填（BD09），不再转换；只有点这里的「计算」才按上方坐标系转换。
               </p>
             </div>
 
@@ -629,6 +1143,19 @@ export default function App() {
             <label className="check">
               <input
                 type="checkbox"
+                checked={crossingDelay}
+                onChange={(e) => setCrossingDelay(e.target.checked)}
+              />
+              补回过街与路口等待（步行）
+            </label>
+            <p className="hint">
+              批量算路的耗时只是距离 ÷ 步速，不含红绿灯与天桥。开启后每个方向另取一条步行路线，
+              约 36 次路线规划；标注了施工围挡时也要靠它判断路线是否被挡。
+            </p>
+
+            <label className="check">
+              <input
+                type="checkbox"
                 checked={pickEnabled}
                 onChange={(e) => setPickEnabled(e.target.checked)}
               />
@@ -636,12 +1163,25 @@ export default function App() {
             </label>
             <p className="hint">默认关闭。误点一次就会烧掉一批算路点对。</p>
 
-            <button className="primary" onClick={() => run(center.lat, center.lng)} disabled={busy}>
+            <button
+              className="primary"
+              onClick={() => run(center.lat, center.lng, 'bd09', undefined, props?.name)}
+              disabled={busy}
+            >
               {busy ? '计算中…' : '重新计算当前中心点'}
             </button>
           </details>
 
-          {error && <div className="banner error">{error}</div>}
+          {(config?.warnings ?? []).map((w) => (
+            <div key={w.code} className="banner error" role="alert">
+              {w.message}
+            </div>
+          ))}
+          {error && (
+            <div className="banner error" role="alert">
+              {error}
+            </div>
+          )}
           {notice && !error && <div className="banner notice">{notice}</div>}
 
           {compareFeature && isochrone?.properties.report && (
@@ -654,60 +1194,95 @@ export default function App() {
               }}
             />
           )}
+          {isochrone && markingConfig && unapplied.length > 0 && !props?.markings && (
+            <div className="banner notice mk-banner" role="status">
+              <span>
+                附近有 {unapplied.length} 条
+                {unapplied.some((m) => m.mine) ? '已核实或你自己的' : '已核实的'}
+                共享标注，这份结果还没有计入。
+              </span>
+              <button
+                type="button"
+                className="mk-btn small"
+                disabled={busy}
+                onClick={() => rerunWithMarkings('auto')}
+              >
+                按标注重新计算
+              </button>
+            </div>
+          )}
+          {props?.markings &&
+            markingConfig &&
+            (props.markings.nearby_count > 0 || props.markings.mode === 'none') && (
+              <MarkingEffectCard
+                result={props.markings}
+                adopted={adopted}
+                onToggleAdopt={toggleAdopt}
+                pendingNew={unapplied.length}
+                mode={markingMode}
+                onRerun={rerunWithMarkings}
+                onSelect={revealMarking}
+                busy={busy}
+                mapView={
+                  switchKind === 'instant'
+                    ? {
+                        view: resultView,
+                        onChange: (view) => setViewEntry({ owner: isochrone, value: view }),
+                      }
+                    : undefined
+                }
+              />
+            )}
+          {isochrone && report && <NarrativeCard feature={isochrone} />}
           {report && (
             <ReportCard
               report={report}
               coverage={coverage}
-              rays={props?.rays}
               meta={props}
-              ring={isochrone.geometry.coordinates[0]}
               simulation={simulation}
               onSimulate={handleSimulate}
               onClearSimulation={() => setSimulation(null)}
+              sitePlan={sitePlanResult}
+              sitePlanBusy={sitePlanBusy}
+              onVerifySite={handleVerifySite}
+              crosscheck={crosscheckResult}
+              crosscheckBusy={crosscheckBusy}
+              onCrosscheck={
+                config?.agent_plan?.configured && !props?.simulated ? runCrosscheck : undefined
+              }
+              onSimulateSuspect={(s) => simulateAt(s.category, s.lat, s.lng)}
+              onShareSuspect={markingConfig ? shareSuspect : undefined}
             />
           )}
 
-          {activeSampleId && (
-            <section className="card">
-              <h2 className="card-title">成果导出</h2>
-              <p className="hint">基于当前载入的快照生成，零 API 消耗。</p>
-              <div className="export-row">
-                <a
-                  className="export-btn primary"
-                  href={`/api/samples/${activeSampleId}/export?format=zip`}
-                >
-                  ZIP 全量打包
-                </a>
-                <a
-                  className="export-btn"
-                  href={`/api/samples/${activeSampleId}/export?format=md`}
-                >
-                  Markdown 报告
-                </a>
-                <a
-                  className="export-btn"
-                  href={`/api/samples/${activeSampleId}/export?format=geojson`}
-                >
-                  GeoJSON
-                </a>
-                <a
-                  className="export-btn"
-                  href={`/api/samples/${activeSampleId}/export?format=csv`}
-                >
-                  盲区 CSV
-                </a>
-                <a
-                  className="export-btn"
-                  href={`/api/samples/${activeSampleId}/export?format=json`}
-                >
-                  JSON
-                </a>
-              </div>
-            </section>
+          {markingConfig && (
+            <div ref={markingPanelRef} className="mk-panel-anchor">
+              <MarkingPanel
+                config={markingConfig}
+                nearby={nearbyMarkings}
+                loading={markingsLoading}
+                error={markingsError}
+                radiusM={mRadius}
+                selectedId={selectedMarkingId}
+                onSelect={setSelectedMarkingId}
+                onCreate={() => openComposer()}
+                onChanged={refreshMarkings}
+                onToast={showToast}
+                onLocate={locateMarking}
+                revision={markingRevision}
+              />
+            </div>
           )}
+
+          {isochrone && (
+            <ExportCard feature={isochrone} sampleId={activeSampleId} />
+          )}
+
+          {props && report && <SignatureCard meta={props} report={report} />}
         </aside>
 
         <main className="stage">
+          {!composer && (
           <div className={comparePicking ? 'map-search compare' : 'map-search'}>
             <form
               onSubmit={(e) => {
@@ -717,7 +1292,9 @@ export default function App() {
             >
               {comparePicking && <span className="search-tag">对比地点</span>}
               <input
+                ref={searchInputRef}
                 value={address}
+                aria-label={comparePicking ? '对比地点的地址或小区名' : '地址或小区名'}
                 placeholder={
                   comparePicking
                     ? '输入要对比的小区或地址'
@@ -725,7 +1302,11 @@ export default function App() {
                 }
                 onChange={(e) => setAddress(e.target.value)}
               />
-              <button type="submit" disabled={busy || !address.trim()}>
+              <button
+                type="submit"
+                disabled={busy}
+                title="按地址实时计算：新地点会消耗百度配额，算过的地点走缓存"
+              >
                 {busy ? '计算中…' : comparePicking ? '对比' : '体检'}
               </button>
               {comparePicking ? (
@@ -772,6 +1353,8 @@ export default function App() {
               </ul>
             )}
           </div>
+          )}
+          {!composer && (
           <div className="map-tools floating">
             <button
               type="button"
@@ -790,15 +1373,42 @@ export default function App() {
                   return
                 }
                 setComparePicking(false)
+                setClosurePlacing(false)
+                setComposer(null)
                 setPlacing(keyCategories[0] ?? '生鲜采买')
               }}
             >
               {placing || simulation ? '退出模拟' : '模拟新建'}
             </button>
+            <button
+              type="button"
+              className={closurePlacing ? 'tool on' : 'tool'}
+              aria-pressed={closurePlacing}
+              title="只影响你这次计算，不保存、不共享"
+              onClick={() => {
+                setClosurePlacing((v) => !v)
+                setPlacing(null)
+                setComparePicking(false)
+                setComposer(null)
+              }}
+            >
+              {closurePlacing ? '结束标注' : `临时围挡${closures.length ? `（${closures.length}）` : ''}`}
+            </button>
+            {markingConfig && (
+              <button
+                type="button"
+                className="tool share"
+                title="保存下来，附近的人分析时也能用上。也可以直接点地图上的方格、设施"
+                onClick={() => openComposer()}
+              >
+                共享标注
+              </button>
+            )}
             <button type="button" className="tool" onClick={() => window.print()}>
               导出 PDF
             </button>
           </div>
+          )}
           {placing && (
             <section className="place-panel floating" aria-label="新建设施模拟">
               <header className="place-head">
@@ -837,7 +1447,12 @@ export default function App() {
               </p>
               {simulation ? (
                 <p className="place-diff">
-                  {erasedCount(isochrone, simulation, blindCategory)} 个方格已从地图上消去。分数{' '}
+                  {erasedCount(isochrone?.properties.blindspots, simulation, blindCategory)}{' '}
+                  个方格已从地图上消去
+                  {simulation.basis === 'network'
+                    ? `（路网实测，${simulation.pairs_used} 个点对）`
+                    : '（直线估算上限）'}
+                  。分数{' '}
                   {simulation.before.score ?? '—'} → {simulation.after.score ?? '—'}
                   {simulation.after.grade ? `（${simulation.after.grade}）` : ''}
                 </p>
@@ -851,31 +1466,321 @@ export default function App() {
               </footer>
             </section>
           )}
+          {composer && markingConfig && (
+            <MarkingComposer
+              key={composer.key}
+              config={markingConfig}
+              history={draftHistory}
+              source={composer.source}
+              step={composer.step}
+              onStep={(step) => setComposer((c) => (c ? { ...c, step } : c))}
+              preset={composer.preset}
+              places={coverage?.places ?? []}
+              rays={props?.rays ?? []}
+              center={markingCenter}
+              onCreated={handleMarkingCreated}
+              onFocusExisting={(m) => {
+                setComposer(null)
+                locateMarking(m)
+                revealMarking(m.id)
+              }}
+              onClose={() => setComposer(null)}
+            />
+          )}
+          {!composer && (closurePlacing || closures.length > 0 || recheckResult || constructionResult) && (
+            <section className="closure-panel floating" aria-label="施工围挡标注">
+              <header>
+                <strong>施工围挡</strong>
+                <button type="button" onClick={() => setClosurePlacing((v) => !v)}>
+                  {closurePlacing ? '结束标注' : '继续标注'}
+                </button>
+              </header>
+              <p className="hint">
+                百度接口不提供围挡数据，也不能绕开指定区域规划路线。
+                在地图上点选围挡位置，或用下面两条线索找疑似点、确认后加入。重新计算后，
+                路线穿过围挡的方向按受阻截断，围挡内的设施视为暂不可用。
+              </p>
+              <div className="closure-auto">
+                <div className="closure-auto-actions">
+                  <button
+                    type="button"
+                    disabled={!canRecheck || closureBusy !== null || busy}
+                    title={
+                      canRecheck
+                        ? '跳过缓存重新规划各方向步行路线，与这份结果保存的路线比较'
+                        : '这份结果没有保存各方向的步行路线（旧版快照、离线模拟或非步行），先实时计算一次'
+                    }
+                    onClick={() => void runRecheck()}
+                  >
+                    {closureBusy === 'recheck'
+                      ? '复测中…'
+                      : `复测巡检（${baselineRays || 36} 次路线规划）`}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={closureBusy !== null || busy || props?.simulated}
+                    onClick={() => void runConstruction()}
+                  >
+                    {closureBusy === 'poi' ? '检索中…' : '查工地 POI（2 次地点检索）'}
+                  </button>
+                </div>
+                {!canRecheck && (
+                  <p className="hint">
+                    复测要和上次的路线比：这份结果没有路线基线，先开启过街等待校正实时计算一次。
+                  </p>
+                )}
+                {recheckResult && (
+                  <p className="hint">
+                    复测 {recheckResult.checked} 个方向：{recheckResult.same} 个不变、
+                    {recheckResult.longer} 个变长、{recheckResult.shorter} 个变短、
+                    {recheckResult.rerouted} 个改道但长度相近
+                    {recheckResult.failed ? `、${recheckResult.failed} 个没取到` : ''}。
+                    {recheckResult.baseline.age_days != null
+                      ? `基线是 ${recheckResult.baseline.age_days} 天前的路线。`
+                      : ''}
+                  </p>
+                )}
+                {suspects.length > 0 && (
+                  <ul className="candidate-list" aria-label="复测发现的疑似阻断">
+                    {suspects.map((s) => (
+                      <li key={s.id}>
+                        <div>
+                          <b>{s.label}</b>
+                          <span>
+                            +{s.max_delta_m} 米 · 半径 {s.radius_m} 米{s.precise ? '' : ' · 位置较粗'}
+                          </span>
+                          <p>{s.reason}</p>
+                        </div>
+                        <footer>
+                          <button
+                            type="button"
+                            className="primary"
+                            onClick={() =>
+                              confirmCandidate(s.id, s.lat, s.lng, s.radius_m, s.label)
+                            }
+                          >
+                            确认为围挡
+                          </button>
+                          {markingConfig && (
+                            <button
+                              type="button"
+                              title="存成共享标注，附近的人分析时也能用上"
+                              onClick={() =>
+                                openComposer({
+                                  type: 'closure',
+                                  point: { lat: s.lat, lng: s.lng },
+                                  radius: s.radius_m,
+                                  source: 'recheck',
+                                  context: `来自复测巡检 · ${s.label}`,
+                                })
+                              }
+                            >
+                              共享
+                            </button>
+                          )}
+                          <button type="button" onClick={() => dismiss(s.id)}>
+                            忽略
+                          </button>
+                        </footer>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {constructionResult && (
+                  <p className="hint">
+                    {constructionResult.candidates.length > 0
+                      ? `工地候选 ${constructionResult.candidates.length} 处` +
+                        `（压在步行路线上的排在前面）。`
+                      : '工地检索没有找到候选。POI 召回有限，查不到不等于没有工地。'}
+                    {constructionResult.failed_keywords.length > 0
+                      ? `「${constructionResult.failed_keywords.join('、')}」检索失败。`
+                      : ''}
+                  </p>
+                )}
+                {sites.length > 0 && (
+                  <ul className="candidate-list" aria-label="工地 POI 候选">
+                    {sites.slice(0, 8).map((c) => {
+                      const key = `poi-${c.lat}-${c.lng}`
+                      return (
+                        <li key={key}>
+                          <div>
+                            <b>{c.name}</b>
+                            <span>
+                              距中心 {c.distance_m} 米
+                              {c.on_route ? ' · 在步行路线上' : ''}
+                            </span>
+                            {c.address && <p>{c.address}</p>}
+                          </div>
+                          <footer>
+                            <button
+                              type="button"
+                              className="primary"
+                              onClick={() =>
+                                confirmCandidate(
+                                  key,
+                                  c.lat,
+                                  c.lng,
+                                  c.radius_m,
+                                  `工地：${c.name}`.slice(0, 40),
+                                )
+                              }
+                            >
+                              确认为围挡
+                            </button>
+                            {markingConfig && (
+                              <button
+                                type="button"
+                                title="存成共享标注，附近的人分析时也能用上"
+                                onClick={() =>
+                                  openComposer({
+                                    type: 'closure',
+                                    point: { lat: c.lat, lng: c.lng },
+                                    radius: c.radius_m,
+                                    source: 'poi',
+                                    context: '来自工地检索',
+                                  })
+                                }
+                              >
+                                共享
+                              </button>
+                            )}
+                            <button type="button" onClick={() => dismiss(key)}>
+                              忽略
+                            </button>
+                          </footer>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                )}
+              </div>
+              <label>
+                新围挡半径
+                <select
+                  value={closureRadius}
+                  onChange={(e) => setClosureRadius(Number(e.target.value))}
+                >
+                  {[30, 50, 100, 200].map((r) => (
+                    <option key={r} value={r}>
+                      {r} 米
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {closures.length > 0 ? (
+                <ul>
+                  {closures.map((c, i) => (
+                    <li key={`${c.lat}-${c.lng}-${i}`}>
+                      <span>
+                        #{i + 1} · 半径 {c.radius_m} 米{c.label ? ` · ${c.label}` : ''}
+                      </span>
+                      <button
+                        type="button"
+                        aria-label={`删除第 ${i + 1} 处围挡`}
+                        onClick={() => setClosures(closures.filter((_, j) => j !== i))}
+                      >
+                        删除
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p>还没有标注。点地图放一处。</p>
+              )}
+              <footer>
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={busy || !closuresDirty}
+                  onClick={() => {
+                    setClosurePlacing(false)
+                    void run(center.lat, center.lng, 'bd09', undefined, props?.name)
+                  }}
+                >
+                  {closuresDirty ? '按围挡重新计算（消耗配额）' : '当前结果已含这些围挡'}
+                </button>
+                <button type="button" disabled={closures.length === 0} onClick={() => setClosures([])}>
+                  清空
+                </button>
+              </footer>
+            </section>
+          )}
           {config?.browser_ak ? (
             <MapView
               ak={config.browser_ak}
               center={center}
-              isochrone={isochrone}
-              showHeatmap={showHeatmap}
-              showBlindspots={showBlindspots}
+              isochrone={mapFeature}
+              fitKey={isochrone}
+              layers={layers}
+              onLayers={setLayers}
               blindCategory={blindCategory}
-              pickEnabled={pickEnabled || comparePicking || placing != null}
+              closures={closures}
+              pickEnabled={
+                composer
+                  ? composerPicking
+                  : pickEnabled || comparePicking || placing != null || closurePlacing
+              }
               pickHint={
-                placing
-                  ? `点地图任意位置，放置「${placing}」`
-                  : comparePicking
-                    ? '点地图，把这里作为对比地点（消耗配额）'
-                    : '点击地图将按新中心点重新计算（消耗配额）'
+                closurePlacing
+                  ? `点地图放一处临时围挡（半径 ${closureRadius} 米，不消耗配额）`
+                  : placing
+                    ? `点地图任意位置，放置「${placing}」`
+                    : comparePicking
+                      ? '点地图，把这里作为对比地点（消耗配额）'
+                      : '点击地图将按新中心点重新计算（消耗配额）'
+              }
+              viewSwitch={switcher}
+              resultView={resultView}
+              onResultView={(view) => setViewEntry({ owner: isochrone, value: view })}
+              onRerun={rerunWithMarkings}
+              busy={busy}
+              altRing={altRing}
+              canMark={Boolean(markingConfig) && !placing && !closurePlacing && !comparePicking}
+              onIntent={handleIntent}
+              reveal={reveal}
+              radiusLimits={markingConfig?.limits.closure_radius_m}
+              onDraftRadius={(radius) =>
+                draftHistory.push({ ...draftHistory.draft, radius })
               }
               simulation={simulation}
               compare={compareFeature}
-              onToggleHeatmap={() => setShowHeatmap((v) => !v)}
-              onToggleBlindspots={() => setShowBlindspots((v) => !v)}
+              suspects={suspects}
+              recheckRays={recheckRays}
+              constructionSites={sites}
+              markings={nearbyMarkings}
+              selectedMarkingId={selectedMarkingId}
+              onSelectMarking={revealMarking}
+              draft={composer ? draftHistory.draft : null}
+              onPickPlace={(place) => {
+                // 只在「位置」这一步换选中的设施；填详情时误点地图上的设施不该改掉它
+                if (!composerPicking) return
+                draftHistory.push({
+                  ...draftHistory.draft,
+                  place,
+                  point: { lat: place.lat, lng: place.lng },
+                })
+              }}
+              focus={mapFocus}
               blindCategories={keyCategories}
               onBlindCategory={setBlindCategory}
-              showOutsidePlaces={showOutsidePlaces}
-              onToggleOutsidePlaces={() => setShowOutsidePlaces((v) => !v)}
               onPickCenter={(lat, lng) => {
+                // 正在画共享标注：这一下是给草图放点，不改中心、不算路
+                if (composer) {
+                  if (!composerPicking || !markingConfig) return
+                  draftHistory.push(
+                    applyMapClick(
+                      draftHistory.draft,
+                      { lat, lng },
+                      coverage?.places ?? [],
+                      markingConfig.limits.polygon_max_vertices,
+                    ),
+                  )
+                  return
+                }
+                if (closurePlacing) {
+                  addClosure(lat, lng)
+                  return
+                }
                 if (placing) {
                   handleSimulate({
                     action: 'site',
@@ -894,7 +1799,12 @@ export default function App() {
               onError={setError}
             />
           ) : (
-            <div className="placeholder">{error ?? '正在载入地图配置…'}</div>
+            <div className="placeholder" role="status">
+              {config
+                ? (config.warnings?.find((w) => w.code === 'missing_browser_ak')?.message ??
+                  '浏览器端 AK 为空，地图底图无法加载。报告与样例数据仍可在左侧查看。')
+                : (error ?? '正在载入地图配置…')}
+            </div>
           )}
 
           {busy && (
@@ -915,7 +1825,9 @@ export default function App() {
                     ['done', '报告'],
                   ] as const
                 ).map(([id, label], i, all) => {
-                  const current = all.findIndex(([key]) => key === stageId)
+                  // 「叠加用户标注」是盲区判定的第二遍，进度上仍算在「盲区」这一格
+                  const at = stageId === 'markings' ? 'blindspots' : stageId
+                  const current = all.findIndex(([key]) => key === at)
                   const state = i < current ? 'done' : i === current ? 'active' : 'todo'
                   return (
                     <li key={id} className={state}>
@@ -926,6 +1838,16 @@ export default function App() {
               </ol>
             </div>
           )}
+
+          {adminOpen && markingConfig && (
+            <AdminReview
+              config={markingConfig}
+              onClose={() => setAdminOpen(false)}
+              onLocate={locateMarking}
+              onChanged={refreshMarkings}
+            />
+          )}
+          {toast && <UndoToast key={toast.id} toast={toast} onDone={() => setToast(null)} />}
         </main>
       </div>
     </div>

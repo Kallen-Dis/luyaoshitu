@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, v2]
   pull_request:
 
 jobs:
@@ -16,8 +16,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: pip install -r requirements.txt
+      - run: pip install -r requirements-dev.txt
+      # 仓库里不能有写死的 AK / Token（CI 上没有 .env，只查常见写法）
+      - run: python ../scripts/check_secrets.py
       - run: python -m ruff check app tests ../scripts
+      # 格式只检查不改写；不合格时在 backend/ 下运行 ruff format app tests ../scripts
+      - run: python -m ruff format --check app tests ../scripts
       - run: python -m pytest tests -q
         env:
           PYTHONPATH: .
