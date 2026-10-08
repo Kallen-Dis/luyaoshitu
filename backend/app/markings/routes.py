@@ -51,6 +51,7 @@ class MarkingIn(BaseModel):
     radius_m: float | None = None
     polygon: list[list[float]] | None = Field(None, max_length=80)
     category: str | None = Field(None, max_length=20)
+    sells_vegetables: bool | None = Field(None, strict=True)
     categories: list[str] | None = Field(None, max_length=10)
     name: str | None = Field(None, max_length=200)
     reason: str | None = Field(None, max_length=32)
@@ -70,6 +71,7 @@ class MarkingPatch(BaseModel):
     radius_m: float | None = None
     polygon: list[list[float]] | None = Field(None, max_length=80)
     category: str | None = Field(None, max_length=20)
+    sells_vegetables: bool | None = Field(None, strict=True)
     categories: list[str] | None = Field(None, max_length=10)
     name: str | None = Field(None, max_length=200)
     reason: str | None = Field(None, max_length=32)

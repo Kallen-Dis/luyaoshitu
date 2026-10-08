@@ -2,12 +2,12 @@
 
 口径与盲区判定一致——**步行 1 公里**，不是直线 1 公里：
 
-1. 直线距离是步行距离的下界，只有缺这一类、且到拟建点直线 ≤ 1 公里的网格才可能被覆盖；
+1. 使用带30米经验误差余量的直线候选筛选，缺这一类且直线 ≤ 1030米的格子才测距；
 2. 这些候选网格到拟建点做一次批量算路（多起点 × 1 终点，通常不超过 100 个点对），
    步行距离达标的才算真正消去。
 
 离线模拟数据、或调用方关闭核验时，只做第 1 步，结果是**上限估算**并如实标注。
-拟建点不做施工围挡核验；真实效果需设施建成后按路网复测。
+存在已知围挡时按预算核验实际路线；真实效果需设施建成后按路网复测。
 """
 
 from __future__ import annotations
@@ -17,7 +17,8 @@ from typing import Any
 
 from ..baidu.client import BaiduMapClient
 from ..baidu.errors import QuotaExhaustedError
-from ..isochrone.geometry import haversine_m
+from ..isochrone.geometry import first_entry_along, haversine_m, point_in_polygon
+from ..trip.context import closures_from_feature
 from .score import build_report
 
 
@@ -72,13 +73,16 @@ async def simulate_facility(
         i
         for i, c in enumerate(cells)
         if category in (c.get("missing") or [])
-        and haversine_m(float(c["lat"]), float(c["lng"]), lat, lng) <= limit
+        and haversine_m(float(c["lat"]), float(c["lng"]), lat, lng) <= limit + 30
     ]
 
     covered: list[int] = candidates
     pairs_before = client.matrix_pairs if client is not None else 0
     basis = "estimate"
     unverified = 0
+    route_checks = 0
+    circles = [(c["lat"], c["lng"], c["radius_m"]) for c in closures_from_feature(feature)]
+    inside_closure = any(haversine_m(lat, lng, a, b) <= r for a, b, r in circles)
     if candidates and verify and client is not None and not props.get("simulated"):
         try:
             table = await client.walking_matrix_grid(
@@ -95,8 +99,31 @@ async def simulate_facility(
                 if entry is None:
                     unverified += 1
                 elif entry["distance_m"] <= limit:
+                    if inside_closure:
+                        continue
+                    if circles:
+                        cap = getattr(getattr(client, "_s", None), "trip_request_routes", 12)
+                        if route_checks >= cap:
+                            unverified += 1
+                            continue
+                        route_checks += 1
+                        raw = await client.walking_route(
+                            (float(cells[i]["lat"]), float(cells[i]["lng"])), (lat, lng)
+                        )
+                        points = [
+                            tuple(p)
+                            for s in (raw or {}).get("steps", [])
+                            for p in s.get("path", [])
+                        ]
+                        if len(points) < 2:
+                            unverified += 1
+                            continue
+                        if first_entry_along(points, circles) is not None:
+                            continue
                     covered.append(i)
     pairs_used = (client.matrix_pairs - pairs_before) if client is not None else 0
+    if inside_closure:
+        covered = []
 
     after_cells = copy.deepcopy(cells)
     for i in covered:
@@ -104,14 +131,35 @@ async def simulate_facility(
     after_blind = _recount(blindspots, after_cells)
 
     before_report = build_report(props, coverage, blindspots)
-    after_report = build_report(props, coverage, after_blind)
+    after_coverage = copy.deepcopy(coverage)
+    if after_coverage is not None and not inside_closure:
+        polygon = [(y, x) for x, y in feature["geometry"]["coordinates"][0]]
+        inside = point_in_polygon(lat, lng, polygon)
+        after_coverage.setdefault("places", []).append(
+            {
+                "name": f"拟建{category}",
+                "category": category,
+                "lat": lat,
+                "lng": lng,
+                "in_circle": inside,
+            }
+        )
+        if inside:
+            after_coverage.setdefault("categories", {})[category] = (
+                after_coverage.get("categories", {}).get(category, 0) + 1
+            )
+        after_coverage.setdefault("nearby_categories", {})[category] = (
+            after_coverage.get("nearby_categories", {}).get(category, 0) + 1
+        )
+    after_report = build_report(props, after_coverage, after_blind)
 
     if basis == "network":
         approximation = (
             f"候选方格到拟建点做了真实路网测距（本次 {pairs_used} 个点对），步行 "
             f"{limit / 1000:.0f} 公里内的才算消去"
             + (f"；{unverified} 格测距失败，未计入" if unverified else "")
-            + "。拟建点未做施工围挡核验，建成后需按路网复测。"
+            + (f"；已按已知围挡核验 {route_checks} 条路线" if circles else "")
+            + "。按现有路网评估，建成后需复测。"
         )
     elif basis == "estimate_quota":
         approximation = (
@@ -135,6 +183,7 @@ async def simulate_facility(
         "covered_count": len(covered),
         "candidate_count": len(candidates),
         "pairs_used": pairs_used,
+        "route_checks": route_checks,
         "before": _stats(before_report),
         "after": _stats(after_report),
         "approximation": approximation,

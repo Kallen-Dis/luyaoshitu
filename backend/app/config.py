@@ -52,7 +52,7 @@ class Settings:
     # + 覆盖 + 圈内网格盲区缓存为空时通常一两分钟；超时即终止，避免请求无限挂起。
     analysis_timeout_s: float = 240.0
 
-    # 批量算路单次终点数上限，实测硬上限 100（101 起返回 status=2 参数非法）
+    # 配置分块上限，客户端再取出行方式上限的较小值（步行/骑行 50、驾车 100）。
     matrix_batch_size: int = 100
 
     # 缓存坐标量化网格边长（米）。相近坐标共用缓存，显著节省地点检索的日配额。
@@ -82,6 +82,19 @@ class Settings:
     markings_dir: Path = PROJECT_ROOT / "data" / "user"
     admin_token: str = ""
     marking_salt: str = ""
+
+    trip_day_pairs: int = 500
+    trip_hour_pairs: int = 120
+    trip_request_pairs: int = 120
+    trip_hour_routes: int = 200
+    trip_hour_requests: int = 120
+    trip_request_routes: int = 12
+    trip_day_pois: int = 200
+    trip_hour_pois: int = 60
+    trip_request_pois: int = 48
+    trip_slack_m: float = 30.0
+    trip_memory_entries: int = 4096
+    trip_search_expansions: int = 20000
 
     @property
     def admin_enabled(self) -> bool:
@@ -122,4 +135,16 @@ def get_settings() -> Settings:
         else PROJECT_ROOT / "data" / "user",
         admin_token=os.environ.get("ADMIN_TOKEN", ""),
         marking_salt=os.environ.get("MARKING_SALT", ""),
+        trip_day_pairs=max(0, int(os.environ.get("TRIP_DAY_PAIRS", "500"))),
+        trip_hour_pairs=max(0, int(os.environ.get("TRIP_HOUR_PAIRS", "120"))),
+        trip_request_pairs=max(0, int(os.environ.get("TRIP_REQUEST_PAIRS", "120"))),
+        trip_hour_routes=max(0, int(os.environ.get("TRIP_HOUR_ROUTES", "200"))),
+        trip_hour_requests=max(0, int(os.environ.get("TRIP_HOUR_REQUESTS", "120"))),
+        trip_request_routes=max(0, int(os.environ.get("TRIP_REQUEST_ROUTES", "12"))),
+        trip_day_pois=max(0, int(os.environ.get("TRIP_DAY_POIS", "200"))),
+        trip_hour_pois=max(0, int(os.environ.get("TRIP_HOUR_POIS", "60"))),
+        trip_request_pois=max(0, int(os.environ.get("TRIP_REQUEST_POIS", "48"))),
+        trip_slack_m=max(0.0, float(os.environ.get("TRIP_SLACK_M", "30"))),
+        trip_memory_entries=max(1, int(os.environ.get("TRIP_MEMORY_ENTRIES", "4096"))),
+        trip_search_expansions=max(1, int(os.environ.get("TRIP_SEARCH_EXPANSIONS", "20000"))),
     )

@@ -1,0 +1,10 @@
+.fresh-feedback { margin:10px 0; font-size:12px; line-height:1.6; color:var(--muted); }
+.fresh-feedback > summary { color:var(--accent-dark); cursor:pointer; font-size:12px; }
+.fresh-feedback > summary span { color:var(--muted); font-size:10px; }
+.fresh-feedback p { margin:8px 0; font-size:11px; }
+.fresh-feedback .fresh-feedback-actions { display:flex; flex-wrap:wrap; gap:6px; }
+.fresh-feedback .fresh-feedback-actions button { padding:6px 9px; border:1px solid var(--border); border-radius:7px; background:#fff; color:var(--text); font-size:11px; }
+.fresh-feedback .fresh-feedback-actions button[aria-pressed=true] { background:var(--accent-soft); border-color:var(--accent); color:var(--accent-dark); }
+.fresh-feedback .fresh-feedback-actions .fresh-withdraw { border-color:transparent; background:transparent; color:var(--muted); }
+.fresh-feedback-error { color:#9a3412; }
+.fresh-feedback-error button { margin-left:8px; }

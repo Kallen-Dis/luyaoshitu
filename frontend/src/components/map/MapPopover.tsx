@@ -1,3 +1,5 @@
+import { freshEligible, freshLabel } from '../../lib/fresh'
+import { FreshFeedback } from '../trip/FreshFeedback'
 import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from 'react'
 import { TYPE_META, formatDistance, metersBetween, type LatLng } from '../../lib/markings'
 import type { GrayRegion, GridCell, MarkingType, Place, RecheckSuspect } from '../../types'
@@ -13,6 +15,8 @@ interface Props {
   shellH: number
   /** 共享标注可用时才给出标注动作 */
   canMark: boolean
+  canTrip?: boolean
+  feedbackDisabled?: boolean
   /** 盲区判定的步行阈值（米） */
   limitM: number
   /** 当前结果里的设施点，用来说明直线最近的那一家 */
@@ -73,7 +77,7 @@ function straightTo(at: LatLng, place: Place) {
 function nearestOf(places: Place[], category: string, at: LatLng) {
   let best: { place: Place; d: number } | null = null
   for (const place of places) {
-    if (place.category !== category) continue
+    if (place.category !== category || !freshEligible(place)) continue
     const d = straightTo(at, place)
     if (!best || d < best.d) best = { place, d }
   }
@@ -95,7 +99,12 @@ function cellContent(
 ): Content {
   const at = { lat: cell.lat, lng: cell.lng }
   const notes: string[] = []
-  if (cell.unknown.length > 0) notes.push(`测距失败、无法判定：${cell.unknown.map(short).join('、')}`)
+  const freshReason = cell.unknown_reasons?.['生鲜采买']
+  if (freshReason === 'fresh_pending') notes.push('附近超市可达，但是否卖菜待确认')
+  else if (freshReason === 'fresh_pending_distance_unknown') notes.push('附近超市是否卖菜待确认，步行测距也未完成')
+  else if (freshReason === 'fresh_legacy') notes.push('旧快照的买菜能力待确认，请重新体检')
+  const distanceUnknown = cell.unknown.filter(category => category !== '生鲜采买' || !freshReason)
+  if (distanceUnknown.length > 0) notes.push(`测距失败、无法判定：${distanceUnknown.map(short).join('、')}`)
   if (cell.closure_blocked) notes.push('从中心过来的路线被围挡挡住')
   else if (cell.reach_s != null) notes.push(`自中心步行约 ${Math.round(cell.reach_s / 60)} 分钟`)
   if (cell.in_circle === false) notes.push('在 15 分钟圈外')
@@ -205,7 +214,7 @@ function regionContent(region: GrayRegion, canMark: boolean): Content {
   }
 }
 
-function placeContent(place: Place, canMark: boolean): Content {
+function placeContent(place: Place, canMark: boolean, feedbackDisabled = false): Content {
   const mark = PLACE_MARK[place.category] ?? { glyph: '·', color: '#4b4e45' }
   const where = place.in_circle ? '在 15 分钟圈内' : '在附近，走不进 15 分钟圈'
   if (place.source === 'user') {
@@ -213,7 +222,7 @@ function placeContent(place: Place, canMark: boolean): Content {
       badge: mark,
       title: place.name,
       sub: `${place.category} · ${where}`,
-      body: <p className="map-pop-note">用户补录的设施，已计入这次分析。</p>,
+        body: <><p className="map-pop-note">{place.fresh_status ? `${freshLabel(place.fresh_status)}：${place.fresh_evidence}` : '用户补录的设施，已计入这次分析。'}</p>{canMark && place.category === '生鲜采买' && <FreshFeedback place={place} disabled={feedbackDisabled} />}</>,
       actions:
         place.marking_id != null
           ? [
@@ -242,12 +251,12 @@ function placeContent(place: Place, canMark: boolean): Content {
     badge: mark,
     title: place.name,
     sub: `${place.category} · ${where}`,
-    body: note ? <p className="map-pop-note">{note}。</p> : undefined,
+    body: <>{note && <p className="map-pop-note">{note}。</p>}{place.fresh_status && <p className="map-pop-note">{freshLabel(place.fresh_status)}：{place.fresh_evidence}</p>}{canMark && place.category === '生鲜采买' && <FreshFeedback place={place} disabled={feedbackDisabled} />}</>,
     ask: canMark ? '这家设施有问题？' : undefined,
     actions: canMark
-      ? reasons.map(([reason, label]) =>
+      ? [...reasons.map(([reason, label]) =>
           compose('facility_missing', label, '设施失效', { place, point, reason, context }),
-        )
+        )]
       : [],
   }
 }
@@ -339,7 +348,7 @@ function build(ctx: MapContext, props: Props): Content {
     case 'region':
       return regionContent(ctx.region, props.canMark)
     case 'place':
-      return placeContent(ctx.place, props.canMark)
+      return placeContent(ctx.place, props.canMark, props.feedbackDisabled)
     case 'suspect':
       return suspectContent(ctx.suspect, props.canMark)
     case 'site': {
@@ -388,7 +397,14 @@ export function MapPopover(props: Props) {
     return () => ro.disconnect()
   }, [])
 
-  const content = build(ctx, props)
+  const base = build(ctx, props)
+  const trips: Action[] = !props.canTrip ? [] : ctx.kind === 'place' ? [{
+    key: 'trip-to', icon: 'route', color: '#1c3a28', soft: '#ecfdf3', label: '从起点走过去', tag: '出行', intent: { kind: 'trip-to', place: ctx.place }
+  }] : ctx.kind === 'cell' ? ctx.missing.map(category => ({
+    key: `trip-${category}`, icon: 'route' as const, color: PLACE_MARK[category]?.color ?? '#1c3a28', soft: '#ecfdf3',
+    label: `最近的${short(category)}怎么走`, tag: '出行', intent: { kind: 'trip-from-cell' as const, cell: ctx.cell, category }
+  })) : []
+  const content = { ...base, actions: [...trips, ...base.actions] }
   // 右边放得下就放右边，否则放左边；上下夹在地图里，箭头始终指着锚点
   const right = x + GAP + WIDTH <= shellW - MARGIN || x - GAP - WIDTH < MARGIN
   const left = Math.max(MARGIN, right ? x + GAP : x - GAP - WIDTH)

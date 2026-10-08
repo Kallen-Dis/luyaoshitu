@@ -17,6 +17,10 @@ python scripts/verify.py --skip-frontend  # 只改了后端时
 
 和 CI（`.github/workflows/ci.yml`）跑的是同一套检查，本机通过了再推。
 
+出行页面验收可在后端停止后启动 `python scripts/preview_trip.py`，前端正常 `npm run dev`。
+它只监听本机，算路全部是假响应，缓存与预算放在独立 `.cache/trip-preview-*` 目录，结果有明确假接口提示。
+仅用于界面 / 链路验收，不代表真实百度距离，也不要用于生产。真实样例打开后的出行查询仍可能消耗算路配额。
+
 ## 配额规矩
 
 - **改调用策略，先用回放实验量，不要拿真实接口反复跑。** `python scripts/benchmark_api.py`
@@ -36,6 +40,7 @@ python scripts/verify.py --skip-frontend  # 只改了后端时
 
 ## 文档
 
+- `docs/`、`reports/` 与 `video/` 只保存在本地，不纳入 Git；设计资料需要另行备份。
 - README 只放入口信息（简介、样例结果、快速开始、配置、索引）；算法与设计写进 `docs/design.md`，
   API 调用策略与接口实测写进 `docs/api-optimization.md`。
 - 改了会影响数字的逻辑，同步更新 README 和 `docs/` 里引用这些数字的地方。

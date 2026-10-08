@@ -1,3 +1,4 @@
+import { freshEligible } from '../lib/fresh'
 import { gridCensus } from '../lib/grid'
 import { CrosscheckPanel } from './CrosscheckPanel'
 import { ScoreRadar } from './ScoreRadar'
@@ -13,6 +14,7 @@ import type {
   SitePlanResult,
 } from '../types'
 interface Props {
+  onTrip?: (category: string) => void
   report: ExamReport
   coverage?: Coverage
   /** 等时圈原始属性：过街等待、网格、质量等读数都从这里取。 */
@@ -65,6 +67,7 @@ interface FacilityRead {
   inCircle: number
   nearest: { name: string; straightM: number; minutes: number; inside: boolean } | null
   cellsMissing: number | null
+  cellsUnknown: number
 }
 
 /**
@@ -87,10 +90,11 @@ function facilityReads(
   center: { lat: number; lng: number },
   places: Place[],
   detour: number | null,
-  census: { total: number; missing: Record<string, number> } | null,
+  census: { total: number; missing: Record<string, number>; unknown: Record<string, number> } | null,
   speed: number,
   delayPerKmS: number | null,
 ): FacilityRead[] {
+  places = places.filter(freshEligible)
   const present = new Set(places.map((place) => place.category))
   const names = [
     ...READ_ORDER.filter((name) => present.has(name)),
@@ -119,6 +123,7 @@ function facilityReads(
             inside: nearest.in_circle,
           }
         : null,
+      cellsUnknown: census?.unknown[category] ?? 0,
       cellsMissing: census && KEY_FACILITY.has(category) ? (census.missing[category] ?? 0) : null,
     }
   })
@@ -140,12 +145,14 @@ function FacilitySheet({
   census,
   delayPerKmS,
   extentKm,
+  onTrip,
 }: {
   reads: FacilityRead[]
   detour: number | null
   census: { total: number; blind: number } | null
   delayPerKmS: number | null
   extentKm: string | null
+  onTrip?: (category: string) => void
 }) {
   return (
     <>
@@ -156,8 +163,8 @@ function FacilitySheet({
         估算的步行时间（参考读数）。
         {census
           ? extentKm
-            ? `菜场、药店、小学的方格与地图是同一套：周围 ${extentKm} 公里共 ${census.total} 格，逐格实测步行距离，其中 ${census.blind} 格步行 1 公里内缺至少一类。`
-            : `菜场、药店、小学的方格与地图是同一套：15 分钟圈内共 ${census.total} 格，逐格实测步行距离，其中 ${census.blind} 格步行 1 公里内缺至少一类。`
+            ? `菜场、药店、小学的方格与地图是同一套：周围 ${extentKm} 公里共 ${census.total} 格，按网格判定，未知格不计入缺失；其中 ${census.blind} 格步行 1 公里内缺至少一类。`
+            : `菜场、药店、小学的方格与地图是同一套：15 分钟圈内共 ${census.total} 格，按网格判定，未知格不计入缺失；其中 ${census.blind} 格步行 1 公里内缺至少一类。`
           : ''}
       </p>
       <ul className="exam-list">
@@ -165,6 +172,7 @@ function FacilitySheet({
           <li key={item.category}>
             <div className="exam-cat">
               <b>{item.category}</b>
+              {onTrip && <button type="button" className="trip-report-link" onClick={() => onTrip(item.category)}>怎么走</button>}
               {item.nearest ? (
                 <span className={item.nearest.inside ? 'exam-min in' : 'exam-min out'}>
                   {item.nearest.minutes}
@@ -181,7 +189,7 @@ function FacilitySheet({
                 ? `最近「${item.nearest.name}」，直线 ${Math.round(item.nearest.straightM)} 米，估算步行 ${item.nearest.minutes} 分钟，${item.nearest.inside ? `已在 15 分钟圈内（圈内 ${item.inCircle} 处）` : '在 15 分钟圈外'}。`
                 : '检索范围内没有这一类。'}
               {item.cellsMissing != null && census
-                ? ` 地图上 ${item.cellsMissing} / ${census.total} 格，步行 1 公里内到不了它。`
+                ? item.cellsUnknown > 0 ? ` 已判定 ${census.total - item.cellsUnknown} 格，其中 ${item.cellsMissing} 格步行 1 公里内到不了；另 ${item.cellsUnknown} 格待确认或测距未完成。` : ` 地图上 ${item.cellsMissing} / ${census.total} 格，步行 1 公里内到不了它。`
                 : ''}
             </p>
           </li>
@@ -197,6 +205,7 @@ function sumCounts(table: Record<string, number> | null | undefined): number {
 }
 
 export function ReportCard({
+  onTrip,
   report,
   coverage,
   meta,
@@ -368,7 +377,7 @@ export function ReportCard({
                       p.lng != null &&
                       p.category && (
                         <button type="button" className="sim-btn" onClick={() => onSimulate(p)}>
-                          模拟在此新建「{p.category}」
+                          评估增设「{p.category}」
                         </button>
                       )}
                   </div>
@@ -422,7 +431,7 @@ export function ReportCard({
           {simulation && (
             <div className="sim-result">
               <div className="sim-head">
-                <span className="sim-tag">模拟新建 · {simulation.category}</span>
+                <span className="sim-tag">假设效果 · {simulation.category}</span>
                 {onClearSimulation && (
                   <button type="button" className="sim-clear" onClick={onClearSimulation}>
                     清除模拟
@@ -431,7 +440,7 @@ export function ReportCard({
               </div>
               <ul className="sim-metrics">
                 <li>
-                  <span>消除盲区网格</span>
+                  <span>改善该品类网格</span>
                   <b>{simulation.covered_count} 个</b>
                 </li>
                 <li>
@@ -579,18 +588,20 @@ export function ReportCard({
               {meta?.minutes ?? 15} 分钟步行圈内的设施数（深色）与检索半径内的总数（浅色）。
               浅色比深色长的部分，就是「附近有、走不进圈」的设施。
             </p>
+            {coverage?.fresh_breakdown && <p className="hint">买菜候选：已确认 {coverage.fresh_breakdown.verified} 家，规则推定 {coverage.fresh_breakdown.inferred} 家，是否卖菜待确认 {coverage.fresh_breakdown.pending} 家。覆盖数量只含前两类，规则推定未逐店核实。</p>}
+            {coverage?.fresh_needs_refresh && <p className="hint">旧快照的买菜网格尚未按新规则重测，已标为待确认；重新体检可更新判定。</p>}
             <ul className="cover-bars" aria-label="圈内各类设施数量">
               {coverEntries.map(([name, count]) => {
                 const nearby = Math.max(count, coverage?.nearby_categories?.[name] ?? count)
                 return (
-                  <li key={name} className={count === 0 ? 'blind' : ''}>
+                  <li key={name} className={count === 0 && !report.uncertain_categories?.includes(name) ? 'blind' : ''}>
                     <span className="cover-name">{name}</span>
                     <span className="cover-track">
                       <i className="cover-out" style={{ width: `${(nearby / maxCover) * 100}%` }} />
                       <i className="cover-in" style={{ width: `${(count / maxCover) * 100}%` }} />
                     </span>
                     <span className="cover-num">
-                      {count === 0 ? '缺失' : count}
+                      {report.uncertain_categories?.includes(name) ? '待确认' : count === 0 ? '缺失' : count}
                       {nearby > count && <em className="cover-out-num"> / {nearby}</em>}
                     </span>
                   </li>
@@ -658,7 +669,7 @@ export function ReportCard({
               ))}
             </ul>
             <p className="hint">
-              占比为该品类步行 1 公里不可达的网格比例，测距失败的网格不计入。
+              占比为该品类步行 1 公里不可达的网格比例，测距失败或买菜能力待确认的网格不计入。
             </p>
           </div>
         )}
@@ -673,6 +684,7 @@ export function ReportCard({
             census={census}
             delayPerKmS={delayPerKmS}
             extentKm={extentKm}
+            onTrip={onTrip}
           />
         </section>
       )}

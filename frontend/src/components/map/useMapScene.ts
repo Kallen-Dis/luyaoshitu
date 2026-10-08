@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type RefObject } from 'react'
+import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 
 /**
  * 地图的「看法」：3D 倾斜与旋转、卫星底图、全屏。
@@ -32,6 +32,7 @@ export interface MapScene {
   rotate: (delta: number) => void
   resetNorth: () => void
   toggleEarth: () => void
+  setEarth: (value: boolean) => void
   toggleFullscreen: () => void
 }
 
@@ -130,14 +131,16 @@ export function useMapScene(
     m.setHeading(0)
   }
 
-  const toggleEarth = () => {
+  const setEarthMode = useCallback((value: boolean) => {
     const m = mapRef.current
-    if (!m || !support.earth) return
+    if (!m || typeof m.setMapType !== 'function') return
     const w = window as unknown as Record<string, unknown>
-    const next = !earth
-    m.setMapType(next ? w.BMAP_EARTH_MAP : w.BMAP_NORMAL_MAP)
-    setEarth(next)
-  }
+    const mapType = value ? w.BMAP_EARTH_MAP : w.BMAP_NORMAL_MAP
+    if (mapType === undefined) return
+    m.setMapType(mapType)
+    setEarth(value)
+  }, [mapRef])
+  const toggleEarth = () => setEarthMode(!earth)
 
   const toggleFullscreen = () => {
     if (!support.fullscreen) return
@@ -160,6 +163,7 @@ export function useMapScene(
     rotate,
     resetNorth,
     toggleEarth,
+    setEarth: setEarthMode,
     toggleFullscreen,
   }
 }

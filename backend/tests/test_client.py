@@ -174,6 +174,29 @@ def test_daily_quota_breaker_resets_after_beijing_midnight(tmp_path, monkeypatch
     client._check_exhausted("/place/v2/search")  # 不再抛出
 
 
+def test_public_quota_state_and_events_renew_without_an_intermediate_request(tmp_path, monkeypatch):
+    import app.baidu.client as client_mod
+
+    client = _client(tmp_path)
+    endpoint = "/directionlite/v1/walking"
+    assert client.exhausted(endpoint) is None
+    monkeypatch.setattr(client_mod, "_beijing_day", lambda: "2026-10-07")
+    client._mark_exhausted(endpoint, 302)
+    assert client.exhausted(endpoint).status == 302
+    assert client.exhausted("/place/v2/search") is None
+    with pytest.raises(QuotaExhaustedError):
+        client._check_exhausted(endpoint)
+    assert len(client.quota_events) == 1
+
+    monkeypatch.setattr(client_mod, "_beijing_day", lambda: "2026-10-08")
+    # 直接再次标记也应清掉昨日状态，而不是漏掉今天的新事件。
+    client._mark_exhausted(endpoint, 302)
+    assert client.exhausted(endpoint).status == 302
+    assert [e["day"] for e in client.quota_events] == ["2026-10-07", "2026-10-08"]
+    monkeypatch.setattr(client_mod, "_beijing_day", lambda: "2026-10-09")
+    assert client.exhausted(endpoint) is None
+
+
 def test_permanent_quota_breaker_stays(tmp_path, monkeypatch):
     import app.baidu.client as client_mod
 
@@ -181,6 +204,7 @@ def test_permanent_quota_breaker_stays(tmp_path, monkeypatch):
     monkeypatch.setattr(client_mod, "_beijing_day", lambda: "2026-09-24")
     client._mark_exhausted("/routematrix/v2/walking", 301)
     monkeypatch.setattr(client_mod, "_beijing_day", lambda: "2026-09-25")
+    assert client.exhausted("/routematrix/v2/walking").status == 301
     with pytest.raises(QuotaExhaustedError) as info:
         client._check_exhausted("/routematrix/v2/walking")
     assert info.value.status == 301

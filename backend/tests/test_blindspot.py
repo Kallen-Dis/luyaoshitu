@@ -304,7 +304,8 @@ def test_matrix_request_cost_scales_with_point_pairs(tmp_path, monkeypatch):
     big_dests = [(31.270, 121.420 + j * 0.001) for j in range(10)]
     asyncio.run(client.walking_matrix_grid(big, big_dests))
 
-    assert costs[1] == pytest.approx(costs[0] * 25)  # 4 点对 -> 100 点对
+    assert len(costs) == 3  # 4 点对 + 100 点对按官方步行上限切成两个 50 对请求
+    assert costs[1] == costs[2] == pytest.approx(costs[0] * 12.5)
 
 
 def test_failed_matrix_block_is_counted(tmp_path, monkeypatch):

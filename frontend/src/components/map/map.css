@@ -1,5 +1,15 @@
 /* ---------- 地图：右上角的看法切换与图层 ---------- */
 
+/* 圈线与灰色外框独立叠在建筑和热力画布之上，不拦截地图操作。 */
+.map-outline-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
 .map-viewbar {
   position: absolute;
   top: 66px;

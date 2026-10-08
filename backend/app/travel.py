@@ -33,7 +33,7 @@ class TravelMode:
     cache_ns: str
     speed_m_per_s: float
     radii_m: tuple[float, ...]
-    # 起点×终点乘积上限。步行实测 100 可用；文档写骑行 ≤ 50，驾车 ≤ 100。
+    # 官方起点×终点乘积上限：步行 / 骑行 50，驾车 100。
     matrix_product_limit: int = 100
     extra_params: dict[str, str | int] = field(default_factory=dict)
     uses_traffic: bool = False
@@ -60,7 +60,7 @@ WALK = TravelMode(
     cache_ns="walk",
     speed_m_per_s=1.2,
     radii_m=WALK_RADII_M,
-    matrix_product_limit=100,
+    matrix_product_limit=50,
     allow_grid_blindspots=True,
     factors=(
         "人行道与过街设施（人行横道、天桥、地道），不能走机动车道或高架",

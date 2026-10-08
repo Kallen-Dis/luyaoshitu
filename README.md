@@ -24,7 +24,7 @@
 | 桃浦镇 | 10 处 | **0 处** | 小学 **100%**（17 / 17）、菜市场 73.5%、药店 60.7% |
 
 桃浦的两种口径给出的不是精确度差异，而是相反的结论：一个说配套尚可，一个说六个品类在真实可达范围内全部缺失。
-完整对比见 [`reports/straight-line-comparison.md`](reports/straight-line-comparison.md)（脚本离线生成，零 API 消耗）。
+完整对比可由脚本离线生成到本地 `reports/straight-line-comparison.md`，零 API 消耗。
 
 ## 能做什么
 
@@ -41,6 +41,9 @@
   管理员核实后对所有人生效，结果可在「纯算法 / 含标注」之间即时切换。
 - **省配额、不撒谎**：直线下界剪枝 + 够近就停 + 分组装箱，曹杨盲区判定从 19584 个点对降到 746 个；按点对缓存，重跑零消耗。
   接口失败一律记「未知」，不伪装成盲区。
+- **居民出行**：地图工具条点“出行”，找已检索设施中的最近 5 家，或按所选顺序走 2~3 站；
+  可换起点、固定邻站换一家，显示步行路线、过街与围挡提示。结果写明验证、快照范围与估算口径；
+  出行有独立预算，点选起点仅内存缓存，离线模式也可演示。
 - **交互**：搜地址、输坐标（BD09 / GCJ02 / WGS84）或点地图自定义中心；两地对比；3D 倾斜旋转、卫星底图、全屏；
   Markdown / CSV / GeoJSON / ZIP 导出。
 
@@ -57,7 +60,7 @@
 | 处方 | 1 条打通（西南的朝春中心小学） | 3 条补设 + 1 条打通 |
 | 体检总分 | **84.4（良）** | **35.3（弱）** |
 
-评分口径、灰色区域的成因判定与处方规则见 [技术设计文档](docs/design.md) 第 6~8 节。
+评分口径、灰色区域的成因判定与处方规则见本地设计文档 `docs/design.md` 第 6~8 节（不随仓库提交）。
 
 ## 快速开始
 
@@ -101,7 +104,8 @@ cp .env.example .env        # Windows PowerShell：Copy-Item .env.example .env
 | `VITE_BAIDU_BROWSER_AK` | 显示地图必填 | 浏览器端 AK。由后端 `/api/config` 运行时下发，换 Key 不用重新构建 |
 | `BAIDU_MAP_AUTH_TOKEN` | 可选 | 百度地图 Agent Plan 的 Token（[申请](https://lbs.baidu.com/apiconsole/agentplan)），开启「AI 二次核对」；不填则不显示这个按钮 |
 | `ADMIN_TOKEN` | 可选 | 共享标注的管理员审核口令，至少 12 位；不填则审核关闭，标注只作为建议 |
-| `BAIDU_MAX_QPS`、`BAIDU_MATRIX_CONCURRENCY` 等 | 通常不改 | 限速、并发、重试、缓存有效期，默认值取自实测（[依据](docs/api-optimization.md#41-接口能力边界开发期实测)） |
+| `BAIDU_MAX_QPS`、`BAIDU_MATRIX_CONCURRENCY` 等 | 通常不改 | 限速、并发、重试、缓存有效期，默认值取自实测（本地 `docs/api-optimization.md` 第 4.1 节） |
+| `TRIP_DAY_PAIRS`、`TRIP_HOUR_PAIRS`、`TRIP_REQUEST_PAIRS` 等 | 可选 | 出行自己的日 / 小时 / 单次预算及请求限流、下界容差，默认 500 / 120 / 120 点对，见 `.env.example` |
 
 `.env` 可以带 BOM（Windows 记事本默认如此）、值两侧可以加引号、行尾可以写 `# 注释`。
 用户标注与照片存在 `data/user/`（已 gitignore，Docker 部署时挂载为数据卷），请单独备份。
@@ -180,24 +184,29 @@ python scripts/run_isochrone.py --lat 31.284817 --lng 121.369523 --id taopu-clos
 ## 配额与降级
 
 - **批量算路是最紧的约束**：日配额按点对计，实测约 2500 个点对/日（约 140 次请求、2479 个点对时触发 `302`），
-  单次请求限制是起点数 × 终点数 ≤ 100。一个新地点要 500~1000 个点对，每天只够 2~5 个新地点。
+  当前步行单次请求限制按官方文档取起点数 × 终点数 ≤ 50（历史实测曾接受 100）。一个新地点要 500~1000 个点对，每天只够 2~5 个新地点。
 - 所以首屏走快照、实时计算要用户显式触发，所有结果按点对缓存，补测只请求缺的点对。
 - `302` 配额耗尽不重试，该接口当天熔断、北京时间零点自动恢复；`401` 限流带随机抖动退避重试。
 - 报错写清哪个服务、为什么、停在哪一步、何时恢复；测距失败的格子记「未知」，检索失败的品类记「查询失败」，都不算盲区、不按 0 计分。
 
-细节见 [技术设计文档](docs/design.md) 第 2 节与 [API 调用优化报告](docs/api-optimization.md)。
+细节保存在本地 `docs/design.md` 第 2 节与 `docs/api-optimization.md`。
 
 ## 文档
 
+`docs/` 与 `reports/` 为本地资料，已加入 `.gitignore`，克隆仓库不会包含这些目录。
+设计资料需另行保存；实测报告可通过相应脚本生成。仓库保留更新记录、贡献说明与安全策略。
+
 | 文档 | 内容 |
 | --- | --- |
-| [docs/design.md](docs/design.md) | **技术设计文档**：架构、API 调用策略、等时圈生成算法、POI 清洗、盲区识别、评分、处方、标注、测试 |
-| [docs/api-optimization.md](docs/api-optimization.md) | API 调用优化与容错：批量矩阵与并发、对照实验、接口能力边界实测、答辩问答 |
-| [docs/crowd-markings-design.md](docs/crowd-markings-design.md) | 用户共享标注的设计方案，以及灰色区域识别的后续改进方向 |
-| [reports/straight-line-comparison.md](reports/straight-line-comparison.md) | 真实对比测试：直线缓冲区 vs 真实路网（曹杨、桃浦） |
-| [reports/api-benchmark.md](reports/api-benchmark.md) | 调用策略对照实验：回放真实缓存，零配额 |
-| [reports/school-gates.md](reports/school-gates.md) | 小学按校门测距与按坐标点测距的对照 |
-| [reports/poi-crosscheck.md](reports/poi-crosscheck.md) | 两份样例的 AI 二次核对（Agent Plan 第二通道召回）与补录实测 |
+| `docs/project-summary.md`（本地） | v2 项目总结报告：改了什么、做了哪些优化、验证情况与后续建议 |
+| `docs/design.md`（本地） | **技术设计文档**：架构、API 调用策略、等时圈生成算法、POI 清洗、盲区识别、评分、处方、标注、测试 |
+| `docs/trip-planner-design.md`（本地） | 居民出行：一期实现、经验下界验证、校门约束、预算、位置缓存与验收 |
+| `docs/api-optimization.md`（本地） | API 调用优化与容错：批量矩阵与并发、对照实验、接口能力边界实测、答辩问答 |
+| `docs/crowd-markings-design.md`（本地） | 用户共享标注的设计方案，以及灰色区域识别的后续改进方向 |
+| `reports/straight-line-comparison.md`（本地生成） | 真实对比测试：直线缓冲区 vs 真实路网（曹杨、桃浦） |
+| `reports/api-benchmark.md`（本地生成） | 调用策略对照实验：回放真实缓存，零配额 |
+| `reports/school-gates.md`（本地生成） | 小学按校门测距与按坐标点测距的对照 |
+| `reports/poi-crosscheck.md`（本地生成） | 两份样例的 AI 二次核对（Agent Plan 第二通道召回）与补录实测 |
 | [CHANGELOG.md](CHANGELOG.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [SECURITY.md](SECURITY.md) | 更新记录、参与贡献、安全策略 |
 
 ## 项目结构
@@ -214,6 +223,7 @@ backend/
     poi/                 品类词表、多关键词采集与清洗、校门入口、工地候选、Agent Plan 二次核对
     report/              网格盲区判定、灰色区域与成因、评分、处方、核验选址、模拟新建
     markings/            共享标注：校验、SQLite 存储、信任与审核、照片去元数据、分析时叠加、接口
+    trip/                居民出行：候选、固定站序 DP、全快照验证、原子预算与位置缓存
     samples.py           预生成快照仓库
     diagnostics.py       出错与降级说明：停在哪一步、哪个服务、配额何时重置
     export.py            Markdown / CSV / GeoJSON / ZIP 导出
@@ -226,10 +236,12 @@ frontend/src/
   components/            地图、体检报告、评分雷达、导出、对比
   components/map/        地图就地卡片、图层面板、图例、视角栏（3D / 旋转 / 卫星 / 全屏）
   components/markings/   共享标注：标注模式、详情与投票、照片、影响对比、审核抽屉
+  components/trip/       出行抽屉、最近设施、行程、分段说明与地图联动
   lib/                   网格判定读取、耗时栅格、标注工具、纯算法结果还原
 scripts/
   run_isochrone.py       命令行完整分析，兼快照生成
   verify.py              一键验收（与 CI 同一套检查）
+  preview_trip.py        独立 8001 假接口（前端 npm run dev:preview → 5174），零真实算路配额
   check_secrets.py       密钥扫描（CI 也跑）
   benchmark_api.py       调用优化对照实验：回放真实缓存、虚拟时钟，零配额
   compare_straight_line.py    直线圆与等时圈的对比报告，零配额
@@ -240,8 +252,8 @@ scripts/
   pick_sample_area.py    两阶段样例社区选址
   _singleton.py          单实例锁，防止重复启动烧光配额
 data/samples/            预生成样例快照（设施名称与坐标用于打点，不含电话与街道地址）
-docs/                    技术设计文档、API 调用优化报告、共享标注设计方案
-reports/                 实测与对照报告
+docs/                    本地技术设计文档（不入库）
+reports/                 本地实测与对照报告（不入库）
 .github/                 CI、Issue 与 PR 模板
 docker-compose.yml       一键演示：后端 + Nginx 托管的前端
 ```

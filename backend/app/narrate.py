@@ -69,6 +69,11 @@ def build_facts(feature: dict[str, Any]) -> dict[str, Any]:
         },
         "圈内设施数": r.get("categories") or cov.get("categories"),
         "检索半径内设施数": cov.get("nearby_categories"),
+        "买菜证据分级": cov.get("fresh_breakdown"),
+        "买菜网格需更新": bool(cov.get("fresh_needs_refresh")),
+        "未完成判定的格数": sum(
+            bool(c.get("unknown")) for c in (p.get("blindspots") or {}).get("cells", [])
+        ),
         "检索失败的品类": r.get("failed_categories") or [],
     }
     delay = p.get("delay") or {}
@@ -192,7 +197,14 @@ def template_text(facts: dict[str, Any]) -> str:
         problems.append(
             f"{g.get('编号')} 共 {g.get('格数')} 格（约 {g.get('面积_km2')} km²）：{causes}。"
         )
-    body = "【主要问题】" + ("".join(problems) or "关键设施步行覆盖基本均衡。")
+    body = "【主要问题】" + (
+        "".join(problems)
+        or (
+            "部分网格或设施能力待确认，不能断言步行覆盖完整。"
+            if facts.get("未完成判定的格数")
+            else "关键设施步行覆盖基本均衡。"
+        )
+    )
 
     plans = facts.get("诊疗处方") or []
     advice = "【诊疗建议】" + (
@@ -204,6 +216,14 @@ def template_text(facts: dict[str, Any]) -> str:
         "【数据边界】等时圈与盲区都按百度真实路网实测；过街等待来自路线模型的统计延误，"
         "不是实时信号灯；打通与补设的效果是估算，选址需经路网核验与现场踏勘。"
     )
+    fresh = facts.get("买菜证据分级")
+    if fresh:
+        tail += (
+            f"买菜门店中 {fresh.get('inferred', 0)} 家为规则推定，"
+            f"{fresh.get('pending', 0)} 家是否卖菜待确认；待确认门店不直接计入覆盖。"
+        )
+    if facts.get("买菜网格需更新"):
+        tail += "旧快照的买菜网格未按新规则重测，相关格子记为待确认，需重新体检。"
     failed = facts.get("检索失败的品类") or []
     if failed:
         tail += f"{'、'.join(failed)}检索失败，数量未知，未计入评分，也不开方。"

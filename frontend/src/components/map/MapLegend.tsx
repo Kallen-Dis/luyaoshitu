@@ -5,6 +5,7 @@ import type { IsochroneFeature, SimulationResult } from '../../types'
 import { BLIND_COLORS, PLACE_MARK, heatScaleS, type LayerState } from './context'
 
 interface Props {
+  tripShown?: boolean
   isochrone: IsochroneFeature | null
   layers: LayerState
   blindCategory: string
@@ -22,6 +23,7 @@ interface Props {
 
 /** 图例只列地图上此刻画着的东西：关掉的层、没有数据的层都不出现。 */
 export function MapLegend({
+  tripShown = false,
   isochrone,
   layers,
   blindCategory,
@@ -42,16 +44,14 @@ export function MapLegend({
   const shownBlind = blindspots ? blindCells(blindspots, blindCategory, simulation).length : 0
   const labeled = (p?.report?.gray_regions?.regions ?? []).filter((r) => r.id).length
   const blindColor = BLIND_COLORS[blindCategory] ?? BLIND_COLORS.all
-  const present = new Set(
-    (p?.coverage?.places ?? [])
-      .filter((place) => layers.outsidePlaces || place.in_circle)
-      .map((place) => place.category),
-  )
-  const userPlaces = (p?.coverage?.places ?? []).some((place) => place.source === 'user')
+  const places = (p?.coverage?.places ?? []).filter(place => place.fresh_status !== 'excluded' && (layers.outsidePlaces || place.in_circle))
+  const present = new Set(places.map(place => place.category))
+  const userPlaces = places.some((place) => place.source === 'user')
   const scale = blindspots ? heatScaleS(blindspots.max_reach_s, p?.minutes) : 0
 
   return (
     <div className="map-legend floating" aria-label="图例">
+      {tripShown && <div className="legend-row"><span className="legend-swatch ring-outer" /><span>出行路线：实线为百度路线，品类色虚线为路线缺失 / 估算，红色虚线为围挡受阻，灰色短虚线为端点连接（未核验）。</span></div>}
       <div className="legend-row">
         <span className="legend-swatch ring-outer" />
         <span>
@@ -134,6 +134,7 @@ export function MapLegend({
 
       {present.size > 0 && (
         <div className="legend-marks compact">
+          {places.some(place => place.fresh_status === 'pending') && <span className="legend-mark">菜? · 是否卖菜待确认</span>}
           {Object.entries(PLACE_MARK)
             .filter(([name]) => present.has(name))
             .map(([name, mark]) => (
@@ -154,7 +155,7 @@ export function MapLegend({
       {closures > 0 && (
         <div className="legend-row">
           <span className="legend-swatch closure" />
-          <span>临时围挡 {closures} 处（只算你这次）</span>
+          <span>假设围挡 {closures} 处（仅规划模拟）</span>
         </div>
       )}
       {layers.clues && suspects > 0 && (

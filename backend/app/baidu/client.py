@@ -22,6 +22,7 @@ import re
 import time
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from typing import Any, Self
 
@@ -42,9 +43,13 @@ from .errors import (
 
 BASE_URL = "https://api.map.baidu.com"
 
+# 出行的预算与统计跟随异步请求上下文，不能用进程累计值做差（会混入其他分析）。
+request_observer: ContextVar[Any] = ContextVar("baidu_request_observer", default=None)
+
 # 多少个点对折算一个令牌。一次 100 点对的批量算路在服务端的工作量远大于
-# 一次 4 点对的请求，按请求数计的限速对它并不公平。并发配额的确切计量口径
-# 官方未公开，这里按点对数折算取一个保守值：8 QPS 下 100 点对约占 0.6 秒。
+# 一次 4 点对的请求，按请求数计的限速对它并不公平。官方说明配额与并发按
+# 最终点对计；这里按点对数折算令牌，只是本地流量整形，不能当作官方并发计量。
+# 历史配置下 8 QPS、100 点对约占 0.6 秒。
 PAIRS_PER_TOKEN = 20.0
 
 # 同时在途的批量算路请求数上限见 Settings.matrix_concurrency（默认 3）。
@@ -71,7 +76,7 @@ def _beijing_day() -> str:
 
 def _endpoint_label(endpoint: str) -> str:
     """把接口路径归并为短名，供配额统计按接口类别展示。"""
-    if "/place/v2/search" in endpoint:
+    if "/place/v2/" in endpoint:
         return "poi"
     if "reverse_geocoding" in endpoint:
         return "regeo"
@@ -192,7 +197,7 @@ class BaiduMapClient:
         return self._s.retry_backoff * (2**attempt) * (0.5 + random.random())
 
     def _mark_exhausted(self, endpoint: str, status: int) -> None:
-        if endpoint in self._exhausted:
+        if self.exhausted(endpoint) is not None:
             return
         self._exhausted[endpoint] = (status, _beijing_day())
         self.quota_events.append(
@@ -204,16 +209,25 @@ class BaiduMapClient:
             }
         )
 
-    def _check_exhausted(self, endpoint: str) -> None:
+    def exhausted(self, endpoint: str) -> QuotaExhaustedError | None:
+        """当前有效的配额耗尽状态；历史事件只供统计，不能用来判断能否请求。
+
+        302 在北京时间次日自动解除，301 保持。返回错误对象，让调用方用同一
+        状态码生成恢复提示，避免把永久超限也写成「明天恢复」。不发接口请求。
+        """
         hit = self._exhausted.get(endpoint)
         if hit is None:
-            return
+            return None
         status, day = hit
         if status == 302 and day != _beijing_day():
             # 过了北京时间零点，当日配额已重置
             del self._exhausted[endpoint]
-            return
-        raise QuotaExhaustedError(status, "今天已确认配额耗尽，本进程不再重复请求", endpoint)
+            return None
+        return QuotaExhaustedError(status, "已确认配额耗尽，本进程不再重复请求", endpoint)
+
+    def _check_exhausted(self, endpoint: str) -> None:
+        if (error := self.exhausted(endpoint)) is not None:
+            raise error
 
     async def __aenter__(self) -> Self:
         limits = httpx.Limits(
@@ -245,6 +259,9 @@ class BaiduMapClient:
 
         for attempt in range(self._s.max_retries + 1):
             await self._bucket.acquire(cost)
+            self._check_exhausted(endpoint)
+            if (observer := request_observer.get()) is not None:
+                observer(endpoint, params)
             try:
                 resp = await self._client.get(BASE_URL + endpoint, params=payload)
                 # 每次实际发出的 HTTP 请求都计数（含失败后的重试），
@@ -391,6 +408,41 @@ class BaiduMapClient:
                 break  # 不满一页说明已到末页
         return collected
 
+    def poi_metadata(
+        self, keyword: str, lat: float, lng: float, radius: int, max_pages: int, scope: int = 1
+    ) -> dict[str, Any]:
+        """读取已存在分页缓存的检索证据，不为 total 补发请求。"""
+        collected = 0
+        total = None
+        complete = False
+        pages = 0
+        for page in range(max_pages):
+            extra = (scope,) if scope != 1 else ()
+            path = self._cache.key_for_point("poi", lat, lng, keyword, radius, page, *extra)
+            cached = self._cache.read(path, self._ttl())
+            if cached is None:
+                break
+            pages += 1
+            results = cached.get("results") or []
+            collected += len(results)
+            if page == 0:
+                total = cached.get("total")
+            if len(results) < 20:
+                complete = True
+                break
+        if isinstance(total, int) and pages == max_pages and total <= collected:
+            complete = True
+        return {
+            "keyword": keyword,
+            "total": total,
+            "collected": collected,
+            "pages": pages,
+            "complete": complete,
+            "truncated": bool(
+                pages == max_pages and not complete and isinstance(total, int) and total > collected
+            ),
+        }
+
     async def walking_matrix(
         self, origin: tuple[float, float], destinations: Sequence[tuple[float, float]]
     ) -> list[dict[str, float] | None]:
@@ -478,6 +530,45 @@ class BaiduMapClient:
         }
         self._cache.write(cache_path, entry)
         return entry
+
+    async def named_pois(self, query: str, city: str) -> list[dict] | None:
+        """店名联想后逐 UID 核对详情；仅返回名称匹配的少量实际门店。"""
+        path = self._cache._path("poi_named", [city, query])
+        cached = self._cache.read(path, self._ttl())
+        if cached is not None:
+            return cached
+        try:
+            body = await self._request(
+                "/place/v2/suggestion",
+                {"query": query, "region": city, "city_limit": "true", "output": "json"},
+            )
+            suggestions = [
+                p
+                for p in body.get("result", [])
+                if p.get("uid") and query in str(p.get("name", ""))
+            ][:3]
+            records = []
+            for poi in suggestions:
+                detail = await self._request(
+                    "/place/v2/detail", {"uid": poi["uid"], "scope": 2, "output": "json"}
+                )
+                record = detail.get("result") or {}
+                if query not in str(record.get("name", "")) or not record.get("location"):
+                    continue
+                records.append(
+                    {
+                        "name": record["name"],
+                        "location": record["location"],
+                        "uid": poi["uid"],
+                        "detail_info": {"tag": (record.get("detail_info") or {}).get("tag", "")},
+                    }
+                )
+        except ConfigurationError:
+            raise
+        except (BaiduApiError, httpx.HTTPError, ValueError):
+            return None
+        self._cache.write(path, records)
+        return records
 
     async def reverse_geocode(self, lat: float, lng: float) -> dict[str, str] | None:
         """逆地理编码：坐标 → 「XX 路 XX 号附近」。只用于给选址建议写一个看得懂的位置。

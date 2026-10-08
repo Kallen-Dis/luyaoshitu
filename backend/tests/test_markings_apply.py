@@ -151,8 +151,9 @@ def test_modify_coverage_removes_adds_and_skips():
     added = out.pois_of("基础教育")[1]
     assert added.source == "user" and added.marking_id == 4
     reasons = {s["id"]: s["reason"] for s in p.skipped}
-    assert "找不到" in reasons[2] and "已收录" in reasons[3] and "检索失败" in reasons[5]
-    assert sorted(m["id"] for m in p.applied) == [1, 4]
+    assert "已收录" in reasons[3] and "检索失败" in reasons[5]
+    assert sorted(m["id"] for m in p.applied) == [1, 2, 4]
+    assert p.effects[2]["unmatched_exclusion"] == "不存在的店"
     places = out.as_dict()["places"]
     assert any(pl.get("source") == "user" and pl["marking_id"] == 4 for pl in places)
 

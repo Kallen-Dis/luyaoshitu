@@ -12,12 +12,13 @@
    用**多起点批量算路**求真实路网步行距离；
 4. 步行 1 公里内一家都到不了（或该品类附近无设施）的网格，标为该品类的盲区点位。
 
-**直线距离只做数学下界，从不用来判定「够得着」。** 直线就超过 1 公里的设施，
-步行必然超过，据此免费剪枝；而直线 1 公里内的设施，必须实测步行距离才能下结论。
+**直线距离只做经验下界，从不用来判定「够得着」。** 为端点吸附与缓存近似留出
+30 米余量，直线超过 1030 米才剪枝；余量内的设施必须实测步行距离才能下结论。
+30 米不是已证实的全局误差上界，阈值边缘仍需现场复核。
 
 配额是这里的主要设计约束：批量算路的日额度按点对计量，
 朴素做法（每个网格对每个设施测距）的点对数是网格数 × 设施数 × 品类数，
-很快就会耗尽。三条措施把它压下来，且都不牺牲结论的严格性：
+很快就会耗尽。三条措施把它压下来，并保留余量假设与未知状态：
 
 1. **直线下界剪枝**：直线就超标的设施不进候选，连请求都不必发；
 2. **按最近候选分组，逐轮测距，够近就停**：判定"1 公里内有没有"只需找到一个
@@ -39,7 +40,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from ..baidu.client import BaiduMapClient
@@ -55,6 +56,7 @@ from ..isochrone.refine import Closure, RefineResult
 from ..poi.catalog import KEY_CATEGORIES, Category
 from ..poi.collect import CoverageResult, Poi
 from ..poi.entries import ENTRY_GRID_M, destinations, straight_m
+from ..poi.fresh import FRESH, VERSION, eligible, fields
 
 
 @dataclass(frozen=True)
@@ -104,6 +106,7 @@ class CellResult:
     missing: list[str] = field(default_factory=list)
     # 测距失败、既不能判有也不能判无的品类
     unknown: list[str] = field(default_factory=list)
+    unknown_reasons: dict[str, str] = field(default_factory=dict)
     # 是否落在 15 分钟等时圈内
     in_circle: bool = True
     # 从中心过来的路线被施工围挡挡住
@@ -124,6 +127,7 @@ class CellResult:
             },
             "missing": self.missing,
             "unknown": self.unknown,
+            "unknown_reasons": self.unknown_reasons,
             "in_circle": self.in_circle,
             "closure_blocked": self.closure_blocked,
         }
@@ -174,6 +178,7 @@ class BlindspotResult:
         cells = self.cells
         max_reach = max((c.reach_s for c in cells if c.reach_s is not None), default=None)
         return {
+            "fresh_rule_version": VERSION,
             "basis": "network",
             "layout": self.config.layout,
             "grid_spacing_m": self.config.grid_spacing_m,
@@ -265,7 +270,53 @@ async def _route_blocked(
     return first_entry_along(points, [c.as_circle() for c in closures]) is not None
 
 
-async def _judge_category(
+async def _judge_category(client, cells, category, coverage, cfg, closures=(), check=None):
+    if category.name != FRESH or FRESH in coverage.failed:
+        return await _judge_candidates(client, cells, category, coverage, cfg, closures, check)
+    pois = coverage.pois_of(FRESH)
+    accepted = [p for p in pois if eligible(p)]
+    uncertain = [p for p in pois if fields(p)["fresh_status"] == "pending"]
+    available, _ = available_pois(accepted, closures)
+    free = {id(c) for c in cells if not rank_candidates(c, available, cfg.walk_limit_m + 30)}
+    available_pending, _ = available_pois(uncertain, closures)
+    naive_pending = len(cells) * sum(len(destinations(p)) for p in available_pending)
+
+    def subset(selected):
+        return replace(
+            coverage,
+            results=[
+                replace(r, pois=selected) if r.category == FRESH else r for r in coverage.results
+            ],
+        )
+
+    pruned, naive = await _judge_candidates(
+        client, cells, category, subset(accepted), cfg, closures, check
+    )
+    # 已有可信候选可达时，不为核对普通超市额外消耗点对。
+    unresolved = [c for c in cells if FRESH in c.missing or FRESH in c.unknown]
+    if not uncertain or not unresolved:
+        return pruned, naive + naive_pending
+    probes = [CellResult(c.lat, c.lng) for c in unresolved]
+    await _judge_candidates(client, probes, category, subset(uncertain), cfg, closures, check)
+    pruned -= sum(
+        id(c) in free and bool(rank_candidates(c, available_pending, cfg.walk_limit_m + 30))
+        for c in unresolved
+    )
+    for cell, probe in zip(unresolved, probes, strict=True):
+        reachable = FRESH not in probe.missing and FRESH not in probe.unknown
+        if reachable or FRESH in probe.unknown:
+            if FRESH in cell.missing:
+                cell.missing.remove(FRESH)
+            if FRESH not in cell.unknown:
+                cell.unknown.append(FRESH)
+            cell.unknown_reasons[FRESH] = (
+                "fresh_pending" if reachable else "fresh_pending_distance_unknown"
+            )
+            cell.nearest_m[FRESH] = None  # 不冒充已知买菜门店的距离。
+    return pruned, naive + naive_pending
+
+
+async def _judge_candidates(
     client: BaiduMapClient,
     cells: list[CellResult],
     category: Category,
@@ -298,14 +349,14 @@ async def _judge_category(
             cell.missing.append(name)
         return len(cells), 0
 
-    ranked = {i: rank_candidates(cell, pois, cfg.walk_limit_m) for i, cell in enumerate(cells)}
+    ranked = {i: rank_candidates(cell, pois, cfg.walk_limit_m + 30) for i, cell in enumerate(cells)}
     pending: list[int] = []
     pruned = 0
     for i, cell in enumerate(cells):
         if ranked[i]:
             pending.append(i)
         else:
-            # 连最近的设施直线距离都超标，步行只会更远，无需测距
+            # 最近设施已超出直线阈值及 30 米经验余量，按余量假设剪枝。
             cell.nearest_m[name] = None
             cell.missing.append(name)
             pruned += 1

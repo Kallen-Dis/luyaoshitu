@@ -28,6 +28,9 @@ export type IconName =
   | 'satellite'
   | 'expand'
   | 'collapse'
+  | 'route'
+  | 'flag'
+  | 'walk'
 
 /** 统一 1.6 描边的小图标。aria-hidden：图标旁边总有文字，读屏只读文字。 */
 export function Icon({ name, size = 16 }: { name: IconName; size?: number }) {
@@ -50,6 +53,9 @@ export function Icon({ name, size = 16 }: { name: IconName; size?: number }) {
 }
 
 const PATHS: Record<IconName, ReactNode> = {
+  route: <><circle cx="5" cy="18" r="2" /><circle cx="19" cy="6" r="2" /><path d="M7 18h8a3 3 0 0 0 0-6H9a3 3 0 0 1 0-6h8" /></>,
+  flag: <><path d="M5 21V3l14 2-4 5 4 5-14-2" /></>,
+  walk: <><circle cx="14" cy="4" r="2" /><path d="m9 21 3-8 3 8M5 13l5-6 5 4 4 1M10 7l2 6" /></>,
   // 围挡：两根立柱夹着斜条纹
   closure: (
     <>

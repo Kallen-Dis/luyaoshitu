@@ -54,6 +54,7 @@ MISSING_REASONS: dict[str, str] = {
     "not_public": "不对外开放",
     "wrong_location": "位置不对",
     "wrong_category": "类别不对",
+    "no_vegetables": "不销售蔬菜",
 }
 
 GRAY_REASONS: dict[str, str] = {
@@ -97,7 +98,7 @@ CHINA_LNG = (73.4, 135.1)
 EDITABLE: dict[str, tuple[str, ...]] = {
     "closure": ("kind", "lat", "lng", "radius_m", "note"),
     "facility_missing": ("category", "name", "lat", "lng", "reason", "note"),
-    "facility_extra": ("category", "name", "lat", "lng", "note"),
+    "facility_extra": ("category", "name", "lat", "lng", "note", "sells_vegetables"),
     "gray_area": ("polygon", "reason", "categories", "note"),
 }
 
@@ -355,6 +356,18 @@ def normalize(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
         spec.update(category=category, name=name, lat=lat, lng=lng)
         if typ == "facility_missing":
             spec["reason"] = _choice(payload.get("reason"), MISSING_REASONS, "失效原因")
+        if typ == "facility_extra" and payload.get("sells_vegetables") is not None:
+            if category != "生鲜采买" or payload["sells_vegetables"] is not True:
+                raise MarkingValidationError(
+                    "买菜能力确认必须为生鲜采买，且明确确认销售蔬菜", "sells_vegetables"
+                )
+            spec["sells_vegetables"] = True
+        if (
+            typ == "facility_missing"
+            and spec["reason"] == "no_vegetables"
+            and category != "生鲜采买"
+        ):
+            raise MarkingValidationError("不销售蔬菜只适用于生鲜采买", "reason")
         geometry = {"type": "Point", "coordinates": [lng, lat]}
         bbox = _bbox_circle(lat, lng, 1.0)
     else:

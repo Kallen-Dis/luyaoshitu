@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 
 from . import export, samples, storage
 from .baidu.client import BaiduMapClient
-from .baidu.errors import MISSING_AK_MESSAGE, BaiduApiError
+from .baidu.errors import MISSING_AK_MESSAGE, BaiduApiError, quota_hint
 from .config import get_settings
 from .demo import build_demo_feature
 from .diagnostics import (
@@ -54,11 +54,15 @@ from .poi import crosscheck
 from .poi.catalog import CATEGORIES
 from .poi.collect import collect_coverage
 from .poi.construction import find_construction
+from .poi.fresh import FRESH, VERSION, annotate_coverage
 from .report.blindspot import BlindspotConfig, identify_blindspots, scope_to_circle
 from .report.score import build_report
 from .report.simulate import simulate_facility
 from .report.siteplan import DEFAULT_BUDGET_PAIRS, plan_site
 from .travel import MODES, WALK, TravelMode, get_mode
+from .trip.candidates import place_id as trip_place_id
+from .trip.routes import install as install_trip
+from .trip.service import config as trip_config
 
 
 class ClosureIn(BaseModel):
@@ -137,6 +141,11 @@ class SimulateRequest(BaseModel):
     lng: float = Field(..., ge=-180, le=180)
     feature: dict = Field(..., description="当前分析结果的完整 Feature")
     verify: bool = Field(True, description="是否对候选方格做真实路网测距（消耗少量批量算路点对）")
+
+
+class ClosurePreviewRequest(BaseModel):
+    feature: dict
+    closures: list[ClosureIn] = Field(default_factory=list, max_length=MAX_CLOSURES)
 
 
 class FeatureRequest(BaseModel):
@@ -567,13 +576,16 @@ async def health() -> dict:
     便于部署后一眼看出「为什么实时计算不能用」。"""
     client: BaiduMapClient = app.state.baidu
     warnings = _config_warnings()
+    active_quota = {
+        e["endpoint"]: e for e in client.quota_events if client.exhausted(e["endpoint"]) is not None
+    }
     return {
         "status": "ok" if not warnings else "degraded",
         "server_ak_configured": not any(w["code"] == "missing_server_ak" for w in warnings),
         "browser_ak_configured": not any(w["code"] == "missing_browser_ak" for w in warnings),
         "quota_exhausted_today": [
             {"service": e["service"], "status": e["status"], "day": e["day"]}
-            for e in client.quota_events
+            for e in active_quota.values()
         ],
         "warnings": warnings,
     }
@@ -604,12 +616,19 @@ async def config() -> dict:
             "min_radius_m": MIN_CLOSURE_RADIUS_M,
             "max_radius_m": MAX_CLOSURE_RADIUS_M,
         },
-        "modes": [m.as_public() for m in MODES.values()],
+        "modes": [
+            {
+                **m.as_public(),
+                "matrix_batch_pairs": min(s.matrix_batch_size, m.matrix_product_limit),
+            }
+            for m in MODES.values()
+        ],
         "default_mode": "walk",
         # 只告诉前端 AI 二次核对能不能用，Agent Plan 的 Token 本身永不下发
         "agent_plan": {"configured": s.agent_plan_configured},
         # 标注的枚举、文案与上限；admin_enabled 只说明审核有没有开，口令不下发
         "markings": marking_service().config(),
+        "trip": trip_config(s),
     }
 
 
@@ -620,8 +639,31 @@ async def list_samples() -> dict:
 
 def _current(props: dict) -> dict:
     """按现版口径整理一份结果：旧版圆形网格只留圈内格子，报告据此重算。零 API 消耗。"""
-    props["blindspots"] = scope_to_circle(props.get("blindspots"))
+    coverage = props.get("coverage") or {}
+    annotate_coverage(coverage)
+    grid = props.get("blindspots")
+    if (
+        grid
+        and grid.get("fresh_rule_version") != VERSION
+        and any(
+            coverage.get("fresh_breakdown", {}).get(status, 0) for status in ("pending", "excluded")
+        )
+    ):
+        for cell in grid.get("cells", []):
+            cell["missing"] = [c for c in cell.get("missing", []) if c != FRESH]
+            if FRESH not in cell.setdefault("unknown", []):
+                cell["unknown"].append(FRESH)
+            cell.setdefault("unknown_reasons", {})[FRESH] = "fresh_legacy"
+            cell.setdefault("nearest_m", {})[FRESH] = None
+        grid.get("blind_ratio", {}).pop(FRESH, None)
+        if FRESH not in grid.setdefault("incomplete_categories", []):
+            grid["incomplete_categories"].append(FRESH)
+        grid["blind_count"] = sum(bool(c.get("missing")) for c in grid.get("cells", []))
+        coverage["fresh_needs_refresh"] = True
+    props["blindspots"] = scope_to_circle(grid)
     props["report"] = build_report(props, props.get("coverage"), props.get("blindspots"))
+    for place in (props.get("coverage") or {}).get("places", []):
+        place["id"] = trip_place_id(place)
     return props
 
 
@@ -709,7 +751,7 @@ async def isochrone(req: IsochroneRequest, x_device_id: str | None = Header(None
 
     三段的配额消耗量级完全不同，故各自可关：
 
-    - 等时圈：directions × 7 个点对（36 方向 252 个，3 次请求），
+    - 等时圈：directions × 7 个点对（步行 36 方向 252 个，冷缓存 6 次请求），
       步行时另有每方向 1 次步行路线规划，用于补回过街等待与围挡判定；
     - 覆盖层：各品类关键词数之和约 17 次起的地点检索（日额度 3000）；
     - 盲区层：15 分钟圈内 100 米网格（样例 116~144 格），热力每格 1 个点对 + 逐格判定数百个点对。
@@ -867,6 +909,80 @@ async def simulate(req: SimulateRequest) -> dict:
         raise _handle_baidu_error(exc, "simulate") from exc
 
 
+@app.post("/api/simulate/closures", summary="假设道路封闭：预览体检结果，不保存正式历史")
+async def preview_closures(
+    req: ClosurePreviewRequest, x_device_id: str | None = Header(None)
+) -> dict:
+    props = req.feature.get("properties") or {}
+    center = props.get("center") or {}
+    if "lat" not in center or "lng" not in center:
+        raise HTTPException(
+            400, detail={"code": "bad_feature", "message": "预览需要完整分析中心。"}
+        )
+    if props.get("mode", "walk") != "walk":
+        raise HTTPException(
+            400, detail={"code": "not_walking", "message": "道路封闭评估只支持步行分析。"}
+        )
+    if props.get("simulated"):
+        raise HTTPException(
+            400, detail={"code": "no_network", "message": "道路封闭评估需要真实路网结果。"}
+        )
+    _require_server_ak()
+    grid = props.get("blindspots") or {}
+    request = IsochroneRequest(
+        lat=center.get("lat"),
+        lng=center.get("lng"),
+        minutes=props.get("minutes", 15),
+        directions=max(8, min(72, len(props.get("rays") or []) or 36)),
+        grid_spacing_m=grid.get("grid_spacing_m", 100),
+        grid_extent_m=max(500, min(2000, grid.get("extent_m") or 1500)),
+        closures=req.closures,
+        mode="walk",
+        crossing_delay=True,
+        markings=MarkingOptions(
+            mode="auto", include=[m["id"] for m in (props.get("markings") or {}).get("applied", [])]
+        ),
+    )
+    state = AnalysisState()
+    payload = None
+    baseline = None
+    try:
+        async with asyncio.timeout(get_settings().analysis_timeout_s):
+            # 旧快照与当前规则/设施证据不同，直接作比较会把数据更新误算成封路效果。
+            # 两遍使用相同参数与正常缓存；基线保留有效共享围挡，只移除本次假设围挡。
+            before_request = request.model_copy(update={"closures": []})
+            for analysis_request in (before_request, request) if req.closures else (request,):
+                current = None
+                async for _, data in _analysis_steps(
+                    app.state.baidu,
+                    analysis_request,
+                    WALK,
+                    (request.lat, request.lng),
+                    state,
+                    _device_hash(x_device_id),
+                ):
+                    if "feature" in data:
+                        current = data["feature"]
+                if baseline is None:
+                    baseline = current
+                payload = current
+    except BaiduApiError as exc:
+        raise _handle_baidu_error(exc, "simulate") from exc
+    except TimeoutError as exc:
+        raise HTTPException(
+            504, detail=_timeout_detail(get_settings().analysis_timeout_s, state)
+        ) from exc
+    if payload is None:
+        raise HTTPException(503, detail={"code": "no_preview", "message": "未生成道路封闭预览。"})
+    payload["properties"]["planning_preview"] = True
+    baseline_props = (baseline or {}).get("properties") or {}
+    payload["properties"]["planning_baseline"] = {
+        "report": baseline_props.get("report"),
+        "area_km2": baseline_props.get("area_km2", 0),
+    }
+    return payload
+
+
 def _require_server_ak() -> None:
     if any(w["code"] == "missing_server_ak" for w in _config_warnings()):
         raise HTTPException(
@@ -884,6 +1000,9 @@ def _prepared(feature: dict) -> dict:
         )
     _current(props)
     return feature
+
+
+install_trip(app, _prepared, _require_server_ak, _handle_baidu_error)
 
 
 @app.post("/api/recheck", summary="复测巡检：重取各方向步行路线，找疑似新增阻断")
@@ -904,12 +1023,8 @@ async def recheck(req: FeatureRequest) -> dict:
     except BaiduApiError as exc:
         raise _handle_baidu_error(exc, "recheck") from exc
     if result["checked"] and result["failed"] == result["checked"]:
-        quota = [e for e in client.quota_events if "directionlite" in e["endpoint"]]
-        reason = (
-            "步行路线规划今天的配额已经用完，北京时间次日 0 点重置"
-            if quota
-            else "；".join(result["route_failures"]) or "原因未知"
-        )
+        quota = client.exhausted("/directionlite/v1/walking")
+        reason = quota_hint(quota) if quota else "；".join(result["route_failures"]) or "原因未知"
         raise HTTPException(
             status_code=503 if quota else 502,
             detail={
@@ -932,16 +1047,14 @@ async def construction_candidates(req: ConstructionRequest) -> dict:
     except BaiduApiError as exc:
         raise _handle_baidu_error(exc, "construction") from exc
     if len(result["failed_keywords"]) == len(result["keywords"]):
-        quota = [e for e in client.quota_events if "/place/" in e["endpoint"]]
+        quota = client.exhausted("/place/v2/search")
         raise HTTPException(
             status_code=503 if quota else 502,
             detail={
                 "code": "poi_failed",
                 "service": "地点检索",
                 "message": (
-                    "地点检索今天的配额已经用完，北京时间次日 0 点重置。"
-                    if quota
-                    else "工地关键词检索全部失败，请稍后重试。"
+                    f"{quota_hint(quota)}。" if quota else "工地关键词检索全部失败，请稍后重试。"
                 ),
             },
         )

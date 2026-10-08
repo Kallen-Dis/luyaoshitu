@@ -17,6 +17,7 @@ import {
   recheck,
   retractMarking,
   simulate,
+  simulateClosures,
   sitePlan,
 } from './api'
 import { erasedCount, gridCensus } from './lib/grid'
@@ -24,6 +25,9 @@ import { CompareCard } from './components/CompareCard'
 import { DirectionRadar } from './components/DirectionRadar'
 import { ExportCard } from './components/ExportCard'
 import { MapView } from './components/MapView'
+import { TripDrawer } from './components/trip/TripDrawer'
+import { TripGuide } from './components/trip/TripGuide'
+import { guideUnavailableReason } from './lib/guide'
 import {
   DEFAULT_LAYERS,
   type ComposerPreset,
@@ -56,6 +60,11 @@ import type {
   SampleMeta,
   SimulationResult,
   SitePlanResult,
+  TripOrigin,
+  TripMapData,
+  TripGuideData,
+  TripItem,
+  Place,
 } from './types'
 
 /** 某份结果专属的派生数据：owner 不是当前结果时视为不存在。 */
@@ -203,10 +212,23 @@ export default function App() {
   const [coordSys, setCoordSys] = useState('bd09')
   const [dataMode, setDataMode] = useState<'real' | 'demo'>('real')
   const [simulation, setSimulation] = useState<SimulationResult | null>(null)
+  const [tripEntry, setTripEntry] = useState<Scoped<{ key: number; origin: TripOrigin; category?: string; targetId?: string }> | null>(null)
+  const [tripMapEntry, setTripMapEntry] = useState<Scoped<TripMapData> | null>(null)
+  const [tripPlacesEntry, setTripPlacesEntry] = useState<Scoped<Place[]> | null>(null)
+  const [tripPicking, setTripPicking] = useState(false)
+  const [tripSelection, setTripSelection] = useState<string | null>(null)
+  const [guideEntry, setGuideEntry] = useState<Scoped<TripGuideData> | null>(null)
+  const closeGuide = useCallback(() => setGuideEntry(null), [])
+  const closeTrip = useCallback(() => { setGuideEntry(null); setTripEntry(null); setTripMapEntry(null); setTripPicking(false); setTripSelection(null) }, [])
   const [compareFeature, setCompareFeature] = useState<IsochroneFeature | null>(null)
   const [compareId, setCompareId] = useState<string | null>(null)
   const [comparePicking, setComparePicking] = useState(false)
   const [placing, setPlacing] = useState<string | null>(null)
+  const [planningMode, setPlanningMode] = useState<'facility' | 'closure' | null>(null)
+  const [closurePreview, setClosurePreview] = useState<IsochroneFeature | null>(null)
+  const [planningBusy, setPlanningBusy] = useState(false)
+  const planningController = useRef<AbortController | null>(null)
+  const planningRequest = useRef(0)
   const [samplesOpen, setSamplesOpen] = useState(false)
   const [latText, setLatText] = useState('31.247979')
   const [lngText, setLngText] = useState('121.416775')
@@ -305,7 +327,7 @@ export default function App() {
       setLatText(String(feature.properties.center.lat))
       setLngText(String(feature.properties.center.lng))
     }
-    setClosures(feature.properties.closures ?? [])
+    closePlanning()
     setClosurePlacing(false)
     setPickEnabled(false)
     setPlacing(null)
@@ -331,7 +353,7 @@ export default function App() {
           setLatText(String(p.center.lat))
           setLngText(String(p.center.lng))
         }
-        setClosures(p.closures ?? [])
+        closePlanning()
         setClosurePlacing(false)
         setPlacing(null)
         setPickEnabled(false)
@@ -354,6 +376,7 @@ export default function App() {
       name?: string,
     ) => {
       const useMarkings = markingOverride ?? markingMode
+      closePlanning()
       setBusy(true)
       setError(null)
       setNotice(null)
@@ -387,7 +410,7 @@ export default function App() {
             mode,
             coord_sys: inputSys,
             crossing_delay: crossingDelay,
-            closures,
+            closures: [],
             markings: { mode: useMarkings, include: adopted, exclude: [] },
             ...(name ? { name } : {}),
           },
@@ -431,7 +454,7 @@ export default function App() {
         }
       }
     },
-    [minutes, directions, withCoverage, mode, dataMode, crossingDelay, closures, markingMode, adopted],
+    [minutes, directions, withCoverage, mode, dataMode, crossingDelay, markingMode, adopted],
   )
 
   async function onMapSearch() {
@@ -469,6 +492,8 @@ export default function App() {
 
   /** 进入对比：下一步用搜索、样例或点地图指定地点 B，可以是新地址。 */
   function toggleCompare() {
+    closeTrip()
+    closePlanning()
     if (compareFeature || comparePicking) {
       setCompareFeature(null)
       setCompareId(null)
@@ -551,7 +576,13 @@ export default function App() {
 
   function simulateAt(category: string, lat: number, lng: number) {
     if (!isochrone) return
+    closeTrip()
+    setComposer(null); setCompareFeature(null); setCompareId(null); setComparePicking(false)
+    setPlanningMode('facility'); setClosurePlacing(false)
     setPlacing(category)
+    setNotice(null)
+    const request = ++planningRequest.current
+    setPlanningBusy(true)
     simulate({
       category,
       lat,
@@ -560,17 +591,64 @@ export default function App() {
       verify: !isochrone.properties.simulated,
     })
       .then((result) => {
+        if (request !== planningRequest.current) return
         setSimulation(result)
-        const how =
-          result.basis === 'network'
-            ? `路网实测，消耗 ${result.pairs_used} 个点对`
-            : '直线估算上限，零消耗'
-        setNotice(
-          `模拟新建「${result.category}」：${result.candidate_count} 个候选方格中 ${result.covered_count} 格步行 1 公里内够得着，` +
-            `总分 ${result.before.score ?? '-'} → ${result.after.score ?? '-'}（${how}）`,
-        )
       })
-      .catch((err: Error) => setError(err.message))
+      .catch((err: Error) => { if (request === planningRequest.current) setError(err.message) })
+      .finally(() => { if (request === planningRequest.current) setPlanningBusy(false) })
+  }
+
+  useEffect(() => {
+    planningRequest.current += 1
+    planningController.current?.abort()
+  }, [isochrone])
+
+  function closePlanning() {
+    planningRequest.current += 1
+    planningController.current?.abort()
+    setPlanningBusy(false); setPlanningMode(null); setPlacing(null)
+    setNotice(null)
+    setClosurePlacing(false); setSimulation(null); setClosurePreview(null); setClosures([])
+  }
+
+  useEffect(() => {
+    if (!planningMode) return
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        planningRequest.current += 1; planningController.current?.abort()
+        setPlanningBusy(false); setPlanningMode(null); setPlacing(null)
+        setNotice(null)
+        setClosurePlacing(false); setSimulation(null); setClosurePreview(null); setClosures([])
+      }
+    }
+    document.addEventListener('keydown', handleKey)
+    return () => document.removeEventListener('keydown', handleKey)
+  }, [planningMode])
+
+  function openPlanning(mode: 'facility' | 'closure') {
+    closeTrip(); setComposer(null); setComparePicking(false); setPickEnabled(false)
+    setCompareFeature(null); setCompareId(null)
+    planningRequest.current += 1; planningController.current?.abort(); setPlanningBusy(false)
+    setPlanningMode(mode); setSimulation(null)
+    setNotice(null)
+    setPlacing(mode === 'facility' ? keyCategories[0] ?? '生鲜采买' : null)
+    setClosurePlacing(mode === 'closure')
+  }
+
+  async function previewClosure() {
+    if (!isochrone) return
+    const request = ++planningRequest.current
+    planningController.current?.abort()
+    const controller = new AbortController()
+    planningController.current = controller
+    setPlanningBusy(true); setError(null)
+    try {
+      const preview = await simulateClosures(isochrone, closures, controller.signal)
+      if (request === planningRequest.current) { setClosurePreview(preview); setClosurePlacing(false) }
+    } catch (error) {
+      if (!controller.signal.aborted && request === planningRequest.current) setError(error instanceof Error ? error.message : String(error))
+    } finally { if (request === planningRequest.current) setPlanningBusy(false) }
   }
 
   function addClosure(lat: number, lng: number, radius = closureRadius, label?: string) {
@@ -582,7 +660,11 @@ export default function App() {
     const lo = config?.closure_limits?.min_radius_m ?? 10
     const hi = config?.closure_limits?.max_radius_m ?? 300
     const r = Math.round(Math.min(hi, Math.max(lo, radius)))
+    planningRequest.current += 1
+    planningController.current?.abort()
+    setPlanningBusy(false)
     setClosures([...closures, { lat, lng, radius_m: r, ...(label ? { label } : {}) }])
+    setClosurePreview(null)
     return true
   }
 
@@ -705,7 +787,7 @@ export default function App() {
   }
 
   // 标注的围挡与当前结果用到的不一致时，提醒要重新计算才生效
-  const appliedClosures = isochrone?.properties.closures ?? []
+  const appliedClosures = closurePreview?.properties.closures ?? []
   const closuresDirty =
     JSON.stringify(appliedClosures.map((c) => [c.lat, c.lng, c.radius_m])) !==
     JSON.stringify(closures.map((c) => [c.lat, c.lng, c.radius_m]))
@@ -786,8 +868,11 @@ export default function App() {
   }
 
   /** 打开新建标注（进入标注模式）。从地图上点进来时类型、位置、类别与原因已带好。 */
-  function openComposer(preset?: ComposerPreset) {
+  function openComposer(preset?: ComposerPreset, preserveTrip = false) {
     if (!markingConfig) return
+    closePlanning()
+    if (preserveTrip) closeGuide()
+    else closeTrip()
     setClosurePlacing(false)
     setPlacing(null)
     setComparePicking(false)
@@ -806,7 +891,7 @@ export default function App() {
       ? 'type'
       : type === 'gray_area' && !preset.reason
         ? 'why'
-        : type === 'facility_missing' && preset.place && preset.reason
+        : (type === 'facility_extra' && preset.point && preset.name && preset.sellsVegetables) || (type === 'facility_missing' && preset.place && preset.reason)
           ? 'details'
           : 'place'
     // 侧栏要收起：记下滚动位置，退出标注模式时回到原处
@@ -819,13 +904,20 @@ export default function App() {
 
   function handleIntent(intent: MapIntent) {
     switch (intent.kind) {
+      case 'trip-to':
+        openTrip(intent.place.category, undefined, intent.place)
+        return
+      case 'trip-from-cell':
+        openTrip(intent.category, { lat: intent.cell.lat, lng: intent.cell.lng, kind: 'cell' })
+        return
       case 'compose':
         openComposer(intent.preset)
         return
       case 'temp-closure':
+        openPlanning('closure')
         if (addClosure(intent.lat, intent.lng, intent.radius, intent.label)) {
           dismiss(intent.key)
-          setNotice('已加入临时围挡：只算你这次，在左侧围挡面板里重新计算后生效。')
+          setNotice('已加入假设围挡，在规划模拟中评估，不影响正式出行。')
         }
         return
       case 'dismiss':
@@ -845,9 +937,11 @@ export default function App() {
   function handleMarkingCreated(marking: Marking) {
     setComposer(null)
     refreshMarkings()
-    revealMarking(marking.id)
+    if (!scoped(tripEntry, isochrone)) revealMarking(marking.id)
     showToast({
-      message: `已提交共享标注（附 ${marking.photo_count} 张现场照片）：对你立即生效，重新计算即可看到影响`,
+      message: scoped(tripEntry, isochrone)
+        ? '已提交补录，已返回原行程；下次查询时应用这条标注。'
+        : `已提交共享标注（附 ${marking.photo_count} 张现场照片）：对你立即生效，重新计算即可看到影响`,
       tone: 'ok',
       undoLabel: '撤回',
       undo: async () => {
@@ -888,6 +982,67 @@ export default function App() {
         : isochrone,
     [isochrone, switchKind, resultView],
   )
+  const trip = scoped(tripEntry, isochrone)
+  const tripMap = trip ? scoped(tripMapEntry, isochrone) : null
+  const guide = useMemo(() => {
+    const value = trip && !composer ? scoped(guideEntry, isochrone) : null
+    if (!value || !isochrone) return null
+    // 开发热更新时，已经打开的旧引导状态也要能恢复，不丢掉原路线。
+    return value.remaining && value.routingFeature && value.mode ? value : {
+      ...value, remaining: [value.item], routingFeature: isochrone,
+      mode: 'preview' as const, focus: 'origin' as const, focusKey: value.focusKey + 1,
+    }
+  }, [trip, composer, guideEntry, isochrone])
+  const updateGuide = useCallback((value: TripGuideData) => setGuideEntry({ owner: isochrone, value }), [isochrone])
+  function openGuide(item: TripItem) {
+    if (guideUnavailableReason(item, tripMap?.preview)) return
+    setTripSelection(item.entry_id)
+    if (!isochrone) return
+    const index = tripMap?.itinerary ? tripMap.items.findIndex(leg => leg.entry_id === item.entry_id) : -1
+    const remaining = index >= 0 ? tripMap!.items.slice(index) : [item]
+    updateGuide({ item, remaining, routingFeature: isochrone, mode: 'preview', stepIndex: 0, focus: 'origin', focusKey: 0, location: null })
+  }
+  const updateTripMap = useCallback((value: TripMapData) => {
+    setTripMapEntry({ owner: isochrone, value })
+    if (value.preview) return // 验收假数据不得进入真实共享标注。
+    setTripPlacesEntry(previous => {
+      const known = scoped(previous, isochrone) ?? []
+      const additions = value.items.filter(item => !known.some(p => p.id === item.place_id))
+      if (!additions.length) return previous
+      return { owner: isochrone, value: [...known, ...additions.map(item => item.place ?? {
+        id: item.place_id, name: item.name, category: item.category,
+        lat: item.lat, lng: item.lng, in_circle: item.in_circle,
+        fresh_status: item.fresh_status, fresh_evidence: item.fresh_evidence,
+      })] }
+    })
+  }, [isochrone])
+  const markingPlaces = useMemo(() => {
+    const places = [...(isochrone?.properties.coverage?.places ?? [])]
+    for (const place of scoped(tripPlacesEntry, isochrone) ?? []) {
+      if (!places.some(p => p.id === place.id || (p.category === place.category && p.name === place.name && metersBetween(p, place) <= 50))) places.push(place)
+    }
+    return places
+  }, [isochrone, tripPlacesEntry])
+  function openTrip(category?: string, origin?: TripOrigin, target?: Place) {
+    if (!isochrone?.properties.center) return
+    closePlanning()
+    setComposer(null); setPlacing(null); setSimulation(null); setComparePicking(false)
+    setCompareFeature(null); setCompareId(null); setClosurePlacing(false); setPickEnabled(false)
+    setTripPicking(false); setTripSelection(null); setTripMapEntry(null)
+    closeGuide()
+    const start = origin ?? (target && trip ? trip.origin : { ...isochrone.properties.center, kind: 'center' as const })
+    setTripEntry({ owner: isochrone, value: { key: Date.now(), origin: start, category, targetId: target?.id } })
+    setReveal({ ...start, key: Date.now(), rightInset: 400 })
+  }
+  function changeTripOrigin(origin: TripOrigin) {
+    if (!trip || !mapFeature?.properties.center) return
+    if (metersBetween(mapFeature.properties.center, origin) > (mapFeature.properties.coverage?.radius_m ?? 2500)) {
+      setNotice('起点超出设施检索范围，请先在那里体检一次。'); return
+    }
+    setTripPicking(false)
+    setTripEntry({ owner: isochrone, value: { ...trip, origin } })
+    setReveal({ ...origin, key: Date.now(), rightInset: 400 })
+  }
   // 围挡改了圈时，另一种看法的外圈画成点线对比
   const baselineRing = props?.markings?.baseline?.ring ?? null
   const altRing =
@@ -899,7 +1054,7 @@ export default function App() {
   const composerPicking = composer?.step === 'place'
 
   return (
-    <div className="app">
+    <div className={guide ? 'app guiding' : 'app'}>
       <header className="topbar">
         <div className="brand">
           <span className="brand-mark">途</span>
@@ -1125,8 +1280,8 @@ export default function App() {
                 onChange={(e) => setDirections(Number(e.target.value))}
               />
               <p className="hint">
-                方向越多轮廓越精细。每 100 个采样点消耗 1 次批量算路请求，
-                当前设置约 {Math.ceil((directions * 7) / 100)} 次。
+                方向越多轮廓越精细。当前方式每请求最多 {config?.modes.find(m => m.id === mode)?.matrix_batch_pairs ?? 50} 个点对，
+                当前设置冷缓存约 {Math.ceil((directions * 7) / (config?.modes.find(m => m.id === mode)?.matrix_batch_pairs ?? 50))} 次。
               </p>
             </div>
 
@@ -1150,7 +1305,7 @@ export default function App() {
             </label>
             <p className="hint">
               批量算路的耗时只是距离 ÷ 步速，不含红绿灯与天桥。开启后每个方向另取一条步行路线，
-              约 36 次路线规划；标注了施工围挡时也要靠它判断路线是否被挡。
+              约 {directions} 次路线规划；标注了施工围挡时也要靠它判断路线是否被挡。
             </p>
 
             <label className="check">
@@ -1239,7 +1394,7 @@ export default function App() {
               report={report}
               coverage={coverage}
               meta={props}
-              simulation={simulation}
+              simulation={planningMode === 'facility' ? simulation : null}
               onSimulate={handleSimulate}
               onClearSimulation={() => setSimulation(null)}
               sitePlan={sitePlanResult}
@@ -1252,6 +1407,7 @@ export default function App() {
               }
               onSimulateSuspect={(s) => simulateAt(s.category, s.lat, s.lng)}
               onShareSuspect={markingConfig ? shareSuspect : undefined}
+              onTrip={(category) => openTrip(category)}
             />
           )}
 
@@ -1363,36 +1519,11 @@ export default function App() {
             >
               {compareFeature || comparePicking ? '退出对比' : '对比'}
             </button>
-            <button
-              type="button"
-              className={placing || simulation ? 'tool on' : 'tool'}
-              onClick={() => {
-                if (placing || simulation) {
-                  setPlacing(null)
-                  setSimulation(null)
-                  return
-                }
-                setComparePicking(false)
-                setClosurePlacing(false)
-                setComposer(null)
-                setPlacing(keyCategories[0] ?? '生鲜采买')
-              }}
-            >
-              {placing || simulation ? '退出模拟' : '模拟新建'}
-            </button>
-            <button
-              type="button"
-              className={closurePlacing ? 'tool on' : 'tool'}
-              aria-pressed={closurePlacing}
-              title="只影响你这次计算，不保存、不共享"
-              onClick={() => {
-                setClosurePlacing((v) => !v)
-                setPlacing(null)
-                setComparePicking(false)
-                setComposer(null)
-              }}
-            >
-              {closurePlacing ? '结束标注' : `临时围挡${closures.length ? `（${closures.length}）` : ''}`}
+            <button type="button" className={trip ? 'tool on' : 'tool'} disabled={!mapFeature?.properties.coverage || busy}
+              aria-pressed={Boolean(trip)} onClick={() => trip ? closeTrip() : openTrip()}><Icon name="route" /> 出行</button>
+            <button type="button" className={planningMode ? 'tool on' : 'tool'}
+              onClick={() => planningMode ? closePlanning() : openPlanning('facility')}>
+              规划模拟
             </button>
             {markingConfig && (
               <button
@@ -1404,28 +1535,25 @@ export default function App() {
                 共享标注
               </button>
             )}
-            <button type="button" className="tool" onClick={() => window.print()}>
+            <button type="button" className="tool tool-secondary" onClick={() => window.print()}>
               导出 PDF
             </button>
+            <details className="map-more"><summary className="tool">更多 ▾</summary><div className="floating">
+              <button type="button" className="tool" onClick={event => { event.currentTarget.closest('details')?.removeAttribute('open'); window.print() }}>导出 PDF</button>
+            </div></details>
           </div>
           )}
-          {placing && (
-            <section className="place-panel floating" aria-label="新建设施模拟">
+          {planningMode === 'facility' && placing && (
+            <section className="place-panel planning-drawer floating" role="dialog" aria-label="规划模拟">
               <header className="place-head">
                 <div>
                   <p className="place-kicker">规划模拟</p>
                   <strong>假如在这里新建一处…</strong>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPlacing(null)
-                    setSimulation(null)
-                  }}
-                >
-                  关闭
-                </button>
+                <button type="button" aria-label="关闭规划模拟" onClick={closePlanning}>×</button>
               </header>
+              <div className="planning-scroll">
+              <div className="planning-tabs"><button className="active" onClick={() => openPlanning('facility')}>增建设施</button><button onClick={() => openPlanning('closure')}>道路封闭</button></div>
               <div className="mode-pills">
                 {(keyCategories.length ? keyCategories : ['生鲜采买', '医药', '基础教育']).map(
                   (name) => (
@@ -1433,7 +1561,7 @@ export default function App() {
                       key={name}
                       type="button"
                       className={placing === name ? 'pill active' : 'pill'}
-                      onClick={() => setPlacing(name)}
+                      onClick={() => { planningRequest.current += 1; setPlanningBusy(false); setSimulation(null); setPlacing(name) }}
                     >
                       {name}
                     </button>
@@ -1448,7 +1576,7 @@ export default function App() {
               {simulation ? (
                 <p className="place-diff">
                   {erasedCount(isochrone?.properties.blindspots, simulation, blindCategory)}{' '}
-                  个方格已从地图上消去
+                  格在当前图层中不再缺失；该品类改善 {simulation.covered_count} 格
                   {simulation.basis === 'network'
                     ? `（路网实测，${simulation.pairs_used} 个点对）`
                     : '（直线估算上限）'}
@@ -1459,8 +1587,10 @@ export default function App() {
               ) : (
                 <p>还没放下。点地图之后，这里显示前后分数。</p>
               )}
+              {planningBusy && <p role="status">正在评估拟建点…</p>}
+              </div>
               <footer>
-                <button type="button" disabled={!simulation} onClick={() => setSimulation(null)}>
+                <button type="button" disabled={!simulation} onClick={() => { planningRequest.current += 1; setSimulation(null); setPlanningBusy(false) }}>
                   撤销
                 </button>
               </footer>
@@ -1475,7 +1605,7 @@ export default function App() {
               step={composer.step}
               onStep={(step) => setComposer((c) => (c ? { ...c, step } : c))}
               preset={composer.preset}
-              places={coverage?.places ?? []}
+              places={markingPlaces}
               rays={props?.rays ?? []}
               center={markingCenter}
               onCreated={handleMarkingCreated}
@@ -1487,20 +1617,17 @@ export default function App() {
               onClose={() => setComposer(null)}
             />
           )}
-          {!composer && (closurePlacing || closures.length > 0 || recheckResult || constructionResult) && (
-            <section className="closure-panel floating" aria-label="施工围挡标注">
+          {!composer && !trip && planningMode === 'closure' && (
+            <section className="closure-panel planning-drawer floating" role="dialog" aria-label="规划模拟">
               <header>
-                <strong>施工围挡</strong>
-                <button type="button" onClick={() => setClosurePlacing((v) => !v)}>
-                  {closurePlacing ? '结束标注' : '继续标注'}
-                </button>
+                <strong>规划模拟</strong>
+                <button type="button" aria-label="关闭规划模拟" onClick={closePlanning}>×</button>
               </header>
-              <p className="hint">
-                百度接口不提供围挡数据，也不能绕开指定区域规划路线。
-                在地图上点选围挡位置，或用下面两条线索找疑似点、确认后加入。重新计算后，
-                路线穿过围挡的方向按受阻截断，围挡内的设施视为暂不可用。
-              </p>
-              <div className="closure-auto">
+              <div className="planning-scroll">
+              <div className="planning-tabs"><button onClick={() => openPlanning('facility')}>增建设施</button><button className="active" onClick={() => openPlanning('closure')}>道路封闭</button></div>
+              <p className="hint">在地图上放置假设围挡，评估封闭后的生活圈和评分。预览不保存历史，不影响正式出行；实际封路请提交共享标注。</p>
+              <button type="button" onClick={() => setClosurePlacing(v => !v)}>{closurePlacing ? '结束点选' : '在地图上添加围挡'}</button>
+              <details className="closure-auto"><summary>查找疑似围挡线索</summary>
                 <div className="closure-auto-actions">
                   <button
                     type="button"
@@ -1653,9 +1780,9 @@ export default function App() {
                     })}
                   </ul>
                 )}
-              </div>
+              </details>
               <label>
-                新围挡半径
+                假设围挡半径
                 <select
                   value={closureRadius}
                   onChange={(e) => setClosureRadius(Number(e.target.value))}
@@ -1677,7 +1804,7 @@ export default function App() {
                       <button
                         type="button"
                         aria-label={`删除第 ${i + 1} 处围挡`}
-                        onClick={() => setClosures(closures.filter((_, j) => j !== i))}
+                        onClick={() => { planningRequest.current += 1; planningController.current?.abort(); setPlanningBusy(false); setClosurePreview(null); setClosures(closures.filter((_, j) => j !== i)) }}
                       >
                         删除
                       </button>
@@ -1687,30 +1814,32 @@ export default function App() {
               ) : (
                 <p>还没有标注。点地图放一处。</p>
               )}
+              {closurePreview && <div className="planning-comparison"><b>假设评分 {closurePreview.properties.planning_baseline?.report?.total ?? '—'} → {closurePreview.properties.report?.total ?? '—'}</b><p>可达面积 {closurePreview.properties.planning_baseline?.area_km2.toFixed(3) ?? '—'} → {closurePreview.properties.area_km2.toFixed(3)} km²</p><p>前后均按当前规则重算；正式报告与出行继续使用原始结果。</p><p>圈缩小可能移除原有缺失网格，评分升高不代表封路有益。</p></div>}
+              </div>
               <footer>
-                <button
-                  type="button"
-                  className="primary"
-                  disabled={busy || !closuresDirty}
-                  onClick={() => {
-                    setClosurePlacing(false)
-                    void run(center.lat, center.lng, 'bd09', undefined, props?.name)
-                  }}
-                >
-                  {closuresDirty ? '按围挡重新计算（消耗配额）' : '当前结果已含这些围挡'}
-                </button>
-                <button type="button" disabled={closures.length === 0} onClick={() => setClosures([])}>
-                  清空
-                </button>
+                <button type="button" className="primary" disabled={planningBusy || !closuresDirty || !isochrone || props?.simulated} onClick={() => void previewClosure()}>{planningBusy ? '评估中…' : '评估封闭效果'}</button>
+                <button type="button" disabled={closures.length === 0} onClick={() => { planningRequest.current += 1; planningController.current?.abort(); setPlanningBusy(false); setClosures([]); setClosurePreview(null) }}>清空</button>
               </footer>
             </section>
           )}
+          {trip && isochrone && <TripDrawer key={trip.key} feature={isochrone} origin={trip.origin}
+            initialCategory={trip.category} targetId={trip.targetId} selected={tripSelection} picking={tripPicking}
+            onSelect={setTripSelection} onMapData={updateTripMap} onClose={closeTrip}
+            hidden={Boolean(composer || guide || selectedMarkingId)} onGuide={openGuide}
+            onAddMissing={category => openComposer({ type: 'facility_extra', source: 'user', category }, true)}
+            onPickOrigin={() => setTripPicking(true)} onResetOrigin={() => changeTripOrigin({ ...isochrone.properties.center!, kind: 'center' })} />}
+          {guide && <TripGuide value={guide} onChange={updateGuide} onClose={closeGuide} />}
+          {trip && tripPicking && !composer && !guide && <div className="trip-modebar floating" role="status"><span className="trip-pick-icon"><Icon name="pin" size={17} /></span><span>点击地图，设置新起点</span><button type="button" aria-label="取消选择起点" onClick={() => setTripPicking(false)}>取消</button></div>}
           {config?.browser_ak ? (
             <MapView
               ak={config.browser_ak}
               center={center}
-              isochrone={mapFeature}
+              isochrone={trip ? isochrone : planningMode === 'closure' && closurePreview ? closurePreview : mapFeature}
               fitKey={isochrone}
+              trip={composer ? null : tripMap}
+              tripOpen={Boolean(trip && !composer)}
+              guide={guide}
+              onTripSelect={setTripSelection}
               layers={layers}
               onLayers={setLayers}
               blindCategory={blindCategory}
@@ -1718,11 +1847,13 @@ export default function App() {
               pickEnabled={
                 composer
                   ? composerPicking
-                  : pickEnabled || comparePicking || placing != null || closurePlacing
+                  : Boolean(trip && tripPicking) || (!trip && (pickEnabled || comparePicking || placing != null || closurePlacing))
               }
               pickHint={
-                closurePlacing
-                  ? `点地图放一处临时围挡（半径 ${closureRadius} 米，不消耗配额）`
+                trip && tripPicking
+                  ? '点地图选择出行起点'
+                  : closurePlacing
+                  ? `点地图放一处假设围挡（半径 ${closureRadius} 米，不消耗配额）`
                   : placing
                     ? `点地图任意位置，放置「${placing}」`
                     : comparePicking
@@ -1742,7 +1873,7 @@ export default function App() {
               onDraftRadius={(radius) =>
                 draftHistory.push({ ...draftHistory.draft, radius })
               }
-              simulation={simulation}
+              simulation={planningMode === 'facility' ? simulation : null}
               compare={compareFeature}
               suspects={suspects}
               recheckRays={recheckRays}
@@ -1764,6 +1895,7 @@ export default function App() {
               blindCategories={keyCategories}
               onBlindCategory={setBlindCategory}
               onPickCenter={(lat, lng) => {
+                if (trip && tripPicking) { changeTripOrigin({ lat, lng, kind: 'map' }); return }
                 // 正在画共享标注：这一下是给草图放点，不改中心、不算路
                 if (composer) {
                   if (!composerPicking || !markingConfig) return

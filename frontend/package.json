@@ -5,11 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:preview": "vite --config vite.preview.config.ts",
     "build": "tsc -b && vite build",
-    "lint": "oxlint",
+    "lint": "oxlint src vite.config.ts vite.preview.config.ts",
     "preview": "vite preview"
   },
   "dependencies": {
+    "polygon-clipping": "^0.15.7",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },

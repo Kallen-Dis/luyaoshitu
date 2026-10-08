@@ -29,6 +29,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from ..poi.fresh import FRESH, eligible
 from .prescribe import prescribe
 from .regions import gray_regions
 
@@ -204,7 +205,25 @@ def build_report(
     r = reach_score(area, minutes, speed)
     c = compact_score(compactness)
     d = detour_score(mean_detour)
-    cov, blinds = cover_score(categories)
+    uncertain_categories = []
+    score_categories = dict(categories) if categories is not None else None
+    if (
+        coverage
+        and (
+            (coverage.get("fresh_breakdown") or {}).get("pending_in_circle", 0)
+            or coverage.get("fresh_needs_refresh")
+        )
+        and not (categories or {}).get(FRESH, 0)
+    ):
+        uncertain_categories.append(FRESH)
+        if score_categories is not None:
+            score_categories.pop(FRESH, None)
+    cov, blinds = cover_score(score_categories)
+    proof_coverage = (
+        {**coverage, "places": [p for p in coverage.get("places", []) if eligible(p)]}
+        if coverage
+        else None
+    )
     eq = equity_score(blind_ratio)
     total = overall_score(r, c, d, cov, eq)
     ideal = ideal_area_km2(minutes, speed)
@@ -237,9 +256,12 @@ def build_report(
         "cells_in_circle": len(in_circle) if cells else None,
         "grid_basis": grid_basis(grid),
         # 自动标注的灰色区域（相邻盲区格合并成片）与逐片成因诊断
-        "gray_regions": gray_regions(grid, coverage),
+        "gray_regions": gray_regions(grid, proof_coverage),
+        "uncertain_categories": uncertain_categories,
         "coverage_source": coverage.get("source") if coverage else None,
         "coverage_pending": coverage is None,
         "blindspots_pending": grid is None,
-        "prescriptions": prescribe(properties, coverage, grid, blinds, failed_categories),
+        "prescriptions": prescribe(
+            properties, proof_coverage, grid, blinds, [*failed_categories, *uncertain_categories]
+        ),
     }

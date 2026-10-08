@@ -154,6 +154,7 @@ export function MarkingComposer({
       : (config.categories[0] ?? ''),
   )
   const [name, setName] = useState(preset?.name ?? '')
+  const [sellsVegetables, setSellsVegetables] = useState(false)
   const [reason, setReason] = useState(preset?.reason ?? '')
   const [categories, setCategories] = useState<string[]>(
     (preset?.categories ?? []).filter((c) => config.categories.includes(c)),
@@ -252,6 +253,7 @@ export function MarkingComposer({
     if (draft.type === 'facility_missing' && !reason) return '请选择失效原因'
     if (draft.type === 'facility_extra' && !name.trim()) return '请填写设施名称'
     if (draft.type === 'facility_extra' && !category) return '请选择设施类别'
+    if (draft.type === 'facility_extra' && category === '生鲜采买' && !sellsVegetables) return '请确认该门店销售蔬菜；无法确认时请保留为待确认候选'
     if (draft.type === 'gray_area' && categories.length === 0) return '请选择缺哪类设施'
     if (draft.type === 'gray_area' && !reason) return '请选择原因'
     if (noteRequired && !note.trim()) return '选「其他原因」时，请用一句话说明'
@@ -392,6 +394,7 @@ export function MarkingComposer({
         return {
           ...base,
           type: 'facility_extra',
+          ...(category === '生鲜采买' ? { sells_vegetables: sellsVegetables } : {}),
           category,
           name: name.trim(),
           lat: draft.point!.lat,
@@ -714,7 +717,7 @@ export function MarkingComposer({
                 <fieldset className="mk-field">
                   <legend className="mk-label">怎么了</legend>
                   <div className="mk-pills">
-                    {Object.entries(config.missing_reasons).map(([k, label]) => (
+                    {Object.entries(config.missing_reasons).filter(([key]) => key !== 'no_vegetables' || draft.place?.category === '生鲜采买').map(([k, label]) => (
                       <button
                         key={k}
                         type="button"
@@ -748,6 +751,7 @@ export function MarkingComposer({
                     ))}
                   </div>
                 </fieldset>
+                {category === '生鲜采买' && <label className="mk-field"><span><input type="checkbox" checked={sellsVegetables} onChange={event => setSellsVegetables(event.target.checked)} /> 我现场确认该门店销售蔬菜</span><small>请附现场照片；品牌名称不能代替现场确认。</small></label>}
                 <label className="mk-field">
                   <span className="mk-label">设施名称</span>
                   <input

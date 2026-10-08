@@ -16,18 +16,32 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from ..isochrone.geometry import first_entry_along, haversine_m, point_in_polygon
 from ..isochrone.refine import MAX_CLOSURES, Closure
-from ..poi.collect import CategoryResult, CoverageResult, Poi, normalize_name
+from ..poi.collect import CoverageResult, Poi, normalize_name
+from .models import parse_time
 
 MODES = ("auto", "all", "none")
 MAX_FACILITY_MARKINGS = 10
 CLOSURE_DEDUP_M = 20.0
 FACILITY_MATCH_M = 50.0
 FACILITY_NEAR_M = 15.0
+
+
+def facility_matches(place: dict, spec: dict) -> bool:
+    """同品类、规范名称和50米范围匹配，避免删除同址的不同门店。"""
+    if place.get("category") != spec.get("category"):
+        return False
+    name = normalize_name(place.get("name", ""))
+    target = normalize_name(spec.get("name", ""))
+    return (
+        bool(name and name == target)
+        and haversine_m(place["lat"], place["lng"], spec["lat"], spec["lng"]) <= FACILITY_MATCH_M
+    )
+
 
 SUMMARY_KEYS = (
     "id",
@@ -59,6 +73,17 @@ def _priority(m: dict[str, Any]) -> tuple:
         -float(m.get("confidence") or 0),
         float(m.get("distance_m") or 0),
         int(m["id"]),
+    )
+
+
+def facility_priority(m: dict[str, Any]) -> tuple:
+    """同类设施证据中，自己的最新记录优先；他人仍先看审核状态。"""
+    timestamp = parse_time(m.get("updated_at") or m.get("created_at"))
+    return (
+        not m.get("mine"),
+        False if m.get("mine") else m.get("status") != "verified",
+        -(timestamp.timestamp() if timestamp else 0),
+        -int(m["id"]),
     )
 
 
@@ -106,7 +131,7 @@ def plan(
     if not walking:
         for m in result.of_type("closure", "gray_area"):
             result.skip(m, "围挡与网格只在步行分析中叠加")
-    facilities = sorted(result.of_type("facility_missing", "facility_extra"), key=_priority)
+    facilities = sorted(result.of_type("facility_missing", "facility_extra"), key=facility_priority)
     for m in facilities[MAX_FACILITY_MARKINGS:]:
         result.skip(m, f"单次最多叠加 {MAX_FACILITY_MARKINGS} 条设施类标注")
     return result
@@ -155,17 +180,21 @@ def _similar(a: str, b: str) -> bool:
 
 def modify_coverage(coverage: CoverageResult, marking_plan: MarkingPlan) -> CoverageResult:
     """按设施类标注修正设施集合，返回新的 CoverageResult（不改动原对象）。"""
-    results = [
-        CategoryResult(r.category, list(r.pois), r.stats, r.searched_keywords)
-        for r in coverage.results
-    ]
+    results = [replace(r, pois=list(r.pois)) for r in coverage.results]
     by_cat = {r.category: r for r in results}
-    for m in sorted(marking_plan.of_type("facility_missing", "facility_extra"), key=_priority):
+    handled = []
+    for m in sorted(
+        marking_plan.of_type("facility_missing", "facility_extra"), key=facility_priority
+    ):
         spec = m["spec"]
         cat = spec["category"]
         if cat in coverage.failed or cat not in by_cat:
             marking_plan.skip(m, f"「{cat}」这次检索失败，无法按标注修正")
             continue
+        if any(facility_matches(spec, previous) for previous in handled):
+            marking_plan.skip(m, "已由优先级更高的设施证据处理")
+            continue
+        handled.append(spec)
         pois = by_cat[cat].pois
         lat, lng = float(spec["lat"]), float(spec["lng"])
         if m["type"] == "facility_missing":
@@ -176,15 +205,10 @@ def modify_coverage(coverage: CoverageResult, marking_plan: MarkingPlan) -> Cove
                 if normalize_name(p.name) == target
             ]
             named = [x for x in named if x[0] <= FACILITY_MATCH_M]
-            close = [
-                (haversine_m(lat, lng, p.lat, p.lng), p)
-                for p in pois
-                if haversine_m(lat, lng, p.lat, p.lng) <= FACILITY_NEAR_M
-            ]
-            pick = min(named or close, key=lambda x: x[0], default=None)
+            pick = min(named, key=lambda x: x[0], default=None)
             if pick is None:
-                marking_plan.skip(m, "地图上已找不到这家设施（可能已经下线）")
-                continue
+                marking_plan.effects[int(m["id"])] = {"unmatched_exclusion": spec["name"]}
+                continue  # 保留否定证据，后续出行补查也不得重新召回。
             pois.remove(pick[1])
             marking_plan.effects[int(m["id"])] = {"matched": pick[1].name}
         else:
@@ -197,6 +221,18 @@ def modify_coverage(coverage: CoverageResult, marking_plan: MarkingPlan) -> Cove
                 ),
                 None,
             )
+            if twin is not None and cat == "生鲜采买" and spec.get("sells_vegetables") is True:
+                pois[pois.index(twin)] = replace(
+                    twin,
+                    fresh_status="verified",
+                    fresh_evidence=f"用户现场确认销售蔬菜（标注 #{m['id']}，按采纳策略使用）",
+                    marking_id=int(m["id"]),
+                )
+                marking_plan.effects[int(m["id"])] = {
+                    "matched": twin.name,
+                    "fresh_status": "verified",
+                }
+                continue
             if twin is not None:
                 marking_plan.skip(m, f"地图已收录「{twin.name}」，不重复计算")
                 continue
@@ -208,6 +244,12 @@ def modify_coverage(coverage: CoverageResult, marking_plan: MarkingPlan) -> Cove
                     category=cat,
                     source="user",
                     marking_id=int(m["id"]),
+                    fresh_status="verified"
+                    if cat == "生鲜采买" and spec.get("sells_vegetables") is True
+                    else None,
+                    fresh_evidence=f"用户现场确认销售蔬菜（标注 #{m['id']}，按采纳策略使用）"
+                    if spec.get("sells_vegetables")
+                    else None,
                 )
             )
     return CoverageResult(

@@ -1,5 +1,68 @@
 /** 后端 /api 返回的数据结构。 */
 
+export interface TripConfig {
+  max_stops: number; max_nearest: number; matrix_batch_pairs: number
+  day_pairs: number; hour_pairs: number; request_pairs: number
+  hour_routes: number; hour_requests: number; request_routes: number; lower_bound_slack_m: number
+}
+export interface TripOrigin { lat: number; lng: number; kind?: 'center' | 'map' | 'cell'; from_center_m?: number }
+export interface TripSelection { place_id: string; entry_id: string }
+export interface TripRoute {
+  distance_m: number; duration_s: number; path: [number, number][]
+  steps: { instruction: string; distance_m: number; duration_s: number; path?: [number, number][] }[]
+  crossings: Record<string, number>
+  closure_entry: { lat: number; lng: number; at_m: number } | null
+  blocked_path: [number, number][]; connectors: [number, number][][]
+}
+export interface FreshEvidence { fresh_status?: 'verified' | 'inferred' | 'pending' | 'excluded'; fresh_evidence?: string }
+export interface TripPending extends TripSelection, FreshEvidence { name: string; category: string; lat: number; lng: number; in_circle: boolean; straight_m: number }
+export interface TripItem extends TripSelection, FreshEvidence {
+  /** 原设施位置，用于共享标注；与校门或导航入口坐标分开。 */
+  place?: Place | null
+  rank: number; name: string; category: string; lat: number; lng: number
+  gate: string | null; in_circle: boolean; distance_basis: 'gate' | 'navigation_point' | 'coordinate'
+  straight_m: number; walk_m: number; duration_s: number; duration_basis: 'route' | 'matrix' | 'estimate'
+  detour: number | null; route: TripRoute | null; closure_status: 'clear' | 'blocked' | 'unverified'
+  note: string | null; from: TripOrigin
+}
+export interface TripResult {
+  preview?: boolean
+  routing_status?: 'clear' | 'blocked' | 'unverified' | 'no_clear_route'
+  blocked_count?: number
+  unverified_count?: number
+  origin: TripOrigin; basis: 'network' | 'estimate' | 'estimate_quota' | 'estimate_error'
+  lower_bound_slack_m: number; search_status: 'unknown' | 'no_truncation_observed' | 'truncated' | 'failed'
+  warnings: string[]; verification_basis: string | null; cache_policy: 'memory' | 'disk'
+  quota: { matrix_pairs: number; matrix_requests: number; route_requests: number; cache_hits: number; poi_requests?: number; remaining: {
+    day_pairs: number; hour_pairs: number; request_pairs: number; hour_routes: number; request_routes: number
+  } }
+}
+export interface TripNearestResult extends TripResult {
+  include_pending?: boolean; pending_count?: number; pending_candidates?: TripPending[]
+  category: string; items: TripItem[]; ranking_verified: boolean; range_sufficient: boolean | null; beyond_limit: boolean
+}
+export interface TripPlanResult extends TripResult {
+  stops: string[]; legs: TripItem[]; total_m: number; total_s: number
+  optimality: 'candidate' | 'snapshot_tolerance' | 'snapshot_measured' | 'manual'
+  alternatives: { index: number; items: (TripSelection & { name: string; total_m: number })[] }[]
+}
+export interface TripMapData { origin: TripOrigin; items: TripItem[]; selected: string | null; hover: string | null; fitKey: number; itinerary: boolean; preview?: boolean }
+
+export interface FreshFeedbackSummary {
+  confirms: number; not_seen: number; my_feedback: -1 | 0 | 1
+  latest_at: string | null; window_days: number
+}
+export interface TripGuideData {
+  item: TripItem; stepIndex: number; focus: 'origin' | 'route' | 'step' | 'location'; focusKey: number
+  location: { lat: number; lng: number; accuracy: number; timestamp: number } | null
+  remaining: TripItem[]
+  routingFeature: IsochroneFeature
+  mode: 'preview' | 'walking'
+}
+
+export type TripReanchorResult = TripPlanResult & { routing_feature: IsochroneFeature }
+export type TripNearbyResult = TripNearestResult & { routing_feature: IsochroneFeature }
+
 export interface IsochroneProperties {
   minutes: number
   area_m2: number
@@ -43,6 +106,8 @@ export interface IsochroneProperties {
   raw_ring?: [number, number][]
   /** 本次计算使用的施工围挡。 */
   closures?: ClosureSpec[]
+  /** 封路预览使用同口径重算的无假设围挡基线，不能与旧快照直接比较。 */
+  planning_baseline?: { report?: ExamReport; area_km2: number }
   /** 非步行方式时，说明过街校正与围挡未生效。 */
   refine_skipped?: string
   history_id?: number
@@ -200,6 +265,7 @@ export interface SimulationResult {
   candidate_count: number
   /** 本次核验消耗的批量算路点对数。 */
   pairs_used: number
+  route_checks?: number
   before: SimulateStats
   after: SimulateStats
   approximation: string
@@ -212,6 +278,7 @@ export interface CategoryMeta {
 }
 
 export interface TravelModeInfo {
+  matrix_batch_pairs?: number
   id: string
   label: string
   speed_m_per_s: number
@@ -221,6 +288,7 @@ export interface TravelModeInfo {
 }
 
 export interface AppConfig {
+  trip?: TripConfig
   browser_ak: string
   server_ak_configured?: boolean
   /** 启动配置问题（缺服务端 / 浏览器端 AK），前端必须明确展示 */
@@ -421,7 +489,8 @@ export interface CleanStats {
   dropped: number
 }
 
-export interface Place {
+export interface Place extends FreshEvidence {
+  id?: string
   category: string
   name: string
   lat: number
@@ -435,6 +504,9 @@ export interface Place {
 }
 
 export interface Coverage {
+  fresh_breakdown?: { verified: number; inferred: number; pending: number; excluded: number; pending_in_circle: number }
+  fresh_needs_refresh?: boolean
+  search_metadata?: Record<string, { keyword: string; total: number | null; collected: number; complete: boolean; truncated: boolean }[]>
   /** 等时圈**内**的设施数。 */
   categories: Record<string, number>
   /** 设施点，供地图打点。样例快照也带名称和坐标。 */
@@ -451,6 +523,7 @@ export interface Coverage {
 
 /** 一个网格点的判定结果。热力图与盲区标注共用它。 */
 export interface GridCell {
+  unknown_reasons?: Record<string, string>
   lat: number
   lng: number
   /** 中心点步行到此的耗时（秒，已补过街等待），热力图强度由它决定。null 表示测距失败或受围挡阻断。 */
@@ -498,6 +571,7 @@ export interface Blindspots {
 }
 
 export interface ExamReport {
+  uncertain_categories?: string[]
   total: number
   grade: string
   dimensions: {
@@ -804,6 +878,7 @@ export interface MarkingsResult {
 
 /** 新建标注的请求体。 */
 export interface MarkingInput {
+  sells_vegetables?: boolean
   type: MarkingType
   kind?: string
   lat?: number

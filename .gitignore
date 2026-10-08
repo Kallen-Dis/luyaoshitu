@@ -1,6 +1,16 @@
 # 密钥与本地配置
 .env
-.env.local
+.env.*
+!.env.example
+*.env
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_ed25519
 百度地图API.md
 ai_15_nIsJ99EN3y.pdf
 
@@ -14,9 +24,21 @@ ai_15_nIsJ99EN3y.pdf
 # 用户提交的共享标注与照片（用户数据，不入库；部署时单独备份）
 data/user/
 
-# 注意：reports/ 与 data/samples/ 刻意纳入版本管理——
-# 前者是实测分析报告（技术设计文档的组成部分），
-# 后者是预生成示例数据，让评审方无需消耗 API 配额即可跑通演示。
+# 本地设计文档、实测报告与视频工程（保留文件，不提交）
+/docs/
+/reports/
+/video/
+/vedio/
+
+# data/samples/ 保留版本管理，演示不需要消耗 API 配额。
+
+# 本地数据库与 SQLite 日志（共享标注、反馈与预算计数）
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
 
 # Python
 __pycache__/
@@ -25,11 +47,21 @@ __pycache__/
 venv/
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
 
 # Node
 node_modules/
 dist/
 .vite/
+*.tsbuildinfo
+coverage/
+playwright-report/
+test-results/
 
 # 编辑器与系统
 .vscode/

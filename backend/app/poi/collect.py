@@ -23,8 +23,11 @@ from typing import Any
 
 from ..baidu.client import BaiduMapClient
 from ..isochrone.geometry import haversine_m, point_in_polygon
+from ..trip.candidates import place_id
 from .catalog import CATEGORIES, Category
 from .entries import as_tuples, facility_entries, lookup_gates
+from .fresh import FRESH, annotate_coverage, eligible, fields
+from .named import recalled
 
 # 同名设施视为同一家的坐标量化粒度（米）。与磁盘缓存的 50 米保持一致。
 DEDUP_GRID_M = 50.0
@@ -54,6 +57,8 @@ class Poi:
     tag: str | None = None
     # 检索返回的原始名称（含「(岚西校区)」这类后缀），按校名查校门时用
     raw_name: str | None = None
+    fresh_status: str | None = None
+    fresh_evidence: str | None = None
 
 
 @dataclass
@@ -89,6 +94,7 @@ class CategoryResult:
     searched_keywords: int = 0
     # 按校名查校门的次数（地点检索，缓存 30 天）
     gate_lookups: int = 0
+    search_metadata: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -107,7 +113,7 @@ class CoverageResult:
 
     @property
     def categories(self) -> dict[str, int]:
-        return {r.category: len(r.pois) for r in self.results}
+        return {r.category: sum(eligible(p) for p in r.pois) for r in self.results}
 
     def pois_of(self, category: str) -> list[Poi]:
         return next((r.pois for r in self.results if r.category == category), [])
@@ -126,7 +132,9 @@ class CoverageResult:
                 "lat": round(p.lat, 6),
                 "lng": round(p.lng, 6),
                 "in_circle": point_in_polygon(p.lat, p.lng, polygon) if polygon else True,
-                **({"source": p.source, "marking_id": p.marking_id} if p.source != "baidu" else {}),
+                **fields(p),
+                **({"source": p.source} if p.source != "baidu" else {}),
+                **({"marking_id": p.marking_id} if p.marking_id is not None else {}),
                 **(
                     {
                         "entries": [
@@ -141,7 +149,11 @@ class CoverageResult:
             for r in self.results
             for p in r.pois
         ]
-        return {
+        for place in places:
+            place["id"] = place_id(place)
+            for entry in place.get("entries", []):
+                entry["basis"] = "navigation_point" if entry["name"] == "导航点" else "gate"
+        result = {
             "categories": inside,
             "nearby_categories": self.categories,
             "failed_categories": self.failed,
@@ -151,7 +163,10 @@ class CoverageResult:
             "clean_stats": {r.category: r.stats.as_dict() for r in self.results},
             # 只随本次响应给地图打点，不写入对外分发的快照文件。
             "places": places,
+            "search_metadata": {r.category: r.search_metadata for r in self.results},
         }
+        annotate_coverage(result)
+        return result
 
 
 def normalize_name(raw: str) -> str:
@@ -257,7 +272,9 @@ def counts_within(coverage: CoverageResult, polygon: list[tuple[float, float]]) 
     分开统计——重新按小半径采一遍等于白烧一倍配额。
     """
     return {
-        r.category: sum(1 for p in r.pois if point_in_polygon(p.lat, p.lng, polygon))
+        r.category: sum(
+            1 for p in r.pois if eligible(p) and point_in_polygon(p.lat, p.lng, polygon)
+        )
         for r in coverage.results
     }
 
@@ -287,6 +304,8 @@ async def collect_category(
     merged: list[dict[str, Any]] = []
     for page in pages:
         merged.extend(page or [])
+    if category.name == FRESH and hasattr(client, "_cache"):
+        merged.extend(recalled(client, center))
     pois, stats = clean(merged, category, center, radius_m, polygon)
     lookups = 0
     if category.entrances and pois:
@@ -297,6 +316,12 @@ async def collect_category(
         stats=stats,
         searched_keywords=len(category.keywords),
         gate_lookups=lookups,
+        search_metadata=[
+            client.poi_metadata(kw, *center, radius_m, max_pages, extra.get("scope", 1))
+            for kw in category.keywords
+        ]
+        if hasattr(client, "poi_metadata")
+        else [],
     )
 
 

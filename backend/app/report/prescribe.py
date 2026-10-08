@@ -450,6 +450,11 @@ def prescribe(
             f"还有 {blind} 格盲区，但都是零散的小块，没有达到开方的面积门槛。"
             "可以在地图上逐格核实，属实的用共享标注记下来。"
             if blind
+            else (
+                "部分网格或设施能力待确认，现有证据不足以判定全部覆盖。"
+                "请现场核实或重算后再决定是否补设。"
+            )
+            if any(c.get("unknown") for c in (blindspots or {}).get("cells", [])) or failed_set
             else "圈内品类齐全，网格判定没有盲区。"
         )
         out.append(

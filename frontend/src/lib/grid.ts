@@ -29,6 +29,7 @@ export interface GridCensus {
   blindInCircle: number
   /** 品类 -> 缺该品类的格数 */
   missing: Record<string, number>
+  unknown: Record<string, number>
 }
 
 export function gridCensus(
@@ -39,6 +40,7 @@ export function gridCensus(
   if (cells.length === 0) return null
   const covered = coveredKeys(simulation)
   const missing: Record<string, number> = {}
+  const unknown: Record<string, number> = {}
   let blind = 0
   let inCircle = 0
   let blindInCircle = 0
@@ -50,9 +52,10 @@ export function gridCensus(
       blind += 1
       if (inside) blindInCircle += 1
     }
+    for (const name of cell.unknown) unknown[name] = (unknown[name] ?? 0) + 1
     for (const name of miss) missing[name] = (missing[name] ?? 0) + 1
   }
-  return { total: cells.length, blind, inCircle, blindInCircle, missing }
+  return { total: cells.length, blind, inCircle, blindInCircle, missing, unknown }
 }
 
 /** 按品类筛出要画的盲区方格（'all' 表示缺任一类）。 */

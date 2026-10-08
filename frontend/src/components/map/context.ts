@@ -48,6 +48,7 @@ export type MapContext =
 
 /** 从地图上点进标注时预先带好的内容。 */
 export interface ComposerPreset {
+  sellsVegetables?: boolean
   type: MarkingType
   source?: 'user' | 'recheck' | 'poi' | 'agent_plan'
   point?: LatLng | null
@@ -68,6 +69,8 @@ export interface ComposerPreset {
 
 /** 弹出卡片里点了某个动作。 */
 export type MapIntent =
+  | { kind: 'trip-to'; place: Place }
+  | { kind: 'trip-from-cell'; cell: GridCell; category: string }
   | { kind: 'compose'; preset: ComposerPreset }
   | { kind: 'temp-closure'; key: string; lat: number; lng: number; radius: number; label: string }
   | { kind: 'dismiss'; key: string }

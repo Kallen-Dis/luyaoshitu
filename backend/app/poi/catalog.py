@@ -38,7 +38,7 @@ class Category:
 CATEGORIES: tuple[Category, ...] = (
     Category(
         name="生鲜采买",
-        keywords=("菜市场", "农贸市场", "生鲜超市"),
+        keywords=("菜市场", "农贸市场", "生鲜超市", "生鲜", "生鲜大卖场", "超市"),
         exclude=("花卉", "建材", "批发市场", "家具"),
         key_facility=True,
     ),

@@ -2,6 +2,9 @@
 
 import asyncio
 
+import pytest
+
+from app.baidu.client import BaiduMapClient
 from app.baidu.errors import (
     ConfigurationError,
     IncompleteSamplingError,
@@ -10,6 +13,7 @@ from app.baidu.errors import (
     quota_hint,
     service_label,
 )
+from app.config import Settings
 from app.diagnostics import (
     DegradationLog,
     blindspot_warnings,
@@ -88,13 +92,17 @@ def test_incomplete_sampling_is_not_a_quota_error():
 
 class _Client:
     def __init__(self):
-        self.quota_events = []
+        self.quotas = {}
+
+    def exhausted(self, endpoint):
+        status = self.quotas.get(endpoint)
+        return QuotaExhaustedError(status, "配额超限", endpoint) if status else None
 
 
 def test_coverage_warning_names_quota_when_it_ran_out():
     client = _Client()
     log = DegradationLog(client)
-    client.quota_events.append({"endpoint": "/place/v2/search", "status": 302})
+    client.quotas["/place/v2/search"] = 302
     coverage_warnings(log, ["医药", "基础教育"])
     (item,) = log.as_list()
     assert item["stage"] == "coverage"
@@ -123,7 +131,7 @@ def test_traffic_summary_reports_age_and_stale_fallback():
 def test_blindspot_warning_and_incomplete_category():
     client = _Client()
     log = DegradationLog(client)
-    client.quota_events.append({"endpoint": "/routematrix/v2/walking", "status": 302})
+    client.quotas["/routematrix/v2/walking"] = 302
     blindspot_warnings(
         log,
         {
@@ -134,6 +142,46 @@ def test_blindspot_warning_and_incomplete_category():
     messages = [w["message"] for w in log.as_list()]
     assert any("配额" in m and "1 个方格" in m for m in messages)
     assert any("「医药」" in m for m in messages)
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "warning", "props"),
+    [
+        (
+            "/directionlite/v1/walking",
+            isochrone_warnings,
+            {"delay": {"routes_requested": 6, "routes_ok": 0}},
+        ),
+        ("/place/v2/search", coverage_warnings, ["医药"]),
+        ("/routematrix/v2/walking", blindspot_warnings, {"cells": [{"unknown": ["医药"]}]}),
+    ],
+)
+@pytest.mark.parametrize("status", [301, 302])
+def test_warnings_use_current_quota_even_without_a_new_event(
+    tmp_path, monkeypatch, endpoint, warning, props, status
+):
+    import app.baidu.client as client_mod
+
+    client = BaiduMapClient(Settings(server_ak="test-ak", browser_ak="", cache_dir=tmp_path))
+    monkeypatch.setattr(client_mod, "_beijing_day", lambda: "2026-10-07")
+    client._mark_exhausted(endpoint, status)
+    # 第二次分析从已有的熔断状态开始，不会新增事件。
+    log = DegradationLog(client)
+    warning(log, props)
+    assert "配额" in log.as_list()[0]["message"]
+    assert len(client.quota_events) == 1
+    if status == 301:
+        assert "不会自动恢复" in log.as_list()[0]["message"]
+        assert "次日" not in log.as_list()[0]["message"]
+
+    monkeypatch.setattr(client_mod, "_beijing_day", lambda: "2026-10-08")
+    next_log = DegradationLog(client)
+    warning(next_log, props)
+    if status == 302:
+        assert all("配额" not in item["message"] for item in next_log.as_list())
+    else:
+        assert "不会自动恢复" in next_log.as_list()[0]["message"]
+    assert len(client.quota_events) == 1  # 历史保留，但不据此误报
 
 
 class _FailingMatrix:

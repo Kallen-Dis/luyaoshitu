@@ -173,6 +173,59 @@ def test_recheck_without_baseline_is_400_and_explains_why(client):
     assert resp.json()["detail"]["code"] == "no_route_baseline"
 
 
+@pytest.mark.parametrize("service", ["recheck", "construction"])
+@pytest.mark.parametrize("quota_state", ["today", "yesterday", "permanent"])
+def test_failed_services_report_only_current_quota(client, monkeypatch, service, quota_state):
+    import app.baidu.client as client_mod
+    import app.main as main_mod
+
+    endpoint = "/directionlite/v1/walking" if service == "recheck" else "/place/v2/search"
+    monkeypatch.setattr(client_mod, "_beijing_day", lambda: "2026-10-07")
+    app.state.baidu._mark_exhausted(endpoint, 301 if quota_state == "permanent" else 302)
+    if quota_state != "today":
+        monkeypatch.setattr(client_mod, "_beijing_day", lambda: "2026-10-08")
+    monkeypatch.setattr(main_mod, "_require_server_ak", lambda: None)
+
+    if service == "recheck":
+        monkeypatch.setattr(main_mod, "baselines", lambda feature: [])
+
+        async def fail_recheck(*args):
+            return {"checked": 2, "failed": 2, "route_failures": ["网络中断"]}
+
+        monkeypatch.setattr(main_mod, "recheck_routes", fail_recheck)
+        feature = client.get("/api/demo", params={"lat": 31.25, "lng": 121.42}).json()
+        response = client.post("/api/recheck", json={"feature": feature})
+    else:
+
+        async def fail_construction(*args):
+            return {"keywords": ["工地", "施工"], "failed_keywords": ["工地", "施工"]}
+
+        monkeypatch.setattr(main_mod, "find_construction", fail_construction)
+        response = client.post("/api/construction-candidates", json={"lat": 31.25, "lng": 121.42})
+
+    message = response.json()["detail"]["message"]
+    assert response.status_code == (502 if quota_state == "yesterday" else 503)
+    if quota_state == "yesterday":
+        assert "配额" not in message
+    elif quota_state == "permanent":
+        assert "不会自动恢复" in message and "次日" not in message
+    else:
+        assert "次日 0 点" in message
+
+
+def test_health_keeps_permanent_quota_and_drops_expired_daily_quota(client, monkeypatch):
+    import app.baidu.client as client_mod
+
+    monkeypatch.setattr(client_mod, "_beijing_day", lambda: "2026-10-07")
+    app.state.baidu._mark_exhausted("/place/v2/search", 302)
+    app.state.baidu._mark_exhausted("/directionlite/v1/walking", 301)
+    assert len(client.get("/api/health").json()["quota_exhausted_today"]) == 2
+    monkeypatch.setattr(client_mod, "_beijing_day", lambda: "2026-10-08")
+    assert client.get("/api/health").json()["quota_exhausted_today"] == [
+        {"service": "步行路线规划", "status": 301, "day": "2026-10-07"}
+    ]
+
+
 def test_site_plan_on_simulated_data_only_estimates(client):
     feature = client.get("/api/demo", params={"lat": 31.25, "lng": 121.42}).json()
     # 模拟数据没有设施坐标；附近数量也清零，才能把缺口判成「供给缺口」

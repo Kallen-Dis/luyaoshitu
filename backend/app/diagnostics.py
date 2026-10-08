@@ -36,6 +36,7 @@ STAGE_LABELS: dict[str, str] = {
     "construction": "工地检索",
     "site_plan": "核验选址",
     "markings": "叠加用户标注",
+    "trip": "居民出行规划",
 }
 
 _FALLBACKS = (
@@ -111,20 +112,11 @@ class DegradationLog:
     def __init__(self, client: BaiduMapClient) -> None:
         self.client = client
         self.items: list[dict[str, str]] = []
-        self._quota_mark = len(client.quota_events)
 
     def add(self, stage: str, message: str) -> None:
         self.items.append(
             {"stage": stage, "stage_label": STAGE_LABELS.get(stage, ""), "message": message}
         )
-
-    def new_quota_services(self, prefix: str) -> list[dict[str, Any]]:
-        """本次分析里新出现的、某类接口的配额耗尽事件。"""
-        return [
-            e
-            for e in self.client.quota_events[self._quota_mark :]
-            if str(e.get("endpoint", "")).startswith(prefix)
-        ]
 
     def as_list(self) -> list[dict[str, str]]:
         return list(self.items)
@@ -134,11 +126,11 @@ def isochrone_warnings(log: DegradationLog, props: dict[str, Any]) -> None:
     delay = props.get("delay") or {}
     missed = int(delay.get("routes_requested") or 0) - int(delay.get("routes_ok") or 0)
     if missed > 0:
-        if log.new_quota_services("/directionlite"):
+        if (quota := log.client.exhausted("/directionlite/v1/walking")) is not None:
             log.add(
                 "isochrone",
-                f"步行路线规划今天的配额已经用完，{missed} 个方向没有补过街与路口等待，"
-                "这些方向的边界偏远、圈偏大。明天重算即可补上。",
+                f"{quota_hint(quota)}。{missed} 个方向没有补过街与路口等待，"
+                "这些方向的边界偏远、圈偏大。配额恢复后重算即可补上。",
             )
         else:
             log.add(
@@ -172,11 +164,10 @@ def coverage_warnings(log: DegradationLog, failed: list[str]) -> None:
     if not failed:
         return
     names = "、".join(failed)
-    if log.new_quota_services("/place/v2/search"):
+    if (quota := log.client.exhausted("/place/v2/search")) is not None:
         log.add(
             "coverage",
-            f"地点检索今天的配额已经用完（北京时间次日 0 点重置），{names}的数量未知："
-            "没有计入评分，也不会被当成「缺失」。",
+            f"{quota_hint(quota)}。{names}的数量未知：没有计入评分，也不会被当成「缺失」。",
         )
     else:
         log.add(
@@ -187,13 +178,29 @@ def coverage_warnings(log: DegradationLog, failed: list[str]) -> None:
 
 def blindspot_warnings(log: DegradationLog, blindspots: dict[str, Any]) -> None:
     cells = blindspots.get("cells") or []
-    unknown = sum(1 for c in cells if c.get("unknown"))
+    fresh_pending = sum(
+        (c.get("unknown_reasons") or {}).get("生鲜采买") == "fresh_pending" for c in cells
+    )
+    if fresh_pending:
+        log.add(
+            "blindspots",
+            f"{fresh_pending} 个方格只有待确认超市可达，买菜能力未知，不计入覆盖或缺失；"
+            "请用现场照片确认门店是否销售蔬菜。",
+        )
+    unknown = sum(
+        1
+        for c in cells
+        if any(
+            name != "生鲜采买" or (c.get("unknown_reasons") or {}).get(name) != "fresh_pending"
+            for name in c.get("unknown", [])
+        )
+    )
     if unknown:
-        if log.new_quota_services("/routematrix"):
+        if (quota := log.client.exhausted("/routematrix/v2/walking")) is not None:
             log.add(
                 "blindspots",
-                f"批量算路的配额在盲区判定途中用完，{unknown} 个方格没能完成判定，"
-                "记为「未知」，既不算盲区也不算覆盖。明天重算即可补齐（已测部分命中缓存）。",
+                f"{quota_hint(quota)}。{unknown} 个方格没能完成判定，"
+                "记为「未知」，既不算盲区也不算覆盖。配额恢复后重算即可补齐（已测部分命中缓存）。",
             )
         elif unknown >= max(5, len(cells) // 10):
             log.add(

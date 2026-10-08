@@ -22,6 +22,14 @@ import type {
   SampleMeta,
   SimulationResult,
   SitePlanResult,
+  TripOrigin,
+  TripNearestResult,
+  TripPlanResult,
+  TripSelection,
+  FreshFeedbackSummary,
+  TripReanchorResult,
+  TripNearbyResult,
+  Place,
 } from './types'
 
 /** 实时分析请求参数，与后端 IsochroneRequest 一一对应。 */
@@ -84,6 +92,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const fetchConfig = () => request<AppConfig>('/api/config')
 
+export const tripNearest = (params: {
+  include_pending?: boolean; poi_query?: string
+  feature: IsochroneFeature; origin: TripOrigin; category: string; limit?: number; target_place_id?: string
+}, signal?: AbortSignal) => request<TripNearestResult>('/api/trip/nearest', { method: 'POST', body: JSON.stringify(params), signal })
+
+export const tripPlan = (params: {
+  feature: IsochroneFeature; origin: TripOrigin; stops: string[]; selected_stops?: TripSelection[]
+  replace_stop?: TripSelection & { index: number }
+}, signal?: AbortSignal) => request<TripPlanResult>('/api/trip/plan', { method: 'POST', body: JSON.stringify(params), signal })
+
+export const tripReanchor = (params: {
+  feature: IsochroneFeature; origin: TripOrigin; stops: string[]; selected_stops: TripSelection[]; places: Place[]
+}, signal?: AbortSignal) => request<TripReanchorResult>('/api/trip/reanchor', { method: 'POST', body: JSON.stringify(params), signal })
+
+export const tripGuideNearby = (params: { feature: IsochroneFeature; origin: TripOrigin; category: string }, signal?: AbortSignal) =>
+  request<TripNearbyResult>('/api/trip/guide-nearby', { method: 'POST', body: JSON.stringify(params), signal })
+
 export const fetchSamples = () =>
   request<{ samples: SampleMeta[] }>('/api/samples').then((r) => r.samples)
 
@@ -101,6 +126,9 @@ export const geocode = (address: string) =>
   )
 
 /** 模拟新建：候选方格到拟建点做一次路网测距（通常不超过 100 个点对），重算盲区与分数。 */
+export const simulateClosures = (feature: IsochroneFeature, closures: ClosureSpec[], signal?: AbortSignal) =>
+  request<IsochroneFeature>('/api/simulate/closures', { method: 'POST', body: JSON.stringify({ feature, closures }), signal })
+
 export const simulate = (params: {
   category: string
   lat: number
@@ -210,6 +238,12 @@ export const revertMarking = (id: number, version: number, toVersion: number) =>
 
 export const voteMarking = (id: number, vote: -1 | 0 | 1) =>
   request<Marking>(`/api/markings/${id}/vote`, { method: 'PUT', body: JSON.stringify({ vote }) })
+
+type FeedbackPlace = Pick<Place, 'name' | 'category' | 'lat' | 'lng'>
+export const fetchFreshFeedback = (places: FeedbackPlace[], signal?: AbortSignal) =>
+  request<{ items: FreshFeedbackSummary[] }>('/api/trip/fresh-feedback/summary', { method: 'POST', body: JSON.stringify({ places }), signal })
+export const submitFreshFeedback = (place: FeedbackPlace, vote: -1 | 0 | 1, signal?: AbortSignal) =>
+  request<FreshFeedbackSummary>('/api/trip/fresh-feedback', { method: 'PUT', body: JSON.stringify({ place, vote }), signal })
 
 export async function deleteMarkingPhoto(photoId: string, markingId: number): Promise<void> {
   const resp = await fetch(`/api/markings/photos/${photoId}`, {
