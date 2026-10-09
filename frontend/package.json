@@ -7,6 +7,7 @@
     "dev": "vite",
     "dev:preview": "vite --config vite.preview.config.ts",
     "build": "tsc -b && vite build",
+    "test": "node --test tests/*.test.mjs",
     "lint": "oxlint src vite.config.ts vite.preview.config.ts",
     "preview": "vite preview"
   },

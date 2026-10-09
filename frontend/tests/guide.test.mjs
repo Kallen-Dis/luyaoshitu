@@ -15,7 +15,9 @@ test('old or coarse locations cannot start a new network plan', () => {
   const fix = { lat: 31.25, lng: 121.42, accuracy: 5, timestamp: 10000 }
   assert.equal(locationQuality(fix, 10010), null)
   assert.ok(locationQuality(null, 10000))
-  assert.ok(locationQuality({ ...fix, accuracy: 100 }, 10010))
+  assert.equal(locationQuality({ ...fix, accuracy: 82 }, 10010), null)
+  assert.equal(locationQuality({ ...fix, accuracy: 100 }, 10010), null)
+  assert.ok(locationQuality({ ...fix, accuracy: 100.1 }, 10010))
   assert.ok(locationQuality(fix, 40001))
   assert.ok(locationQuality({ ...fix, timestamp: 100000 }, 10000))
 })

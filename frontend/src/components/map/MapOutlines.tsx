@@ -1,4 +1,5 @@
 import { useEffect, useRef, type RefObject } from 'react'
+import { routeArrowPositions } from '../../lib/itinerary'
 
 export interface MapOutline {
   rings: readonly (readonly (readonly [number, number])[])[]
@@ -9,6 +10,7 @@ export interface MapOutline {
   haloWidth?: number
   anchor?: { lat: number; lng: number }
   closed?: boolean
+  arrows?: boolean
 }
 
 interface Props {
@@ -17,10 +19,11 @@ interface Props {
   active: boolean
   outlines: readonly MapOutline[]
   opacity: number
+  arrowsOnly?: boolean
 }
 
 /** 平面视图的圈线与区域外框单独叠在建筑之上；填充与点击仍由原地图覆盖物负责。 */
-export function MapOutlines({ mapRef, ready, active, outlines, opacity }: Props) {
+export function MapOutlines({ mapRef, ready, active, outlines, opacity, arrowsOnly = false }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
   useEffect(() => {
@@ -45,30 +48,46 @@ export function MapOutlines({ mapRef, ready, active, outlines, opacity }: Props)
       ctx.miterLimit = 2
       const paths = outlines.map(outline => {
         const path = new Path2D()
+        const arrows = []
         for (const ring of outline.rings) {
-          ring.forEach(([lng, lat], index) => {
-            const p = map.pointToPixel(new BMapGL.Point(lng, lat))
+          const pixels = ring.map(([lng, lat]) => map.pointToPixel(new BMapGL.Point(lng, lat)))
+          pixels.forEach((p: { x: number; y: number }, index: number) => {
             if (index === 0) path.moveTo(p.x, p.y)
             else path.lineTo(p.x, p.y)
           })
           if (outline.closed !== false) path.closePath()
+          if (outline.arrows) arrows.push(...routeArrowPositions(pixels))
         }
-        return { ...outline, path }
+        return { ...outline, path, arrowPositions: arrows }
       })
-      // 窄衬线保留原有直角和坐标；虚线的衬线也留出同样的间隔。
-      ctx.strokeStyle = '#f8fafc'
-      for (const { path, weight, dash, alpha = 1, haloWidth = 2 } of paths) {
-        ctx.globalAlpha = opacity * alpha * 0.92
-        ctx.setLineDash(dash ?? [])
-        ctx.lineWidth = weight + haloWidth
-        ctx.stroke(path)
+      if (!arrowsOnly) {
+        // 窄衬线保留原有直角和坐标；虚线的衬线也留出同样的间隔。
+        ctx.strokeStyle = '#f8fafc'
+        for (const { path, weight, dash, alpha = 1, haloWidth = 2 } of paths) {
+          ctx.globalAlpha = opacity * alpha * 0.92
+          ctx.setLineDash(dash ?? [])
+          ctx.lineWidth = weight + haloWidth
+          ctx.stroke(path)
+        }
+        for (const { path, weight, color, dash, alpha = 1 } of paths) {
+          ctx.globalAlpha = opacity * alpha
+          ctx.strokeStyle = color
+          ctx.setLineDash(dash ?? [])
+          ctx.lineWidth = weight
+          ctx.stroke(path)
+        }
       }
-      for (const { path, weight, color, dash, alpha = 1 } of paths) {
+      ctx.setLineDash([])
+      ctx.lineJoin = 'round'
+      for (const { arrowPositions, color, alpha = 1 } of paths) {
         ctx.globalAlpha = opacity * alpha
-        ctx.strokeStyle = color
-        ctx.setLineDash(dash ?? [])
-        ctx.lineWidth = weight
-        ctx.stroke(path)
+        for (const arrow of arrowPositions) {
+          ctx.save(); ctx.translate(arrow.x, arrow.y); ctx.rotate(arrow.angle)
+          ctx.beginPath(); ctx.moveTo(-4, -3); ctx.lineTo(0, 0); ctx.lineTo(-4, 3)
+          ctx.strokeStyle = color; ctx.lineWidth = 3.5; ctx.stroke()
+          ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.7; ctx.stroke()
+          ctx.restore()
+        }
       }
       // 编号仍是百度的可点击标注；外框不要从编号及其浅色边框上穿过去。
       for (const { anchor } of outlines) {
@@ -85,7 +104,7 @@ export function MapOutlines({ mapRef, ready, active, outlines, opacity }: Props)
       })
     }
     paint()
-    const events = ['moving', 'moveend', 'zooming', 'zoomend', 'resize']
+    const events = ['moving', 'moveend', 'zooming', 'zoomend', 'resize', 'tilt_changed', 'heading_changed']
     events.forEach(event => map.addEventListener(event, schedule))
     const observer = new ResizeObserver(schedule)
     observer.observe(canvas)
@@ -96,7 +115,7 @@ export function MapOutlines({ mapRef, ready, active, outlines, opacity }: Props)
       events.forEach(event => map.removeEventListener(event, schedule))
       window.removeEventListener('resize', schedule)
     }
-  }, [mapRef, ready, active, outlines, opacity])
+  }, [mapRef, ready, active, outlines, opacity, arrowsOnly])
 
   return <canvas ref={canvasRef} className="map-outline-canvas" aria-hidden="true" hidden={!active} />
 }

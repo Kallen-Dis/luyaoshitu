@@ -27,12 +27,13 @@ from .candidates import (
 )
 from .planner import EdgeTable, combinations_by_bound, initial_layers, solve
 from .routing import TripRoutingClient
+from .status import plan_status
 from .supplement import supplement
 
 
 def config(settings: Settings) -> dict:
     return {
-        "max_stops": 3,
+        "max_stops": len(CATEGORIES),
         "max_nearest": 5,
         "matrix_batch_pairs": min(50, max(1, settings.matrix_batch_size)),
         "day_pairs": settings.trip_day_pairs,
@@ -403,13 +404,7 @@ class TripService:
             if item["closure_status"] != "clear" or not item["route"]:
                 break
             previous = node
-        status = (
-            "clear"
-            if len(legs) == len(stops) and all(i["closure_status"] == "clear" for i in legs)
-            else "blocked"
-            if any(i["closure_status"] == "blocked" for i in legs)
-            else "unverified"
-        )
+        status = plan_status(self.origin.as_dict(), stops, legs, self.basis)
         if status != "clear":
             self.warn("新行程未通过通行核验，未替换原计划。")
         return {
@@ -425,15 +420,29 @@ class TripService:
         }
 
     async def plan(
-        self, stops: list[str], selected: list[dict] | None = None, replace: dict | None = None
+        self,
+        stops: list[str],
+        selected: list[dict] | None = None,
+        replace: dict | None = None,
+        retry_routes: bool = False,
+        fixed_stops: list[dict] | None = None,
     ) -> dict:
-        if len(stops) == 1 and selected is None:
+        fixed_stops = fixed_stops or []
+        if fixed_stops and (selected is not None or replace is not None or retry_routes):
+            raise TripError("invalid", "指定设施不能与更换或补取路线同时提交。")
+        indexes = [pin.get("index") for pin in fixed_stops]
+        if any(type(i) is not int or not 0 <= i < len(stops) for i in indexes) or len(
+            set(indexes)
+        ) != len(indexes):
+            raise TripError("invalid", "指定设施的站序无效或重复。")
+        if len(stops) == 1 and selected is None and not fixed_stops:
             result = await self.nearest(stops[0], 1)
             items = result.pop("items")
             return {
                 **result,
                 "stops": stops,
                 "legs": items,
+                "routing_status": plan_status(result["origin"], stops, items, self.basis),
                 "total_m": sum(i["walk_m"] for i in items),
                 "total_s": sum(i["duration_s"] for i in items),
                 "alternatives": [],
@@ -445,15 +454,39 @@ class TripService:
                     else "candidate"
                 ),
             }
-        for warning in await supplement(self.router.base, self.feature, stops):
-            self.warn(warning)
+        if not retry_routes:
+            for warning in await supplement(self.router.base, self.feature, stops):
+                self.warn(warning)
         layers = [candidates(self.feature, c, self.closures) for c in stops]
+        for pin in fixed_stops:
+            index = pin["index"]
+            node = next(
+                (
+                    n
+                    for n in layers[index]
+                    if n.id == pin.get("entry_id") and n.place_id == pin.get("place_id")
+                ),
+                None,
+            )
+            if node is None:
+                raise TripError("invalid", f"第 {index + 1} 站所选设施或入口已不可用，请重新选择。")
+            layers[index] = [node]
+        choice_info = (
+            {
+                "fixed_stops": fixed_stops,
+                "optimality": "manual" if len(fixed_stops) == len(stops) else "constrained",
+                "verification_basis": None,
+            }
+            if fixed_stops
+            else {}
+        )
         if any(not layer for layer in layers):
             self.warn("至少一站没有检索到可用设施，无法组成行程。")
             return {
                 **self.summary(stops),
                 "stops": stops,
                 "legs": [],
+                "routing_status": "unverified",
                 "total_m": 0,
                 "total_s": 0,
                 "alternatives": [],
@@ -463,7 +496,8 @@ class TripService:
         optimality = "candidate"
         verification = None
         if self.closures:
-            return await feasible.plan(self, stops, layers, selected, replace)
+            result = await feasible.plan(self, stops, layers, selected, replace, retry_routes)
+            return {**result, **choice_info}
         if selected is not None:
             path = self.selected_path(layers, selected, replace)
             prev = self.origin
@@ -572,7 +606,7 @@ class TripService:
                 await self.item(previous, n, edge or self.estimate(previous, n), len(legs) + 1)
             )
             previous = n
-        alternatives = await self.alternatives(layers, path)
+        alternatives = [] if retry_routes else await self.alternatives(layers, path)
         if self.bad_bound and optimality == "snapshot_tolerance":
             optimality, verification = "candidate", None
             self.warn("候选内最短行程，未完成全部已检索候选的最优性验证。")
@@ -580,11 +614,13 @@ class TripService:
             **self.summary(stops),
             "stops": stops,
             "legs": legs,
+            "routing_status": plan_status(self.origin.as_dict(), stops, legs, self.basis),
             "total_m": round(sum(i["walk_m"] for i in legs), 1),
             "total_s": round(sum(i["duration_s"] for i in legs)),
             "alternatives": alternatives,
             "optimality": optimality,
             "verification_basis": verification,
+            **choice_info,
         }
 
     def selected_path(

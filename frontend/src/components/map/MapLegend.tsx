@@ -189,7 +189,7 @@ export function MapLegend({
           <span className="legend-swatch plan" />
           <span>
             拟建点 ·{' '}
-            {simulation.basis === 'network'
+            {simulation.grid_evaluated === false || simulation.candidate_count === 0 ? '设施覆盖与评分对比' : simulation.basis === 'network'
               ? '步行 1 公里内够得着的方格已消去'
               : '直线估算（上限），虚线圈内方格已消去'}
           </span>

@@ -59,6 +59,16 @@ class ExactCache:
                 del self.memory[str(path)]
                 return None
             self.memory.move_to_end(str(path))
+        # 某些旧条目只有距离、没有可用折线；补取时必须真正重查，不能命中 30 天的空路线。
+        if (
+            value is not None
+            and path.parent.name == "route_walk"
+            and (
+                not isinstance(value, dict)
+                or sum(len(step.get("path") or []) for step in value.get("steps") or []) < 2
+            )
+        ):
+            return None
         if value is not None:
             self.usage.cache_hits += 1
         return value

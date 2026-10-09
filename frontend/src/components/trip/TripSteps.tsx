@@ -2,12 +2,12 @@ import type { TripItem } from '../../types'
 import { tripMeters, tripMinutes } from '../../lib/trip'
 import { guideUnavailableReason } from '../../lib/guide'
 
-export function TripSteps({ item, onGuide, preview }: { item: TripItem; onGuide: (item: TripItem) => void; preview?: boolean }) {
+export function TripSteps({ item, onGuide, preview, launchLabel = '步行引导', showLaunch = true }: { item: TripItem; onGuide: (item: TripItem) => void; preview?: boolean; launchLabel?: string; showLaunch?: boolean }) {
   const reason = guideUnavailableReason(item, preview)
   const available = reason === null
   return <div className="trip-details">
     {item.note && <p className={item.closure_status === 'blocked' ? 'trip-blocked' : 'trip-note'}>{item.note}</p>}
-    <button type="button" className="trip-guide-launch" disabled={!available} onClick={() => onGuide(item)}>步行引导 <span>{available ? `沉浸查看 · ${item.route?.steps.length} 步` : reason}</span></button>
+    {showLaunch && <button type="button" className="trip-guide-launch" disabled={!available} onClick={() => onGuide(item)}>{launchLabel} <span>{available ? `沉浸查看 · ${item.route?.steps.length} 步` : reason}</span></button>}
     <details className="trip-directions"><summary>文字步骤 <span>{item.route ? `${item.route.steps.length} 步` : '暂未取得折线'}</span></summary>
     <p className="trip-note">{item.distance_basis === 'gate' ? `入口：${item.gate}` : item.distance_basis === 'navigation_point' ? '按导航点测距' : '按设施坐标测距'}
       {item.duration_basis === 'matrix' ? ' · 耗时未含过街等待' : item.duration_basis === 'estimate' ? ' · 时间为估算' : ' · 时间为百度预计耗时'}</p>

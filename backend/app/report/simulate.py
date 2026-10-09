@@ -68,6 +68,11 @@ async def simulate_facility(
         raise ValueError("当前结果没有网格盲区判定，无法模拟新建。请先做一次含盲区判定的步行分析。")
     limit = float(blindspots.get("walk_limit_m") or 1000.0)
     coverage = props.get("coverage")
+    grid_evaluated = category in (blindspots.get("blind_ratio") or {}) or any(
+        category in (cell.get("missing") or [])
+        or (cell.get("nearest_m") or {}).get(category) is not None
+        for cell in cells
+    )
 
     candidates = [
         i
@@ -132,9 +137,9 @@ async def simulate_facility(
 
     before_report = build_report(props, coverage, blindspots)
     after_coverage = copy.deepcopy(coverage)
+    polygon = [(y, x) for x, y in feature["geometry"]["coordinates"][0]]
+    inside = point_in_polygon(lat, lng, polygon)
     if after_coverage is not None and not inside_closure:
-        polygon = [(y, x) for x, y in feature["geometry"]["coordinates"][0]]
-        inside = point_in_polygon(lat, lng, polygon)
         after_coverage.setdefault("places", []).append(
             {
                 "name": f"拟建{category}",
@@ -153,7 +158,11 @@ async def simulate_facility(
         )
     after_report = build_report(props, after_coverage, after_blind)
 
-    if basis == "network":
+    if not grid_evaluated:
+        approximation = "本品类尚无逐格步行测距，本次比较圈内设施数量和评分；灰色区域保持原判定。"
+    elif not candidates:
+        approximation = "拟建点周围没有可改善的已判定缺失网格，本次只比较设施覆盖与评分。"
+    elif basis == "network":
         approximation = (
             f"候选方格到拟建点做了真实路网测距（本次 {pairs_used} 个点对），步行 "
             f"{limit / 1000:.0f} 公里内的才算消去"
@@ -172,6 +181,11 @@ async def simulate_facility(
             "这是上限，真实步行覆盖只会更少。"
         )
 
+    def facility_count(stats: dict[str, Any] | None) -> int | None:
+        if not stats or category in (stats.get("failed_categories") or []):
+            return None
+        return (stats.get("categories") or {}).get(category)
+
     return {
         "category": category,
         "lat": lat,
@@ -184,6 +198,11 @@ async def simulate_facility(
         "candidate_count": len(candidates),
         "pairs_used": pairs_used,
         "route_checks": route_checks,
+        "grid_evaluated": grid_evaluated,
+        "in_circle": inside,
+        "inside_closure": inside_closure,
+        "facility_count_before": facility_count(coverage),
+        "facility_count_after": facility_count(after_coverage),
         "before": _stats(before_report),
         "after": _stats(after_report),
         "approximation": approximation,

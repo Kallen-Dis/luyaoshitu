@@ -100,7 +100,13 @@ export const tripNearest = (params: {
 export const tripPlan = (params: {
   feature: IsochroneFeature; origin: TripOrigin; stops: string[]; selected_stops?: TripSelection[]
   replace_stop?: TripSelection & { index: number }
+  retry_routes?: boolean
+  fixed_stops?: import('./types').TripFixedStop[]
 }, signal?: AbortSignal) => request<TripPlanResult>('/api/trip/plan', { method: 'POST', body: JSON.stringify(params), signal })
+
+/** 普通浏览不联网；显式 poi_query 只补检索门店，不计算路线。 */
+export const tripOptions = (params: { feature: IsochroneFeature; origin: TripOrigin; categories: string[]; poi_query?: string }, signal?: AbortSignal) =>
+  request<import('./types').TripOptionsResult>('/api/trip/options', { method: 'POST', body: JSON.stringify(params), signal })
 
 export const tripReanchor = (params: {
   feature: IsochroneFeature; origin: TripOrigin; stops: string[]; selected_stops: TripSelection[]; places: Place[]
@@ -135,10 +141,11 @@ export const simulate = (params: {
   lng: number
   feature: IsochroneFeature
   verify?: boolean
-}) =>
+}, signal?: AbortSignal) =>
   request<SimulationResult>('/api/simulate', {
     method: 'POST',
     body: JSON.stringify(params),
+    signal,
   })
 
 /** 复测巡检：跳过缓存重取各方向步行路线（约 36 次路线规划，不占批量算路点对）。 */

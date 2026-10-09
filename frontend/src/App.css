@@ -2,6 +2,9 @@
   --bg: #f3faf4;
   --panel: #ffffff;
   --panel-soft: #e7f5ea;
+  --drawer-bg: #f3ede0;
+  --drawer-card: #fbf8f1;
+  --drawer-border: #ccd8c9;
   --border: #b7d7be;
   --border-soft: #d5ead9;
   --text: #1c3a28;
@@ -1534,7 +1537,26 @@ button.primary:disabled {
 .map-more summary { cursor:pointer; list-style:none; }
 .map-more > div { position:absolute; right:0; top:36px; padding:8px; min-width:120px; background:var(--bg); z-index:35; }
 .map-more > div button { display:block; width:100%; text-align:left; }
-.trip-report-link { font-size:11px; color:var(--accent); margin-left:8px; text-decoration:underline; }
+.exam-sheet-basis { margin:0 0 14px; color:var(--muted); font-size:12px; }
+.exam-sheet-basis summary { cursor:pointer; }
+.exam-sheet-basis .exam-lead { font-size:12px; line-height:1.65; margin-top:8px; }
+.facility-sheet { gap:10px; }
+.facility-sheet > li { padding:14px; border:1px solid #d5e4d8; border-radius:10px; background:#fbfdf9; }
+.facility-sheet .exam-cat { align-items:center; gap:8px; }
+.facility-sheet .exam-cat > b { flex:1; font-size:13px; }
+.exam-facility-icon { display:grid; place-items:center; width:25px; height:27px; flex:none; border-radius:6px; color:#fff; font:600 14px var(--font-sans); }
+.facility-sheet .exam-min { display:flex; align-items:baseline; gap:4px; font:700 20px/1.2 var(--font-sans); }
+.facility-sheet .exam-min em { margin:0; font-size:10px; white-space:nowrap; }
+.exam-facility-name { display:block; margin:12px 0 8px; font-size:14px; line-height:1.6; overflow-wrap:anywhere; }
+.exam-facility-meta { display:flex; flex-wrap:wrap; gap:5px; color:var(--muted); font-size:11px; }
+.exam-facility-meta span { padding:3px 6px; border-radius:5px; background:#edf4e9; }
+.exam-cell-status { margin-top:10px; padding-top:8px; border-top:1px solid #e2eade; }
+.facility-sheet .exam-cell-status p { font-size:11px; color:var(--muted); line-height:1.6; }
+.facility-sheet .exam-cell-status .exam-cell-pending { color:#8a6b25; }
+.exam-facility-action { display:flex; justify-content:flex-end; margin-top:12px; }
+.facility-sheet .trip-report-link { display:flex; align-items:center; justify-content:center; gap:7px; margin:0; padding:7px 11px; border:1px solid #bad1bd; border-radius:7px; color:var(--accent-dark); background:#edf4e9; font:600 12px/1.4 var(--font-sans); text-decoration:none; }
+.facility-sheet .trip-report-link:hover:not(:disabled) { background:#e3efdc; border-color:var(--accent-dark); }
+.facility-sheet .trip-report-link:focus-visible { outline:2px solid var(--accent-dark); outline-offset:3px; }
 .trip-active .map-viewbar { right:400px; max-width:calc(100% - 414px); }
 .trip-active .map-viewbar-row { flex-wrap:wrap; }
 .trip-active .map-scene { right:400px; }
@@ -1888,29 +1910,7 @@ button.primary:disabled {
 }
 
 /* 规划模拟沿用出行的右侧抽屉结构，标题与操作固定，中间内容滚动。 */
-.planning-drawer.place-panel, .planning-drawer.closure-panel {
-  left: auto; right: 16px; top: 76px; bottom: 94px;
-  width: 360px; max-width: calc(100% - 32px); max-height: none;
-  padding: 0; z-index: 32; display: flex; flex-direction: column;
-  overflow: hidden; gap: 0; background: rgb(243 237 224 / 96%);
-  border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow-md);
-  font-size: 13px;
-}
-.planning-drawer > header { flex: none; padding: 14px 16px; margin: 0; border-bottom: 1px solid var(--border); }
-.planning-drawer > header strong { font-size: 16px; }
-.planning-drawer > header button { padding: 3px 10px; font-size: 20px; border-radius: 50%; }
-.planning-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; }
-.planning-scroll > * + * { margin-top: 14px; }
-.planning-drawer > footer { flex: none; margin: 0; padding: 12px 16px; border-top: 1px solid var(--border); display: flex; gap: 8px; }
-.planning-drawer button { border-radius: 7px; padding: 7px 10px; font-size: 12px; }
-.planning-tabs { display: flex; gap: 8px; }
-.planning-drawer .planning-tabs button.active, .planning-drawer .planning-tabs button.active:hover { color: white; background: var(--accent); border-color: var(--accent); }
-.planning-drawer > footer button.primary { background: var(--accent); color: white; border-color: var(--accent); }
-.planning-drawer > footer button.primary:disabled { background: var(--accent); opacity: .45; }
 .mk-composer.floating { top: 76px; right: 16px; bottom: 94px; width: 360px; max-height: none; }
-.planning-drawer .mode-pills { flex-wrap: wrap; }
-.planning-drawer .mode-pills .pill.active, .planning-drawer .mode-pills .pill.active:hover { color: white; background: var(--accent-dark); border-color: var(--accent-dark); }
-.planning-comparison { padding: 12px; border: 1px solid var(--border); border-radius: 8px; line-height: 1.7; }
 @media (max-width:850px) {
   .app { height: 100dvh; }
   .topbar { padding: 0 10px; gap: 6px; min-width: 0; }
@@ -1927,7 +1927,6 @@ button.primary:disabled {
   .map-tools .tool { padding: 6px 8px; font-size: 11px; }
   .stage .map-viewbar { top: 104px; right: 8px; max-width: calc(100% - 16px); }
   .stage:has(.planning-drawer) .map-viewbar, .stage:has(.mk-composer) .map-viewbar { display: none; }
-  .planning-drawer.place-panel, .planning-drawer.closure-panel { width: 320px; right: 8px; top: 104px; bottom: 90px; }
   .mk-composer.floating { width: 320px; max-width: calc(100% - 16px); right: 8px; top: 104px; bottom: 90px; }
 }
 

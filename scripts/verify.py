@@ -4,7 +4,7 @@
 1. 密钥扫描（scripts/check_secrets.py）
 2. 后端 lint（ruff check）、格式检查（ruff format --check）
    与测试（pytest，全部用假客户端，不调百度）
-3. 前端 lint、类型检查与构建（需要已在 frontend/ 下 npm install）
+3. 前端 lint、算法测试、类型检查与构建（需要已在 frontend/ 下 npm install）
 
 用法：
     python scripts/verify.py                  # 全部
@@ -70,7 +70,7 @@ def main() -> int:
         if not npm or not npx:
             print(
                 "\n==> 前端：没找到 npm / npx"
-                "（装好 Node.js 20.19+ 或 22.12+ 后再跑，或加 --skip-frontend）"
+                "（装好 Node.js 22.18+（22.x）或 24+ 后再跑，或加 --skip-frontend）"
             )
             results.append(("前端（未安装 Node.js）", False, 0.0))
         elif not (FRONTEND / "node_modules").exists():
@@ -79,6 +79,7 @@ def main() -> int:
         else:
             results += [
                 run("前端 lint", [npm, "run", "lint"], FRONTEND),
+                run("前端测试", [npm, "test"], FRONTEND),
                 run("前端类型检查", [npx, "tsc", "--noEmit", "-p", "tsconfig.app.json"], FRONTEND),
                 run("前端构建", [npm, "run", "build"], FRONTEND),
             ]

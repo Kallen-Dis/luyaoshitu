@@ -5,10 +5,10 @@ import { FreshFeedback } from './FreshFeedback'
 import { tripMeters, tripMinutes } from '../../lib/trip'
 import { TripSteps } from './TripSteps'
 
-export function TripNearestList({ items, selected, estimate, onSelect, onHover, onGuide, preview }: {
+export function TripNearestList({ items, selected, estimate, onSelect, onGuide, preview }: {
   items: TripItem[]; selected: string | null; estimate: boolean;
   onGuide: (item: TripItem) => void; preview?: boolean
-  onSelect: (id: string) => void; onHover: (id: string | null) => void
+  onSelect: (id: string) => void
 }) {
   const root = useRef<HTMLDivElement>(null)
   const previous = useRef<string | null>(null)
@@ -21,8 +21,7 @@ export function TripNearestList({ items, selected, estimate, onSelect, onHover, 
     {items.map((item, index) => <div className={item.entry_id === selected ? 'trip-result selected' : 'trip-result'} key={item.entry_id}>
       <button type="button" role="option" aria-selected={item.entry_id === selected}
         tabIndex={item.entry_id === selected || (!selected && index === 0) ? 0 : -1}
-        onClick={() => onSelect(item.entry_id)} onMouseEnter={() => onHover(item.entry_id)} onMouseLeave={() => onHover(null)}
-        onFocus={() => onHover(item.entry_id)} onBlur={() => onHover(null)} onKeyDown={event => {
+        onClick={() => onSelect(item.entry_id)} onKeyDown={event => {
           if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return
           event.preventDefault()
           const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length

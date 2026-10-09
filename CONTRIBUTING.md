@@ -17,7 +17,10 @@ python scripts/verify.py --skip-frontend  # 只改了后端时
 
 和 CI（`.github/workflows/ci.yml`）跑的是同一套检查，本机通过了再推。
 
-出行页面验收可在后端停止后启动 `python scripts/preview_trip.py`，前端正常 `npm run dev`。
+前端算法测试也可以在 `frontend/` 下单独运行 `npm test`。需 Node.js 22.18+（22.x）或 24+，
+测试直接使用 [Node 原生 TypeScript 类型移除](https://nodejs.org/download/release/v22.18.0/docs/api/typescript.html)，无需额外测试依赖。
+
+出行页面验收启动 `python scripts/preview_trip.py`（8001），前端运行 `npm run dev:preview`（5174）。
 它只监听本机，算路全部是假响应，缓存与预算放在独立 `.cache/trip-preview-*` 目录，结果有明确假接口提示。
 仅用于界面 / 链路验收，不代表真实百度距离，也不要用于生产。真实样例打开后的出行查询仍可能消耗算路配额。
 

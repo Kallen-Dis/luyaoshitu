@@ -1,9 +1,11 @@
 import type { TripItem, TripGuideData, TripReanchorResult } from '../types'
 
+export const MAX_LOCATION_ACCURACY_M = 100
+
 export function locationQuality(point: TripGuideData['location'], now: number): string | null {
   if (!point) return '请先定位到当前位置。'
   if (!Number.isFinite(point.timestamp) || now - point.timestamp > 30000 || point.timestamp > now + 1000) return '定位已过期，请重新定位后出发。'
-  if (!Number.isFinite(point.accuracy) || point.accuracy < 0 || point.accuracy > 80) return '定位精度不足，请重新定位或退出引导后在地图上设置起点。'
+  if (!Number.isFinite(point.accuracy) || point.accuracy < 0 || point.accuracy > MAX_LOCATION_ACCURACY_M) return `定位精度超过 ${MAX_LOCATION_ACCURACY_M} 米，请重新定位或退出引导后在地图上设置起点。`
   return null
 }
 

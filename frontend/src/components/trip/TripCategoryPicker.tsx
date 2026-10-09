@@ -1,11 +1,11 @@
 import { PLACE_MARK, SHORT_NAME } from '../map/context'
 
-export function TripCategoryPicker({ value, failed, disabled, onChange }: {
-  value: string | null; failed: string[]; disabled?: boolean; onChange: (category: string) => void
+export function TripCategoryPicker({ value, failed, disabled, onChange, label = '选择设施品类' }: {
+  value: string | null; failed: string[]; disabled?: boolean; onChange: (category: string) => void; label?: string
 }) {
   const categories = Object.keys(PLACE_MARK)
   const enabled = categories.filter(c => !failed.includes(c))
-  return <div className="trip-categories" role="radiogroup" aria-label="选择设施品类">
+  return <div className="trip-categories" role="radiogroup" aria-label={label}>
     {categories.map(category => <button type="button" role="radio" key={category}
       aria-checked={category === value} disabled={disabled || failed.includes(category)}
       tabIndex={category === value || (!value && enabled[0] === category) ? 0 : -1}

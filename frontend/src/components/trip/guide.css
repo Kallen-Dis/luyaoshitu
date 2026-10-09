@@ -11,10 +11,13 @@
 .guide-head,.guide-map-actions,.guide-position,.guide-step-card { pointer-events:auto; }
 .guide-head { position:absolute; top:16px; left:20px; right:20px; display:flex; align-items:center; justify-content:space-between; gap:20px; background:rgb(255 255 255 / 96%); border:1px solid var(--border); border-radius:14px; padding:14px 18px; box-shadow:0 3px 16px rgb(28 58 40 / 10%); }
 .guide-head small { color:var(--muted); font-size:11px; }
+.guide-head > div { flex:1; min-width:0; }
 .guide-head h2 { font-size:17px; margin:4px 0 0; line-height:1.4; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
 .guide-head h2:focus { outline:none; }
-.guide-exit { flex:none; }
-.guide-exit span { margin-left:9px; font-size:18px; }
+.trip-guide .guide-exit { display:inline-flex; align-items:center; justify-content:center; gap:7px; flex:none; min-height:36px; padding:8px 12px; border:1px solid #d4dfd6; border-radius:9px; background:#f6f8f3; color:#3a5b48; font:500 12px/1.4 var(--font-sans); white-space:nowrap; }
+.trip-guide .guide-exit:hover { background:#ebf0e8; border-color:#b7cbbd; }
+.guide-exit svg { width:17px; height:17px; flex:none; }
+.guide-exit span { font:inherit; }
 .guide-map-actions { position:absolute; right:20px; top:112px; display:flex; flex-wrap:wrap; justify-content:flex-end; gap:7px; max-width:calc(100% - 40px); }
 .guide-map-actions button[aria-pressed=true] { background:var(--accent-dark); color:#fff; border-color:var(--accent-dark); }
 .guide-position { position:absolute; top:166px; right:20px; max-width:360px; padding:7px 10px; background:rgb(255 255 255 / 94%); border-radius:8px; color:var(--muted); font-size:11px; line-height:1.6; }
@@ -36,7 +39,7 @@
 @media (max-width:600px) {
   .guide-head { top:10px; left:10px; right:10px; padding:11px 12px; gap:10px; }
   .guide-head h2 { font-size:14px; }
-  .guide-exit { padding:8px!important; font-size:11px!important; }
+  .trip-guide .guide-exit { padding:7px 9px; font-size:11px; }
   .guide-map-actions { top:102px; right:10px; left:10px; max-width:none; }
   .guide-map-actions button { font-size:11px; padding:8px 10px; }
   .guide-position { top:150px; right:10px; left:10px; max-width:none; text-align:right; }
@@ -59,6 +62,12 @@
 .guide-request button { flex:none; padding:5px 9px; }
 .guide-request-error { margin:0; border:1px solid #edc9bc; padding:10px; background:#fff5ef; color:#9a3412; border-radius:9px; font-size:11px; line-height:1.6; }
 .guide-usage { margin:0; padding:7px 10px; border-radius:8px; background:rgb(255 255 255 / 94%); font-size:10px; color:var(--muted); line-height:1.6; }
+.guide-notice { display:flex; align-items:flex-start; gap:8px; border:1px solid rgb(199 216 203 / 70%); box-shadow:0 2px 8px rgb(28 58 40 / 5%); }
+.guide-notice > div { flex:1; min-width:0; }
+.trip-guide .guide-notice-close { display:grid; place-items:center; flex:none; width:24px; height:24px; margin:-2px -3px -2px 0; padding:0; border:0; border-radius:6px; background:transparent; color:#728478; }
+.trip-guide .guide-notice-close:hover { background:#edf2ec; }
+.guide-notice-close svg { width:18px; height:18px; }
+.guide-notice.persistent { background:#fffbf2; border-color:#e6ddc6; }
 .guide-candidates { pointer-events:auto; position:absolute; left:20px; top:112px; bottom:22px; width:420px; max-width:calc(100% - 100px); background:rgb(255 255 255 / 98%); border:1px solid var(--border); border-radius:14px; display:flex; flex-direction:column; overflow:hidden; box-shadow:0 5px 22px rgb(28 58 40 / 14%); }
 .guide-candidates header { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:14px; border-bottom:1px solid var(--border-soft); }
 .guide-candidates header small { display:block; font-size:10px; color:var(--muted); margin-top:6px; }

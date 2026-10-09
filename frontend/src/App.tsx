@@ -20,14 +20,17 @@ import {
   simulateClosures,
   sitePlan,
 } from './api'
-import { erasedCount, gridCensus } from './lib/grid'
+import { gridCensus } from './lib/grid'
 import { CompareCard } from './components/CompareCard'
 import { DirectionRadar } from './components/DirectionRadar'
 import { ExportCard } from './components/ExportCard'
 import { MapView } from './components/MapView'
 import { TripDrawer } from './components/trip/TripDrawer'
 import { TripGuide } from './components/trip/TripGuide'
+import { PlanningDrawer } from './components/planning/PlanningDrawer'
+import { FacilitySimulation } from './components/planning/FacilitySimulation'
 import { guideUnavailableReason } from './lib/guide'
+import { guideItinerary } from './lib/itinerary'
 import {
   DEFAULT_LAYERS,
   type ComposerPreset,
@@ -217,6 +220,8 @@ export default function App() {
   const [tripPlacesEntry, setTripPlacesEntry] = useState<Scoped<Place[]> | null>(null)
   const [tripPicking, setTripPicking] = useState(false)
   const [tripSelection, setTripSelection] = useState<string | null>(null)
+  const [tripSelectionKey, setTripSelectionKey] = useState(0)
+  const selectTrip = useCallback((id: string | null) => { setTripSelection(id); setTripSelectionKey(key => key + 1) }, [])
   const [guideEntry, setGuideEntry] = useState<Scoped<TripGuideData> | null>(null)
   const closeGuide = useCallback(() => setGuideEntry(null), [])
   const closeTrip = useCallback(() => { setGuideEntry(null); setTripEntry(null); setTripMapEntry(null); setTripPicking(false); setTripSelection(null) }, [])
@@ -582,6 +587,10 @@ export default function App() {
     setPlacing(category)
     setNotice(null)
     const request = ++planningRequest.current
+    planningController.current?.abort()
+    const controller = new AbortController()
+    planningController.current = controller
+    setSimulation(null); setError(null)
     setPlanningBusy(true)
     simulate({
       category,
@@ -589,12 +598,12 @@ export default function App() {
       lng,
       feature: isochrone,
       verify: !isochrone.properties.simulated,
-    })
+    }, controller.signal)
       .then((result) => {
-        if (request !== planningRequest.current) return
+        if (controller.signal.aborted || request !== planningRequest.current) return
         setSimulation(result)
       })
-      .catch((err: Error) => { if (request === planningRequest.current) setError(err.message) })
+      .catch((err: Error) => { if (!controller.signal.aborted && request === planningRequest.current) setError(err.message) })
       .finally(() => { if (request === planningRequest.current) setPlanningBusy(false) })
   }
 
@@ -928,7 +937,7 @@ export default function App() {
     }
   }
 
-  const railMode = composer !== null && !railOpen
+  const railMode = (composer !== null || Boolean(scoped(tripEntry, isochrone))) && !railOpen
   useLayoutEffect(() => {
     if (railMode || !sidebarRef.current) return
     sidebarRef.current.scrollTop = sidebarScrollRef.current
@@ -994,13 +1003,13 @@ export default function App() {
     }
   }, [trip, composer, guideEntry, isochrone])
   const updateGuide = useCallback((value: TripGuideData) => setGuideEntry({ owner: isochrone, value }), [isochrone])
-  function openGuide(item: TripItem) {
+  function openGuide(item: TripItem, scope?: 'journey' | 'segment') {
     if (guideUnavailableReason(item, tripMap?.preview)) return
-    setTripSelection(item.entry_id)
     if (!isochrone) return
     const index = tripMap?.itinerary ? tripMap.items.findIndex(leg => leg.entry_id === item.entry_id) : -1
-    const remaining = index >= 0 ? tripMap!.items.slice(index) : [item]
-    updateGuide({ item, remaining, routingFeature: isochrone, mode: 'preview', stepIndex: 0, focus: 'origin', focusKey: 0, location: null })
+    const selection = index >= 0 ? guideItinerary(tripMap!.items, item, scope ?? 'journey') : { item, remaining: [item], context: undefined }
+    if (guideUnavailableReason(selection.item, tripMap?.preview)) return
+    updateGuide({ ...selection, routingFeature: isochrone, mode: 'preview', stepIndex: 0, focus: 'origin', focusKey: 0, location: null })
   }
   const updateTripMap = useCallback((value: TripMapData) => {
     setTripMapEntry({ owner: isochrone, value })
@@ -1030,6 +1039,8 @@ export default function App() {
     setCompareFeature(null); setCompareId(null); setClosurePlacing(false); setPickEnabled(false)
     setTripPicking(false); setTripSelection(null); setTripMapEntry(null)
     closeGuide()
+    sidebarScrollRef.current = sidebarRef.current?.scrollTop ?? sidebarScrollRef.current
+    setRailOpen(false)
     const start = origin ?? (target && trip ? trip.origin : { ...isochrone.properties.center, kind: 'center' as const })
     setTripEntry({ owner: isochrone, value: { key: Date.now(), origin: start, category, targetId: target?.id } })
     setReveal({ ...start, key: Date.now(), rightInset: 400 })
@@ -1054,7 +1065,7 @@ export default function App() {
   const composerPicking = composer?.step === 'place'
 
   return (
-    <div className={guide ? 'app guiding' : 'app'}>
+    <div className={guide ? 'app guiding' : trip && !composer ? 'app travelling' : 'app'}>
       <header className="topbar">
         <div className="brand">
           <span className="brand-mark">途</span>
@@ -1064,22 +1075,12 @@ export default function App() {
           </div>
         </div>
         <div className="topbar-spacer" />
-        <span
-          className={
-            activeSampleId
-              ? 'source-chip snapshot'
-              : props?.simulated
-                ? 'source-chip demo'
-                : 'source-chip live'
-          }
-        >
-          <i />
-          {activeSampleId
-            ? '预生成快照 · 零 API 消耗'
-            : props?.simulated
-              ? '离线模拟 · 非真实路网数据'
-              : '实时计算结果'}
-        </span>
+        {!activeSampleId && (
+          <span className={props?.simulated ? 'source-chip demo' : 'source-chip live'}>
+            <i />
+            {props?.simulated ? '离线模拟 · 非真实路网数据' : '实时计算结果'}
+          </span>
+        )}
         {markingConfig?.admin_enabled && (
           <button
             type="button"
@@ -1098,7 +1099,7 @@ export default function App() {
           <aside className="sidebar-rail" aria-label="侧栏已收起">
             <button
               type="button"
-              title="展开侧栏（标注模式下地图会变窄）"
+              title="展开体检报告（地图会变窄）"
               aria-label="展开侧栏"
               onClick={() => setRailOpen(true)}
             >
@@ -1108,6 +1109,7 @@ export default function App() {
           </aside>
         )}
         <aside className="sidebar" ref={sidebarRef}>
+          {(trip || composer) && railOpen && <button type="button" className="trip-sidebar-collapse" onClick={() => { sidebarScrollRef.current = sidebarRef.current?.scrollTop ?? 0; setRailOpen(false) }}>收起体检报告 ‹</button>}
           {isochrone && <Verdict feature={isochrone} />}
 
           <details className="card">
@@ -1544,57 +1546,17 @@ export default function App() {
           </div>
           )}
           {planningMode === 'facility' && placing && (
-            <section className="place-panel planning-drawer floating" role="dialog" aria-label="规划模拟">
-              <header className="place-head">
-                <div>
-                  <p className="place-kicker">规划模拟</p>
-                  <strong>假如在这里新建一处…</strong>
-                </div>
-                <button type="button" aria-label="关闭规划模拟" onClick={closePlanning}>×</button>
-              </header>
-              <div className="planning-scroll">
-              <div className="planning-tabs"><button className="active" onClick={() => openPlanning('facility')}>增建设施</button><button onClick={() => openPlanning('closure')}>道路封闭</button></div>
-              <div className="mode-pills">
-                {(keyCategories.length ? keyCategories : ['生鲜采买', '医药', '基础教育']).map(
-                  (name) => (
-                    <button
-                      key={name}
-                      type="button"
-                      className={placing === name ? 'pill active' : 'pill'}
-                      onClick={() => { planningRequest.current += 1; setPlanningBusy(false); setSimulation(null); setPlacing(name) }}
-                    >
-                      {name}
-                    </button>
-                  ),
-                )}
-              </div>
-              <p>
-                {placing
-                  ? `放置模式：在地图上点一下，放一处${placing}。再点别的位置会换到新地点。`
-                  : '先选类别，再在地图上点一下。'}
-              </p>
-              {simulation ? (
-                <p className="place-diff">
-                  {erasedCount(isochrone?.properties.blindspots, simulation, blindCategory)}{' '}
-                  格在当前图层中不再缺失；该品类改善 {simulation.covered_count} 格
-                  {simulation.basis === 'network'
-                    ? `（路网实测，${simulation.pairs_used} 个点对）`
-                    : '（直线估算上限）'}
-                  。分数{' '}
-                  {simulation.before.score ?? '—'} → {simulation.after.score ?? '—'}
-                  {simulation.after.grade ? `（${simulation.after.grade}）` : ''}
-                </p>
-              ) : (
-                <p>还没放下。点地图之后，这里显示前后分数。</p>
-              )}
-              {planningBusy && <p role="status">正在评估拟建点…</p>}
-              </div>
-              <footer>
-                <button type="button" disabled={!simulation} onClick={() => { planningRequest.current += 1; setSimulation(null); setPlanningBusy(false) }}>
-                  撤销
-                </button>
-              </footer>
-            </section>
+            <PlanningDrawer mode="facility" busy={planningBusy} onMode={openPlanning} onClose={closePlanning}
+              footer={<button type="button" className="trip-secondary-action" disabled={!simulation && !planningBusy}
+                onClick={() => { planningRequest.current += 1; planningController.current?.abort(); setSimulation(null); setPlanningBusy(false) }}>
+                {planningBusy ? '取消评估' : '撤销拟建点'}
+              </button>}>
+              <FacilitySimulation category={placing} result={simulation} busy={planningBusy} onCategory={name => {
+                if (name === placing) return
+                planningRequest.current += 1; planningController.current?.abort()
+                setPlanningBusy(false); setSimulation(null); setPlacing(name); setError(null)
+              }} />
+            </PlanningDrawer>
           )}
           {composer && markingConfig && (
             <MarkingComposer
@@ -1618,15 +1580,15 @@ export default function App() {
             />
           )}
           {!composer && !trip && planningMode === 'closure' && (
-            <section className="closure-panel planning-drawer floating" role="dialog" aria-label="规划模拟">
-              <header>
-                <strong>规划模拟</strong>
-                <button type="button" aria-label="关闭规划模拟" onClick={closePlanning}>×</button>
-              </header>
-              <div className="planning-scroll">
-              <div className="planning-tabs"><button onClick={() => openPlanning('facility')}>增建设施</button><button className="active" onClick={() => openPlanning('closure')}>道路封闭</button></div>
-              <p className="hint">在地图上放置假设围挡，评估封闭后的生活圈和评分。预览不保存历史，不影响正式出行；实际封路请提交共享标注。</p>
-              <button type="button" onClick={() => setClosurePlacing(v => !v)}>{closurePlacing ? '结束点选' : '在地图上添加围挡'}</button>
+            <PlanningDrawer mode="closure" busy={planningBusy} onMode={openPlanning} onClose={closePlanning}
+              footer={<>
+                <button type="button" className="trip-primary-action" disabled={planningBusy || !closuresDirty || !isochrone || props?.simulated} onClick={() => void previewClosure()}>{planningBusy ? '评估中…' : '评估封闭效果'}</button>
+                <button type="button" className="trip-secondary-action" disabled={closures.length === 0} onClick={() => { planningRequest.current += 1; planningController.current?.abort(); setPlanningBusy(false); setClosures([]); setClosurePreview(null) }}>清空假设围挡</button>
+              </>}>
+              <section className="planning-section"><h3>假设围挡<span>{closures.length} 处</span></h3>
+                <p className="trip-note">在地图上放置围挡，比较生活圈和评分变化。预览不会改变正式报告和出行路线。</p>
+                <button type="button" className="trip-secondary-action" onClick={() => setClosurePlacing(v => !v)}>{closurePlacing ? '结束点选' : '在地图上添加围挡'}</button>
+              </section>
               <details className="closure-auto"><summary>查找疑似围挡线索</summary>
                 <div className="closure-auto-actions">
                   <button
@@ -1781,7 +1743,7 @@ export default function App() {
                   </ul>
                 )}
               </details>
-              <label>
+              <label className="planning-closure-settings">
                 假设围挡半径
                 <select
                   value={closureRadius}
@@ -1795,7 +1757,7 @@ export default function App() {
                 </select>
               </label>
               {closures.length > 0 ? (
-                <ul>
+                <ul className="planning-closure-list">
                   {closures.map((c, i) => (
                     <li key={`${c.lat}-${c.lng}-${i}`}>
                       <span>
@@ -1812,21 +1774,17 @@ export default function App() {
                   ))}
                 </ul>
               ) : (
-                <p>还没有标注。点地图放一处。</p>
+                <p className="trip-empty">还没有假设围挡，在地图上点选位置。</p>
               )}
               {closurePreview && <div className="planning-comparison"><b>假设评分 {closurePreview.properties.planning_baseline?.report?.total ?? '—'} → {closurePreview.properties.report?.total ?? '—'}</b><p>可达面积 {closurePreview.properties.planning_baseline?.area_km2.toFixed(3) ?? '—'} → {closurePreview.properties.area_km2.toFixed(3)} km²</p><p>前后均按当前规则重算；正式报告与出行继续使用原始结果。</p><p>圈缩小可能移除原有缺失网格，评分升高不代表封路有益。</p></div>}
-              </div>
-              <footer>
-                <button type="button" className="primary" disabled={planningBusy || !closuresDirty || !isochrone || props?.simulated} onClick={() => void previewClosure()}>{planningBusy ? '评估中…' : '评估封闭效果'}</button>
-                <button type="button" disabled={closures.length === 0} onClick={() => { planningRequest.current += 1; planningController.current?.abort(); setPlanningBusy(false); setClosures([]); setClosurePreview(null) }}>清空</button>
-              </footer>
-            </section>
+            </PlanningDrawer>
           )}
           {trip && isochrone && <TripDrawer key={trip.key} feature={isochrone} origin={trip.origin}
-            initialCategory={trip.category} targetId={trip.targetId} selected={tripSelection} picking={tripPicking}
-            onSelect={setTripSelection} onMapData={updateTripMap} onClose={closeTrip}
+            initialCategory={trip.category} targetId={trip.targetId} selected={tripSelection} selectionKey={tripSelectionKey} picking={tripPicking}
+            onSelect={selectTrip} onMapData={updateTripMap} onClose={closeTrip}
             hidden={Boolean(composer || guide || selectedMarkingId)} onGuide={openGuide}
             onAddMissing={category => openComposer({ type: 'facility_extra', source: 'user', category }, true)}
+            onOriginChange={changeTripOrigin} onCancelPick={() => setTripPicking(false)}
             onPickOrigin={() => setTripPicking(true)} onResetOrigin={() => changeTripOrigin({ ...isochrone.properties.center!, kind: 'center' })} />}
           {guide && <TripGuide value={guide} onChange={updateGuide} onClose={closeGuide} />}
           {trip && tripPicking && !composer && !guide && <div className="trip-modebar floating" role="status"><span className="trip-pick-icon"><Icon name="pin" size={17} /></span><span>点击地图，设置新起点</span><button type="button" aria-label="取消选择起点" onClick={() => setTripPicking(false)}>取消</button></div>}
@@ -1839,7 +1797,7 @@ export default function App() {
               trip={composer ? null : tripMap}
               tripOpen={Boolean(trip && !composer)}
               guide={guide}
-              onTripSelect={setTripSelection}
+              onTripSelect={selectTrip}
               layers={layers}
               onLayers={setLayers}
               blindCategory={blindCategory}

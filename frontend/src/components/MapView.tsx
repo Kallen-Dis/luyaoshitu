@@ -3,7 +3,8 @@ import { loadBaiduMap } from '../baiduMap'
 import { buildHeatTile, heatColor } from '../lib/heatRaster'
 import { blindCells } from '../lib/grid'
 import { clipBlindCell, clipRegionOutlines } from '../lib/grayDisplay'
-import { tripPath, tripColor, tripBounds } from '../lib/trip'
+import { tripPath, tripColor } from '../lib/trip'
+import { hitTripRoute, itineraryLineStyle, itineraryPath, tripCameraRequest, tripSegmentColor, tripViewBounds, tripViewportMargins, type TripViewStamp } from '../lib/itinerary'
 import { afterStableMapSize, originViewBounds } from '../lib/guide'
 import { TYPE_META, circleHitsPath, metersBetween, type LatLng } from '../lib/markings'
 import type { ResultView, ViewSwitch } from '../lib/resultView'
@@ -21,6 +22,7 @@ import { MapPopover } from './map/MapPopover'
 import { MapSceneBar } from './map/MapSceneBar'
 import { MapViewBar } from './map/MapViewBar'
 import { MapOutlines, type MapOutline } from './map/MapOutlines'
+import { TripMapStops } from './map/TripMapStops'
 import { useMapScene } from './map/useMapScene'
 import './map/map.css'
 import type {
@@ -41,7 +43,7 @@ interface Props {
   trip?: TripMapData | null
   tripOpen?: boolean
   guide?: TripGuideData | null
-  onTripSelect?: (entryId: string) => void
+  onTripSelect?: (entryId: string | null) => void
   ak: string
   center: { lat: number; lng: number }
   /** 地图上画的结果（「纯算法」看法下已还原成纯算法结果） */
@@ -231,10 +233,14 @@ export function MapView({
   const overlaysRef = useRef<any[]>([])
   const markingOverlaysRef = useRef<any[]>([])
   const tripOverlaysRef = useRef<any[]>([])
-  const tripFitRef = useRef(0)
+  const tripFitRef = useRef<TripViewStamp | null>(null)
+  const tripDataRef = useRef(trip)
+  const tripOpenRef = useRef(tripOpen)
+  const tripSelectRef = useRef(onTripSelect)
   const guideActive = guide !== null
   const guideActiveRef = useRef(guideActive)
   const guideViewRef = useRef<{ owner: IsochroneFeature | null; center: any; zoom: number; tilt: number; heading: number; earth: boolean } | null>(null)
+  const tripViewRef = useRef<{ owner: IsochroneFeature | null; center: any; zoom: number; tilt: number; heading: number; earth: boolean } | null>(null)
   const guideFocusRef = useRef<number | null>(null)
   // 地图实例是异步建好的，而快照往往先到：只用 ref 持有实例的话，
   // 绘制 effect 会在实例就绪前空跑一次，此后再无触发，首屏就成了一张白底底图。
@@ -273,6 +279,9 @@ export function MapView({
     canMarkRef.current = canMark
     ownerRef.current = isochrone
     guideActiveRef.current = guideActive
+    tripDataRef.current = trip
+    tripOpenRef.current = tripOpen
+    tripSelectRef.current = onTripSelect
   })
   // 点击覆盖物只应弹出详情。若任其冒泡到地图，就会被当成「改选中心点」
   // 而触发一次完整的实时计算——白烧配额，且用户根本没打算换点。
@@ -332,6 +341,13 @@ export function MapView({
             pickRef.current(e.latlng.lat, e.latlng.lng)
             return
           }
+          const itinerary = tripDataRef.current
+          if (itinerary?.itinerary && !drawingRef.current) {
+            const pixel = map.pointToPixel(new BMapGL.Point(e.latlng.lng, e.latlng.lat))
+            const id = hitTripRoute(itinerary.items, itinerary.selected, pixel, ([lng, lat]) => map.pointToPixel(new BMapGL.Point(lng, lat)), itinerary.preview)
+            if (id) { tripSelectRef.current?.(id); return }
+          }
+          if (tripOpenRef.current && !drawingRef.current) return
           // 平时点空白处：问一句「这里缺了什么」，就地标注
           if (canMarkRef.current && !drawingRef.current) {
             openPopover({ kind: 'point', lat: e.latlng.lat, lng: e.latlng.lng }, e.latlng)
@@ -411,6 +427,19 @@ export function MapView({
     paths.push(...route.connectors.map(path => ({ rings: [path], closed: false, weight: 2, color: '#6b7280', dash: [4, 4], haloWidth: 2 })))
     return paths
   }, [guide])
+  const itineraryOutlines = useMemo<MapOutline[]>(() => {
+    if (!trip?.itinerary || guide) return []
+    const highlight = trip.hover ?? trip.selected
+    const items = [...trip.items].sort((a, b) => Number(a.entry_id === highlight) - Number(b.entry_id === highlight))
+    return items.flatMap(item => {
+      const style = itineraryLineStyle(item, item.entry_id === highlight, Boolean(highlight), trip.preview, trip.items.indexOf(item))
+      const path = itineraryPath(item, trip.preview)
+      const paths: MapOutline[] = [{ rings: [path], closed: false, ...style, dash: style.dashed ? [6, 5] : undefined, haloWidth: 3 }]
+      paths.push(...(item.route?.connectors ?? []).map(path => ({ rings: [path], closed: false, weight: 2, color: '#6b7280', dash: [4, 4], haloWidth: 2 })))
+      if (item.route?.blocked_path.length) paths.push({ rings: [item.route.blocked_path], closed: false, weight: 4, color: '#c0392b', dash: [6, 5], haloWidth: 2 })
+      return paths
+    })
+  }, [trip, guide])
 
   // 绘制热力图、盲区方格、灰色区域、等时圈、设施与各类线索
   useEffect(() => {
@@ -420,7 +449,7 @@ export function MapView({
 
     overlaysRef.current.forEach((o) => map.removeOverlay(o))
     overlaysRef.current = []
-    if (guideActive) return
+    if (guideActive || tripOpen) return
 
     const add = (overlay: any) => {
       map.addOverlay(overlay)
@@ -821,19 +850,21 @@ export function MapView({
 
     if (!tripOpen) add(new BMapGL.Marker(new BMapGL.Point(center.lng, center.lat)))
 
-    // 拟建点只标位置和 1 公里判定圈。圈内原本缺这一类的方格已经从盲区层拿掉。
+    // 六类均标拟建位置；有该品类网格判定时才显示 1 公里候选范围。
     if (simulation) {
       const simPoint = new BMapGL.Point(simulation.lng, simulation.lat)
-      const reach = new BMapGL.Circle(simPoint, 1000, {
-        strokeColor: '#c0391d',
-        strokeWeight: 1.2,
-        strokeOpacity: 0.55,
-        strokeStyle: 'dashed',
-        fillColor: '#c0391d',
-        fillOpacity: 0.04,
-        enableClicking: false,
-      })
-      add(reach)
+      if (simulation.grid_evaluated !== false) {
+        const reach = new BMapGL.Circle(simPoint, 1000, {
+          strokeColor: '#c0391d',
+          strokeWeight: 1.2,
+          strokeOpacity: 0.55,
+          strokeStyle: 'dashed',
+          fillColor: '#c0391d',
+          fillOpacity: 0.04,
+          enableClicking: false,
+        })
+        add(reach)
+      }
       const simLabel = new BMapGL.Label(`拟建·${simulation.category}`, {
         position: simPoint,
         offset: new BMapGL.Size(-36, -46),
@@ -931,6 +962,7 @@ export function MapView({
 
     if (layers.markings) {
       for (const m of markings) {
+        if (tripOpen && (m.type !== 'closure' || !(m.status === 'verified' || m.mine || isochrone?.properties.markings?.applied.some(applied => applied.id === m.id)))) continue
         const meta = TYPE_META[m.type]
         const verified = m.status === 'verified'
         const selected = m.id === selectedMarkingId
@@ -1152,7 +1184,7 @@ export function MapView({
       }
       draft.vertices.forEach((v, i) => dot(v, i === 0))
     }
-  }, [ready, markings, selectedMarkingId, draft, layers.markings, rays, radiusLo, radiusHi, guideActive])
+  }, [ready, markings, selectedMarkingId, draft, layers.markings, rays, radiusLo, radiusHi, guideActive, tripOpen, isochrone])
 
   // 「在地图上看」：平移到标注处，放大到能看清街道
   useEffect(() => {
@@ -1198,7 +1230,7 @@ export function MapView({
 
     const blindspots = isochrone?.properties.blindspots
     const tile =
-      layers.heat && blindspots && !guideActive
+      layers.heat && blindspots && !guideActive && !tripOpen
         ? buildHeatTile(
             blindspots.cells,
             blindspots.grid_spacing_m,
@@ -1226,7 +1258,7 @@ export function MapView({
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
       ctx.clearRect(0, 0, width, height)
       // 倾斜、旋转后整张图不再是正放的矩形，画布色场会错位：这时热力由矢量方格画，画布留空
-      if (vectorHeat || guideActive) return
+      if (vectorHeat || guideActive || tripOpen) return
       if (tile && (ring.length > 2 || (discRadiusM > 0 && gridCenter))) {
         ctx.save()
         ctx.beginPath()
@@ -1257,7 +1289,7 @@ export function MapView({
     const events = ['moving', 'moveend', 'zooming', 'zoomend', 'resize']
     events.forEach((e) => map.addEventListener(e, paint))
     return () => events.forEach((e) => map.removeEventListener(e, paint))
-  }, [ready, isochrone, layers.heat, shell, vectorHeat, guideActive])
+  }, [ready, isochrone, layers.heat, shell, vectorHeat, guideActive, tripOpen])
 
   // 卡片跟着锚点走：地图平移、缩放时重算像素位置
   const popoverAt = popover?.at
@@ -1291,7 +1323,7 @@ export function MapView({
   }, [ready, popoverAt])
 
   // 结果换了、进了标注模式：卡片不再显示（判定内容已经不是它说的那份）
-  const shownPopover = popover && popover.owner === isochrone && !draft && !guideActive ? popover : null
+  const shownPopover = popover && popover.owner === isochrone && !draft && !guideActive && !tripOpen ? popover : null
   const shownId = shownPopover?.id ?? null
   useEffect(() => {
     popoverOpenRef.current = shownId !== null
@@ -1320,7 +1352,7 @@ export function MapView({
       const line = (path: [number, number][], color: string, width: number, opacity: number, dashed: boolean, z: number, id?: string) => {
         if (path.length < 2) return
         const overlay = new BMapGL.Polyline(path.map(([lng, lat]) => new BMapGL.Point(lng, lat)), { strokeColor: color, strokeWeight: width, strokeOpacity: opacity, strokeStyle: dashed ? 'dashed' : 'solid', enableClicking: Boolean(id) })
-        if (id) overlay.addEventListener('click', () => { suppressPickRef.current = true; onTripSelect?.(id) })
+        if (id) overlay.addEventListener('click', () => { if (pickEnabledRef.current || drawingRef.current) return; suppressPickRef.current = true; onTripSelect?.(id) })
         add(overlay, z)
       }
       const label = (at: LatLng, glyph: string, color: string, selected: boolean) => {
@@ -1342,28 +1374,80 @@ export function MapView({
         if (guide.location) label(guide.location, Date.now() - guide.location.timestamp > 30000 ? '上次定位' : '● 我', '#1677d2', true)
         return
       }
-      for (const item of trip.items) {
+      const items = [...trip.items].sort((a, b) => Number(a.entry_id === highlight) - Number(b.entry_id === highlight))
+      for (const item of items) {
         const selected = item.entry_id === highlight
-        const path = trip.preview ? [[item.from.lng, item.from.lat], [item.lng, item.lat]] as [number, number][] : tripPath(item)
+        const path = trip.itinerary ? itineraryPath(item, trip.preview) : trip.preview ? [[item.from.lng, item.from.lat], [item.lng, item.lat]] as [number, number][] : tripPath(item)
         const dashed = trip.preview || !item.route
+        if (trip.itinerary) {
+          const style = itineraryLineStyle(item, selected, Boolean(highlight), trip.preview, trip.items.indexOf(item))
+          if (vectorHeat) {
+            line(path, '#fff', style.weight + 3, style.alpha, style.dashed, selected ? 15 : 12)
+            line(path, style.color, style.weight, style.alpha, style.dashed, selected ? 16 : 13, item.entry_id)
+            for (const connector of item.route?.connectors ?? []) line(connector, '#6b7280', 2, .8, true, 16)
+            if (item.route?.blocked_path.length) line(item.route.blocked_path, '#c0392b', 4, 1, true, 17, item.entry_id)
+          }
+          continue
+        }
         if (selected) line(path, '#fff', 7, .95, dashed, 15)
         line(path, tripColor(item.category), selected ? 4 : 3, selected ? 1 : trip.itinerary ? .7 : .45, dashed, selected ? 16 : 14, item.entry_id)
         for (const connector of item.route?.connectors ?? []) line(connector, '#6b7280', 2, .8, true, 16)
         if (item.route?.blocked_path.length) line(item.route.blocked_path, '#dc2626', 4, 1, true, 17, item.entry_id)
         label(item, String(item.rank), tripColor(item.category), selected)
       }
-      label(trip.origin, '起', '#1c3a28', true)
+      if (!trip.itinerary) label(trip.origin, '起', '#1c3a28', true)
     }
     draw()
-    if (!guide && trip && trip.fitKey > 0 && trip.fitKey !== tripFitRef.current) {
-      tripFitRef.current = trip.fitKey
-      map.setViewport(tripBounds(trip).map(([lng, lat]) => new BMapGL.Point(lng, lat)), { margins: [40, 400, 80, 40] })
-    }
-    if (!trip) tripFitRef.current = 0
     window.addEventListener('beforeprint', clear)
     window.addEventListener('afterprint', draw)
     return () => { clear(); window.removeEventListener('beforeprint', clear); window.removeEventListener('afterprint', draw) }
   }, [ready, trip, onTripSelect, guide, vectorHeat])
+
+  useEffect(() => {
+    if (!trip) { tripFitRef.current = null; return }
+    const map = mapRef.current, BMapGL = window.BMapGL
+    if (!ready || !map || !BMapGL || guide) return
+    // Leaving immersion restores its saved camera; consume its selection without overriding that restoration.
+    if (guideViewRef.current) { tripFitRef.current = trip; return }
+    const request = tripCameraRequest(tripFitRef.current, trip)
+    if (!request) return
+    const bounds = tripViewBounds(trip, request.selected)
+    if (!bounds.length) return
+    return afterStableMapSize(() => ({ w: shellRef.current?.clientWidth ?? 0, h: shellRef.current?.clientHeight ?? 0 }), () => {
+      const el = shellRef.current
+      if (!el) return
+      const stage = el.closest('.stage'), box = el.getBoundingClientRect()
+      const drawer = stage?.querySelector('.trip-drawer:not([hidden])')?.getBoundingClientRect()
+      const toolbar = Array.from(stage?.querySelectorAll('.map-search, .map-tools') ?? []).map(node => node.getBoundingClientRect()).sort((a, b) => b.bottom - a.bottom)[0]
+      const margins = tripViewportMargins(box, drawer, toolbar)
+      const points = bounds.map(([lng, lat]) => new BMapGL.Point(lng, lat))
+      if (typeof map.getViewport === 'function') {
+        const viewport = map.getViewport(points, { margins })
+        const cap = typeof map.getMaxZoom === 'function' ? Number(map.getMaxZoom()) || 20 : 20
+        map.centerAndZoom(viewport.center, Math.min(cap, request.selected ? 19 : 18, viewport.zoom))
+      } else map.setViewport(points, { margins, enableAnimation: false })
+      tripFitRef.current = trip
+    })
+  }, [ready, trip, guide, shell.w, shell.h])
+
+  // 出行只是临时工作区：图层开关不变，关闭后恢复体检时的视角。
+  useEffect(() => {
+    const map = mapRef.current
+    if (!ready || !map) return
+    if (tripOpen) {
+      if (!tripViewRef.current) tripViewRef.current = { owner: isochrone, center: map.getCenter(), zoom: map.getZoom(), tilt: Number(map.getTilt?.()) || 0, heading: Number(map.getHeading?.()) || 0, earth: sceneEarth }
+      return
+    }
+    const previous = tripViewRef.current
+    if (!previous) return
+    if (previous.owner !== isochrone) { tripViewRef.current = null; return }
+    return afterStableMapSize(() => ({ w: shellRef.current?.clientWidth ?? 0, h: shellRef.current?.clientHeight ?? 0 }), () => {
+      setSceneEarth(previous.earth)
+      map.centerAndZoom(previous.center, previous.zoom)
+      map.setTilt?.(previous.tilt); map.setHeading?.(previous.heading)
+      lastCenterRef.current = previous.center; tripViewRef.current = null
+    })
+  }, [ready, tripOpen, isochrone, sceneEarth, setSceneEarth, shell.w, shell.h])
 
   // 进入时保存视野；退出时在抽屉、侧栏恢复尺寸后还原，不改变原查询结果。
   useEffect(() => {
@@ -1373,6 +1457,7 @@ export function MapView({
       const previous = guideViewRef.current
       if (!previous) return
       guideFocusRef.current = null
+      if (!tripOpen) { guideViewRef.current = null; return }
       if (previous.owner !== isochrone) { guideViewRef.current = null; return }
       const restore = () => {
         setSceneEarth(previous.earth)
@@ -1416,7 +1501,7 @@ export function MapView({
       }
       guideFocusRef.current = guide.focusKey
     })
-  }, [ready, guide, isochrone, sceneEarth, setSceneEarth, shell.w, shell.h])
+  }, [ready, guide, isochrone, sceneEarth, setSceneEarth, shell.w, shell.h, tripOpen])
 
   const showLegend = draft ? drawLegend : legendOpen
 
@@ -1427,17 +1512,22 @@ export function MapView({
       <MapOutlines
         mapRef={mapRef}
         ready={ready}
-        active={!vectorHeat}
+        active={!vectorHeat && (guideActive || !tripOpen)}
         outlines={guideActive ? guideOutlines : mapOutlines}
         opacity={guideActive ? 1 : dimmed ? DIM : 1}
       />
+      {!guide && trip?.itinerary && <>
+        <MapOutlines mapRef={mapRef} ready={ready} active outlines={itineraryOutlines} opacity={1} arrowsOnly={vectorHeat} />
+        <TripMapStops mapRef={mapRef} ready={ready} trip={trip} interactive={!pickEnabled} onSelect={onTripSelect} />
+        {!trip.editing && trip.items.length > 0 && <div className="trip-map-segments" role="group" aria-label="地图显示的行程路段"><button type="button" aria-pressed={!trip.selected} onClick={() => onTripSelect?.(null)}>全程</button>{trip.items.map((item, i) => <button type="button" key={item.entry_id} style={{ '--leg-color': tripSegmentColor(i) } as React.CSSProperties} aria-pressed={trip.selected === item.entry_id} onClick={() => onTripSelect?.(item.entry_id)}><span aria-hidden="true" />{i ? i : '起点'} → {i + 1}</button>)}</div>}
+      </>}
       {pickEnabled && !draft && !tripOpen && (
         <div className="map-mode floating live">
           <i />
           {pickHint ?? '点击地图将按新中心点重新计算（消耗配额）'}
         </div>
       )}
-      {!draft && !guideActive && (
+      {!draft && !guideActive && !tripOpen && (
         <MapViewBar
           layers={layers}
           onLayers={onLayers}
@@ -1459,7 +1549,7 @@ export function MapView({
         />
       )}
       {!draft && ready && <MapSceneBar scene={scene} immersive={guideActive} />}
-      {!guideActive && <button
+      {!guideActive && !tripOpen && <button
         type="button"
         className="legend-toggle floating"
         aria-expanded={showLegend}
@@ -1467,7 +1557,7 @@ export function MapView({
       >
         图例
       </button>}
-      {!guideActive && showLegend && (
+      {!guideActive && !tripOpen && showLegend && (
         <MapLegend
           isochrone={isochrone}
           layers={layers}

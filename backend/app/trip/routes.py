@@ -3,20 +3,22 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import asdict
 from typing import Any
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
+from ..baidu.client import request_observer
 from ..baidu.errors import BaiduApiError
 from ..markings import apply as marking_apply
 from ..markings.models import clean_text
 from ..markings.routes import get_service, markings_for_analysis
 from ..markings.service import MarkingError
 from ..markings.trust import RateLimited
-from ..poi.catalog import by_name
+from ..poi.catalog import CATEGORIES, by_name
 from .budget import BudgetExhausted, TripBudget
-from .candidates import TripError, point
+from .candidates import TripError, candidates, distance, place_id, point
 from .context import overlay
 from .feedback import FreshFeedbackStore
 from .guide import (
@@ -29,6 +31,7 @@ from .guide import (
     routing_feature,
 )
 from .service import TripService
+from .supplement import supplement
 
 
 class NearestIn(BaseModel):
@@ -47,6 +50,15 @@ class PlanIn(BaseModel):
     stops: list[str]
     selected_stops: list[dict[str, Any]] | None = None
     replace_stop: dict[str, Any] | None = None
+    retry_routes: bool = False
+    fixed_stops: list[dict[str, Any]] | None = Field(None, max_length=len(CATEGORIES))
+
+
+class OptionsIn(BaseModel):
+    feature: dict[str, Any]
+    origin: dict[str, Any]
+    categories: list[str] = Field(min_length=1, max_length=6)
+    poi_query: str | None = Field(None, min_length=2, max_length=60)
 
 
 class FeedbackPlace(BaseModel):
@@ -76,9 +88,9 @@ class FeedbackIn(BaseModel):
 class ReanchorIn(BaseModel):
     feature: dict[str, Any]
     origin: dict[str, Any]
-    stops: list[str] = Field(min_length=1, max_length=3)
-    selected_stops: list[dict[str, Any]] = Field(min_length=1, max_length=3)
-    places: list[dict[str, Any]] = Field(default_factory=list, max_length=3)
+    stops: list[str] = Field(min_length=1, max_length=len(CATEGORIES))
+    selected_stops: list[dict[str, Any]] = Field(min_length=1, max_length=len(CATEGORIES))
+    places: list[dict[str, Any]] = Field(default_factory=list, max_length=len(CATEGORIES))
 
 
 class NearbyIn(BaseModel):
@@ -115,7 +127,9 @@ def install(app: FastAPI, prepared, require_ak, handle_error) -> None:
         svc._limit("vote", viewer)
         return FreshFeedbackStore(svc.store.root).vote(req.place.place(), device, req.vote)
 
-    async def service(request: Request, req, guide_mode: str | None = None) -> TripService:
+    async def service(
+        request: Request, req, guide_mode: str | None = None, *, consume_request: bool = True
+    ) -> TripService:
         if req.feature.get("properties", {}).get("planning_preview"):
             raise TripError("planning_preview", "规划模拟结果不能作为正式出行输入。")
         if (
@@ -125,7 +139,7 @@ def install(app: FastAPI, prepared, require_ak, handle_error) -> None:
             raise TripError("invalid", "设施列表超过单次规划上限。")
         settings = request.app.state.baidu._s
         budget = TripBudget(settings.markings_dir / "trip-budget.sqlite3", settings)
-        if not budget.take_request():
+        if consume_request and not budget.take_request():
             raise HTTPException(
                 429,
                 detail={
@@ -162,9 +176,89 @@ def install(app: FastAPI, prepared, require_ak, handle_error) -> None:
             if guide_mode:
                 feature["properties"]["markings"]["guide_adopted_ids"] = adopted
         result = TripService(request.app.state.baidu, feature, origin, usage=usage)
-        if not feature["properties"].get("simulated"):
+        if consume_request and not feature["properties"].get("simulated"):
             require_ak()
         return result
+
+    @router.post("/options", summary="浏览可选设施及入口；按店名补查需显式提交查询")
+    async def options(req: OptionsIn, request: Request) -> dict:
+        try:
+            if len(set(req.categories)) != len(req.categories) or any(
+                by_name(c) is None for c in req.categories
+            ):
+                raise TripError("invalid", "设施类别无效或重复。")
+            query = req.poi_query.strip() if req.poi_query is not None else None
+            if query is not None and (len(query) < 2 or req.categories != ["生鲜采买"]):
+                raise TripError("invalid", "按店名补查需选择生鲜采买，并输入至少两个字。")
+            if query and req.feature.get("properties", {}).get("simulated"):
+                raise TripError("invalid", "模拟结果不能按店名补查真实设施。")
+            svc = await service(request, req, consume_request=bool(query))
+
+            # 普通浏览只同步已补查的本地召回索引，不产生百度请求。
+            def observe_lookup(endpoint, params):
+                if endpoint in (
+                    "/place/v2/suggestion",
+                    "/place/v2/detail",
+                    "/reverse_geocoding/v3/",
+                ):
+                    svc.budget.take_poi(svc.usage)
+                else:
+                    svc.budget.observe(svc.usage, endpoint, params)
+
+            token = request_observer.set(observe_lookup)
+            try:
+                warnings = await supplement(
+                    request.app.state.baidu,
+                    svc.feature,
+                    req.categories,
+                    query,
+                    skip_keywords=True,
+                )
+            finally:
+                request_observer.reset(token)
+            aliases = {
+                place_id(p): [a[:200] for a in p["aliases"] if isinstance(a, str)][:6]
+                if isinstance(p.get("aliases"), list)
+                else []
+                for p in svc.feature["properties"]["coverage"]["places"]
+            }
+            groups = []
+            for category in req.categories:
+                try:
+                    nodes = candidates(svc.feature, category, svc.closures)
+                except TripError as exc:
+                    if exc.code != "category_failed":
+                        raise
+                    groups.append({"category": category, "items": [], "error": str(exc)})
+                else:
+                    groups.append(
+                        {
+                            "category": category,
+                            "items": [
+                                {
+                                    **node.as_dict(),
+                                    "straight_m": round(distance(svc.origin, node)),
+                                    "aliases": aliases.get(node.place_id, []),
+                                }
+                                for node in sorted(
+                                    nodes, key=lambda n: (distance(svc.origin, n), n.id)
+                                )
+                            ],
+                        }
+                    )
+            result = {"groups": groups, "preview": svc.simulated, "warnings": warnings}
+            if query:
+                result["quota"] = {
+                    **asdict(svc.usage),
+                    "remaining": svc.budget.remaining(svc.usage),
+                }
+            return result
+        except TripError as exc:
+            raise HTTPException(400, detail={"code": exc.code, "message": str(exc)}) from exc
+        except BudgetExhausted as exc:
+            raise HTTPException(429, detail={"code": "trip_budget", "message": str(exc)}) from exc
+        except BaiduApiError as exc:
+            raise handle_error(exc, "trip") from exc
 
     @router.post("/reanchor", summary="保持所选设施、入口和顺序，从新起点重规划")
     async def reanchor(req: ReanchorIn, request: Request):
@@ -242,15 +336,21 @@ def install(app: FastAPI, prepared, require_ak, handle_error) -> None:
     async def plan(req: PlanIn, request: Request) -> dict:
         try:
             if (
-                not 1 <= len(req.stops) <= 3
+                not 1 <= len(req.stops) <= len(CATEGORIES)
                 or len(set(req.stops)) != len(req.stops)
                 or any(by_name(c) is None for c in req.stops)
             ):
-                raise TripError("invalid", "请选择 1～3 个不同的有效品类，按希望到访的顺序排列。")
+                raise TripError("invalid", "请选择 1～6 个不同的有效品类，按希望到访的顺序排列。")
             if req.replace_stop is not None and req.selected_stops is None:
                 raise TripError("invalid", "换一家必须提供当前已选站点。")
+            if req.retry_routes and (req.selected_stops is None or req.replace_stop is not None):
+                raise TripError("invalid", "补取路线必须固定当前站点，不能同时换站。")
+            if req.fixed_stops and (
+                req.selected_stops is not None or req.replace_stop is not None or req.retry_routes
+            ):
+                raise TripError("invalid", "设置行程的指定设施不能与更换或补取路线同时提交。")
             return await (await service(request, req)).plan(
-                req.stops, req.selected_stops, req.replace_stop
+                req.stops, req.selected_stops, req.replace_stop, req.retry_routes, req.fixed_stops
             )
         except TripError as exc:
             raise HTTPException(400, detail={"code": exc.code, "message": str(exc)}) from exc

@@ -6,6 +6,7 @@ import math
 
 from .candidates import distance, lower_bound
 from .planner import combinations_by_bound, initial_layers, solve
+from .status import plan_status
 
 
 async def nearest(service, category, nodes, limit, pending, include_pending, target_id):
@@ -119,7 +120,7 @@ async def path_items(service, path):
     return items
 
 
-async def plan(service, stops, layers, selected, replacement):
+async def plan(service, stops, layers, selected, replacement, retry_routes=False):
     best = math.inf
     path = []
     legs = []
@@ -203,13 +204,7 @@ async def plan(service, stops, layers, selected, replacement):
                 finished = True
         except RuntimeError as exc:
             service.warn(str(exc))
-    status = (
-        "clear"
-        if legs and all(i["closure_status"] == "clear" for i in legs)
-        else "blocked"
-        if any(i["closure_status"] == "blocked" for i in legs)
-        else "unverified"
-    )
+    status = plan_status(service.origin.as_dict(), stops, legs, service.basis)
     if not legs:
         service.warn("没有找到已核验的可行行程；可能受阻或预算不足，未生成直线替代路线。")
     proof = (
@@ -219,7 +214,9 @@ async def plan(service, stops, layers, selected, replacement):
         and not service.simulated
         and (not unknown_bounds or min(unknown_bounds) >= best)
     )
-    alternatives = await service.alternatives(layers, path) if status == "clear" else []
+    alternatives = (
+        await service.alternatives(layers, path) if status == "clear" and not retry_routes else []
+    )
     return {
         **service.summary(stops),
         "stops": stops,

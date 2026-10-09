@@ -12,7 +12,12 @@ FRESH_KEYWORDS = ("生鲜", "生鲜大卖场", "超市")
 
 
 async def supplement(
-    client, feature: dict, categories: list[str], poi_query: str | None = None
+    client,
+    feature: dict,
+    categories: list[str],
+    poi_query: str | None = None,
+    *,
+    skip_keywords: bool = False,
 ) -> list[str]:
     props = feature["properties"]
     if props.get("simulated") or "生鲜采买" not in categories:
@@ -55,7 +60,24 @@ async def supplement(
     if named:
         batches.append(named)
     for keyword in FRESH_KEYWORDS:
-        if keyword in existing:
+        if skip_keywords or keyword in existing:
+            # 出行曾补检索到的门店也应出现在选择列表；这里只读取已有分页缓存。
+            evidence = client.poi_metadata(keyword, *center, radius, 6)
+            if not evidence["pages"] or not (evidence["complete"] or evidence["pages"] == 6):
+                continue
+            records = []
+            for page in range(evidence["pages"]):
+                path = client._cache.key_for_point("poi", *center, keyword, radius, page)
+                cached = client._cache.read(path, client._ttl())
+                if cached is None:
+                    records = []
+                    break
+                records.extend(cached.get("results") or [])
+            batches.append(records)
+            if keyword not in existing:
+                if not metadata:
+                    metadata.append({"keyword": "旧快照检索", "complete": False})
+                metadata.append(evidence)
             continue
         records = await client.search_poi_all(keyword, *center, radius, max_pages=6)
         if records is None:
@@ -77,12 +99,25 @@ async def supplement(
                 for s in excluded
             ):
                 continue
-            if any(
-                p.get("category") == poi.category
-                and normalize_name(str(p.get("name") or "")) == poi.name
-                and haversine_m(poi.lat, poi.lng, p["lat"], p["lng"]) <= DEDUP_GRID_M
-                for p in places
-            ):
+            same = next(
+                (
+                    p
+                    for p in places
+                    if p.get("category") == poi.category
+                    and normalize_name(str(p.get("name") or "")) == poi.name
+                    and haversine_m(poi.lat, poi.lng, p["lat"], p["lng"]) <= DEDUP_GRID_M
+                ),
+                None,
+            )
+            if same is not None:
+                if poi.raw_name != same.get("name"):
+                    raw = same.get("aliases")
+                    aliases = (
+                        [a[:200] for a in raw if isinstance(a, str)]
+                        if isinstance(raw, list)
+                        else []
+                    )
+                    same["aliases"] = list(dict.fromkeys([*aliases, poi.raw_name[:200]]))[:6]
                 continue
             if len(places) >= 2000:
                 warnings.append("设施候选达到上限，补充检索未全部纳入。")
@@ -94,6 +129,7 @@ async def supplement(
                 "lng": round(poi.lng, 6),
                 "in_circle": point_in_polygon(poi.lat, poi.lng, polygon),
                 **fields(poi),
+                "aliases": [poi.raw_name[:200]] if poi.raw_name != poi.name else [],
             }
             p["id"] = place_id(p)
             places.append(p)

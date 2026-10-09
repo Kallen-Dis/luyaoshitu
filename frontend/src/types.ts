@@ -7,6 +7,16 @@ export interface TripConfig {
 }
 export interface TripOrigin { lat: number; lng: number; kind?: 'center' | 'map' | 'cell'; from_center_m?: number }
 export interface TripSelection { place_id: string; entry_id: string }
+export interface TripFixedStop extends TripSelection { index: number }
+export interface TripStopOption extends TripSelection, FreshEvidence {
+  name: string; category: string; lat: number; lng: number; gate: string | null
+  distance_basis: string; in_circle: boolean; straight_m: number
+  aliases?: string[]
+}
+export interface TripOptionsResult {
+  groups: { category: string; items: TripStopOption[]; error?: string }[]; preview: boolean
+  warnings?: string[]; quota?: TripResult['quota']
+}
 export interface TripRoute {
   distance_m: number; duration_s: number; path: [number, number][]
   steps: { instruction: string; distance_m: number; duration_s: number; path?: [number, number][] }[]
@@ -42,11 +52,13 @@ export interface TripNearestResult extends TripResult {
   category: string; items: TripItem[]; ranking_verified: boolean; range_sufficient: boolean | null; beyond_limit: boolean
 }
 export interface TripPlanResult extends TripResult {
+  routing_status: 'clear' | 'blocked' | 'unverified'
   stops: string[]; legs: TripItem[]; total_m: number; total_s: number
-  optimality: 'candidate' | 'snapshot_tolerance' | 'snapshot_measured' | 'manual'
+  optimality: 'candidate' | 'snapshot_tolerance' | 'snapshot_measured' | 'manual' | 'constrained'
+  fixed_stops?: TripFixedStop[]
   alternatives: { index: number; items: (TripSelection & { name: string; total_m: number })[] }[]
 }
-export interface TripMapData { origin: TripOrigin; items: TripItem[]; selected: string | null; hover: string | null; fitKey: number; itinerary: boolean; preview?: boolean }
+export interface TripMapData { origin: TripOrigin; items: TripItem[]; selected: string | null; hover: string | null; fitKey: number; selectionKey?: number; itinerary: boolean; preview?: boolean; editing?: boolean }
 
 export interface FreshFeedbackSummary {
   confirms: number; not_seen: number; my_feedback: -1 | 0 | 1
@@ -58,6 +70,7 @@ export interface TripGuideData {
   remaining: TripItem[]
   routingFeature: IsochroneFeature
   mode: 'preview' | 'walking'
+  context?: { kind: 'journey' | 'segment'; index: number; count: number; fromLabel: string }
 }
 
 export type TripReanchorResult = TripPlanResult & { routing_feature: IsochroneFeature }
@@ -266,6 +279,13 @@ export interface SimulationResult {
   /** 本次核验消耗的批量算路点对数。 */
   pairs_used: number
   route_checks?: number
+  /** 这份分析是否对所选品类做了网格判定；其余品类只比较设施覆盖和评分。 */
+  grid_evaluated?: boolean
+  in_circle?: boolean
+  inside_closure?: boolean
+  /** 检索失败或没有覆盖统计时为 null，不能把未知数量显示成 0。 */
+  facility_count_before?: number | null
+  facility_count_after?: number | null
   before: SimulateStats
   after: SimulateStats
   approximation: string

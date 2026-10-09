@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import type { IsochroneFeature, TripGuideData, TripItem, TripNearbyResult, TripResult } from '../../types'
-import { acceptReanchor, departureDistance, gpsToBaidu, locationQuality, observeGps, updateDeviation, guideUnavailableReason, type Deviation } from '../../lib/guide'
+import { acceptReanchor, departureDistance, gpsToBaidu, locationQuality, observeGps, updateDeviation, guideUnavailableReason, MAX_LOCATION_ACCURACY_M, type Deviation } from '../../lib/guide'
 import { tripGuideNearby, tripReanchor } from '../../api'
 import { tripMeters, tripMinutes } from '../../lib/trip'
+import { GuideNotice } from './GuideNotice'
 import './guide.css'
 
 interface Props {
@@ -28,6 +29,8 @@ export function TripGuide({ value, onChange, onClose }: Props) {
   const [manualDecision, setManualDecision] = useState(false)
   const [deviation, setDeviation] = useState<Deviation | null>(null)
   const [usage, setUsage] = useState<TripResult['quota'] | null>(null)
+  const [usageNoticeId, setUsageNoticeId] = useState(0)
+  const [noticeEpoch, setNoticeEpoch] = useState(0)
   const request = useRef<AbortController | null>(null)
   const requestSequence = useRef(0)
   useEffect(() => { latest.current = { value, onChange } })
@@ -60,13 +63,14 @@ export function TripGuide({ value, onChange, onClose }: Props) {
     }, 5000)
     return () => window.clearInterval(timer)
   }, [locating])
-  const focus = (kind: TripGuideData['focus']) => onChange({ ...value, focus: kind, focusKey: value.focusKey + 1 })
+  const focus = (kind: TripGuideData['focus']) => { setNoticeEpoch(epoch => epoch + 1); onChange({ ...value, focus: kind, focusKey: value.focusKey + 1 }) }
   const stopLocation = () => {
     cancelRequest()
     watch.current?.()
     watch.current = null
     setLocating(false)
     setPositionError(null)
+    setNoticeEpoch(epoch => epoch + 1)
     onChange({ ...value, location: null, focus: 'origin', focusKey: value.focusKey + 1 })
   }
   const startLocation = () => {
@@ -126,6 +130,7 @@ export function TripGuide({ value, onChange, onClose }: Props) {
       const result = await tripReanchor({ feature: feature ?? current.value.routingFeature, origin: { lat: fix.lat, lng: fix.lng, kind: 'map' }, stops: expected.map(leg => leg.category), selected_stops: expected.map(({ place_id, entry_id }) => ({ place_id, entry_id })), places: expected.flatMap(leg => leg.place ? [leg.place] : []) }, ctrl.signal)
       if (ctrl.signal.aborted || sequence !== requestSequence.current) return
       setUsage(result.quota)
+      setUsageNoticeId(sequence)
       const next = acceptReanchor(latest.current.value, result, expected)
       latest.current.onChange(next)
       setNearby(null); setDeviation(null); setDecisionDismissed(false); setManualDecision(false)
@@ -142,21 +147,28 @@ export function TripGuide({ value, onChange, onClose }: Props) {
     setBusy('nearby'); setRequestError(null); setUsage(null)
     try {
       const result = await tripGuideNearby({ feature: current.value.routingFeature, origin: { lat: fix.lat, lng: fix.lng, kind: 'map' }, category: current.value.item.category }, ctrl.signal)
-      if (!ctrl.signal.aborted && sequence === requestSequence.current) { setNearby(result); setUsage(result.quota) }
+      if (!ctrl.signal.aborted && sequence === requestSequence.current) { setNearby(result); setUsage(result.quota); setUsageNoticeId(sequence) }
     } catch (err) { if (!ctrl.signal.aborted && sequence === requestSequence.current) setRequestError(err instanceof Error ? err.message : '附近设施查询失败。') }
     finally { if (!ctrl.signal.aborted && sequence === requestSequence.current) setBusy(null) }
   }
   const nextStop = () => {
     if (busy || value.mode !== 'walking' || value.remaining.length < 2) return
     const remaining = value.remaining.slice(1)
-    onChange({ ...value, remaining, item: remaining[0], stepIndex: 0, focus: 'origin', focusKey: value.focusKey + 1 })
+    const context = value.context ? { ...value.context, index: value.context.index + 1, fromLabel: item.name } : undefined
+    onChange({ ...value, remaining, item: remaining[0], context, stepIndex: 0, focus: 'origin', focusKey: value.focusKey + 1 })
     setDeviation(null); setRequestError(null); setDecisionDismissed(false); setManualDecision(false)
   }
   const showDecision = !nearby && !decisionDismissed && location && (value.mode === 'preview' || offRoute || manualDecision)
+  const positionStatus = positionError ? `error:${positionError}` : offRoute ? 'off-route' : stale ? 'stale' : location ? quality ? 'weak' : 'located' : locating ? 'locating' : 'idle'
+  const positionSticky = Boolean(positionError || (location && quality) || offRoute || locating && !location)
+  const viewLabel = value.focus === 'route' ? '全路线' : value.focus === 'step' ? '所选步骤' : '路线起点'
+  const guideLabel = value.context?.kind === 'segment' ? `${value.mode === 'walking' ? '单段步行' : '分段预览'} · 第 ${value.context.index + 1} 段`
+    : value.mode === 'walking' ? value.context ? `步行中 · 第 ${value.context.index + 1} / ${value.context.count} 站` : '步行中 · 已按出发位置重规划'
+    : value.context ? '整个行程 · 从第 1 站开始预览' : '沉浸步行引导 · 路线预览'
   return <section className="trip-guide" role="dialog" aria-modal="false" aria-labelledby="guide-title">
     <header className="guide-head">
-      <div><small>{value.mode === 'walking' ? '步行中 · 已按出发位置重规划' : '沉浸步行引导 · 路线预览'}{value.remaining.length > 1 ? ` · 含后续 ${value.remaining.length - 1} 站` : ''}</small><h2 id="guide-title" ref={heading} tabIndex={-1} title={item.name}>{item.name}</h2></div>
-      <button type="button" className="guide-exit" onClick={onClose}>退出引导 <span aria-hidden="true">×</span></button>
+      <div><small>{guideLabel}{value.remaining.length > 1 ? ` · 含后续 ${value.remaining.length - 1} 站` : ''}</small><h2 id="guide-title" ref={heading} tabIndex={-1} title={item.name}>{item.name}</h2></div>
+      <button type="button" className="guide-exit" onClick={onClose}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M8 4H4v12h4M10 6l4 4-4 4M7 10h9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg><span>退出引导</span></button>
     </header>
     <div className="guide-map-actions" role="group" aria-label="引导地图视野">
       <button type="button" aria-pressed={value.focus === 'origin'} onClick={() => focus('origin')}>路线起点</button>
@@ -166,7 +178,7 @@ export function TripGuide({ value, onChange, onClose }: Props) {
       {location && !showDecision && !nearby && <button type="button" disabled={Boolean(busy)} onClick={() => { setDecisionDismissed(false); setManualDecision(true) }}>调整出发计划</button>}
     </div>
     <div className="guide-side">
-    <div className="guide-position" role="status">{positionError ?? (location ? stale ? '上次定位 · 超过 30 秒未更新，请核对位置' : `当前位置 · 定位精度约 ${Math.round(location.accuracy)} 米${location.accuracy > 80 ? '，定位较粗' : ''}` : locating ? '正在获取当前位置…' : '未开启定位 · 地图显示路线起点')}{offRoute && <strong>持续偏离当前路线，请核对位置或重新规划。</strong>}</div>
+    <GuideNotice key={`position:${noticeEpoch}:${positionStatus}`} className="guide-position" sticky={positionSticky}>{positionError ?? (location ? stale ? '上次定位 · 超过 30 秒未更新，请核对位置' : `当前位置 · 定位精度约 ${Math.round(location.accuracy)} 米${location.accuracy > MAX_LOCATION_ACCURACY_M ? '，需重新定位' : location.accuracy >= 80 ? '，可用于重新规划，请核对现场位置' : ''}` : locating ? '正在获取当前位置…' : `未开启定位 · 地图显示${viewLabel}`)}{offRoute && <strong>持续偏离当前路线，请核对位置或重新规划。</strong>}</GuideNotice>
     {showDecision && <div className="guide-departure">
       <b>{offRoute ? '调整当前路线' : distance?.kind === 'near' ? '你已在起点附近' : distance?.kind === 'far' ? '当前位置与起点不同' : '位置是否接近起点尚不确定'}</b>
       <p>{value.mode === 'preview' && distance ? `距计划起点约 ${Math.round(distance.meters)} 米。` : ''}{quality ?? '保留目的地和后续站序，按实际道路重新计算。'}</p>
@@ -177,7 +189,7 @@ export function TripGuide({ value, onChange, onClose }: Props) {
     </div>}
     {busy && <div className="guide-request" role="status">{busy === 'reanchor' ? '正在核验新行程，当前仍展示原路线…' : '正在查询当前位置附近的设施…'}<button type="button" onClick={cancelRequest}>取消</button></div>}
     {requestError && <p className="guide-request-error" role="alert">{requestError} 原计划已保留。</p>}
-    {usage && <p className="guide-usage">本次返回消耗：{usage.matrix_pairs} 个点对 · {usage.route_requests} 次路线 · {usage.poi_requests ?? 0} 次设施检索</p>}
+    {usage && <GuideNotice key={`usage:${usageNoticeId}`} className="guide-usage">本次请求：{usage.matrix_pairs} 个点对 · {usage.route_requests} 次路线 · {usage.poi_requests ?? 0} 次设施检索</GuideNotice>}
     </div>
     {nearby ? <div className="guide-candidates">
       <header><div><b>当前位置附近的{item.category}</b><small>以本次查询起点测距 · {nearby.items.length} 家</small></div><button type="button" disabled={Boolean(busy)} onClick={() => setNearby(null)}>返回原计划</button></header>
@@ -191,6 +203,7 @@ export function TripGuide({ value, onChange, onClose }: Props) {
       <div className="guide-step-nav"><button type="button" disabled={Boolean(busy) || stepIndex === 0} onClick={() => move(-1)}>上一步</button><button type="button" onClick={() => focus('step')}>查看这一步</button><button type="button" disabled={Boolean(busy) || stepIndex >= steps.length - 1} onClick={() => move(1)}>下一步</button></div>
       <footer><b>{tripMeters(item.walk_m)} <span>· 约 {tripMinutes(item.duration_s)}</span></b><span>所选路段 · 手动查看步骤</span></footer>
       {item.route?.connectors.length ? <p className="guide-note">灰色虚线为端点连接，尚未核验通行。</p> : null}
+      {value.context?.kind === 'segment' && <p className="guide-note">本段原起点：{value.context.fromLabel}。这是单段查看，前面的站点不会标记为已完成。</p>}
       {locating && <p className="guide-note">定位和地图坐标换算可能有偏差，请结合实际道路查看。</p>}
       {value.remaining.length > 1 && <p className="guide-note">后续：{value.remaining.slice(1).map(leg => leg.name).join(' → ')}</p>}
       {value.mode === 'walking' && value.remaining.length > 1 && <button type="button" className="guide-next-stop" disabled={Boolean(busy)} onClick={nextStop}>已到达本站，继续下一站</button>}

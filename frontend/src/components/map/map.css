@@ -10,6 +10,32 @@
   pointer-events: none;
 }
 
+.trip-map-stops { position:absolute; inset:0; z-index:8; pointer-events:none; overflow:hidden; }
+.trip-map-stops button { position:absolute; visibility:hidden; transform:translate(-14px,-14px); display:flex; align-items:center; gap:7px; height:30px; padding:0 8px 0 0; border:1px solid #a5bfac; border-radius:7px; background:#fff; color:#1c3a28; box-shadow:0 2px 6px rgb(28 58 40 / 16%); pointer-events:auto; font:12px var(--font-sans); cursor:pointer; }
+.trip-map-stops button > b { display:grid; place-items:center; flex:none; width:28px; height:28px; border-radius:6px 0 0 6px; background:var(--leg-color,#1f7a42); color:white; font:700 13px var(--font-figure); }
+.trip-map-stops button > span { max-width:126px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.trip-map-stops button > small { color:#6e8475; font-size:10px; }
+.trip-map-stops button.flipped { flex-direction:row-reverse; padding:0 0 0 8px; transform:translate(calc(-100% + 14px),-14px); }
+.trip-map-stops button.flipped > b { border-radius:0 6px 6px 0; }
+.trip-map-stops button.trip-map-origin { padding:0; border:1px solid white; }
+.trip-map-origin > b { border-radius:6px!important; background:#1c3a28!important; }
+.trip-map-stops button.selected { z-index:2; outline:2px solid var(--leg-color,#1f7a42); box-shadow:0 3px 10px rgb(28 58 40 / 22%); }
+.trip-map-stops button.uncertain { border-style:dashed; }
+.trip-map-stops button.uncertain > b { background:#d89520; }
+.trip-map-stops button.uncertain > small { color:#936317; }
+.trip-map-stops button.blocked > b { background:#b4493d; }
+.trip-map-stops button.blocked > small { color:#a3483a; }
+.trip-map-stops button:focus-visible { outline:3px solid #1677d2; outline-offset:2px; }
+.trip-map-stops.picking button { pointer-events:none; }
+.trip-map-segments { position:absolute; z-index:10; bottom:26px; left:20px; display:flex; gap:3px; padding:4px; border:1px solid #dce6df; border-radius:9px; background:#fff; box-shadow:0 3px 14px rgb(28 58 40 / 12%); max-width:calc(100% - var(--trip-drawer-width,416px) - 60px); overflow:auto; }
+.trip-map-segments button { padding:8px 13px; border:0; border-radius:6px; background:#fff; color:#304c3c; font:600 12px var(--font-sans); white-space:nowrap; letter-spacing:normal; }
+.trip-map-segments button > span { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; background:var(--leg-color,#1f7a42); }
+.trip-map-segments button[aria-pressed=true] { background:var(--leg-color,#1f7a42); color:#fff; }
+.trip-map-segments button[aria-pressed=true] > span { background:#fff; }
+.trip-map-segments button:focus-visible { outline:2px solid #087b49; outline-offset:2px; }
+@media (max-width:600px) { .trip-map-segments { bottom:calc(min(52%, 480px) + 20px); left:10px; max-width:calc(100% - 24px); } .trip-map-segments button { padding:7px 10px; font-size:11px; } }
+@media (max-width:600px) { .trip-map-stops button > span { max-width:92px; } }
+
 .map-viewbar {
   position: absolute;
   top: 66px;

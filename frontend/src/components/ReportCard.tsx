@@ -2,6 +2,7 @@ import { freshEligible } from '../lib/fresh'
 import { gridCensus } from '../lib/grid'
 import { CrosscheckPanel } from './CrosscheckPanel'
 import { ScoreRadar } from './ScoreRadar'
+import { PLACE_MARK } from './map/context'
 import type {
   Coverage,
   CrosscheckResult,
@@ -156,7 +157,7 @@ function FacilitySheet({
 }) {
   return (
     <>
-      <p className="exam-lead">
+      <details className="exam-sheet-basis"><summary>读数说明：估算时间与网格判定</summary><p className="exam-lead">
         每一类都写出最近的一处，以及按
         {detour ? `本圈实测平均绕行 ${detour.toFixed(2)} 倍` : '直线距离'}
         {delayPerKmS ? `、每公里过街等待约 ${Math.round(delayPerKmS)} 秒` : ''}
@@ -166,17 +167,16 @@ function FacilitySheet({
             ? `菜场、药店、小学的方格与地图是同一套：周围 ${extentKm} 公里共 ${census.total} 格，按网格判定，未知格不计入缺失；其中 ${census.blind} 格步行 1 公里内缺至少一类。`
             : `菜场、药店、小学的方格与地图是同一套：15 分钟圈内共 ${census.total} 格，按网格判定，未知格不计入缺失；其中 ${census.blind} 格步行 1 公里内缺至少一类。`
           : ''}
-      </p>
-      <ul className="exam-list">
+      </p></details>
+      <ul className="exam-list facility-sheet">
         {reads.map((item) => (
           <li key={item.category}>
             <div className="exam-cat">
-              <b>{item.category}</b>
-              {onTrip && <button type="button" className="trip-report-link" onClick={() => onTrip(item.category)}>怎么走</button>}
+              <span className="exam-facility-icon" style={{ background: PLACE_MARK[item.category]?.color }}>{PLACE_MARK[item.category]?.glyph}</span><b>{item.category}</b>
               {item.nearest ? (
                 <span className={item.nearest.inside ? 'exam-min in' : 'exam-min out'}>
                   {item.nearest.minutes}
-                  <em>分钟</em>
+                  <em>分钟 · 估算</em>
                 </span>
               ) : (
                 <span className="exam-min out">
@@ -184,14 +184,15 @@ function FacilitySheet({
                 </span>
               )}
             </div>
-            <p>
-              {item.nearest
-                ? `最近「${item.nearest.name}」，直线 ${Math.round(item.nearest.straightM)} 米，估算步行 ${item.nearest.minutes} 分钟，${item.nearest.inside ? `已在 15 分钟圈内（圈内 ${item.inCircle} 处）` : '在 15 分钟圈外'}。`
-                : '检索范围内没有这一类。'}
-              {item.cellsMissing != null && census
-                ? item.cellsUnknown > 0 ? ` 已判定 ${census.total - item.cellsUnknown} 格，其中 ${item.cellsMissing} 格步行 1 公里内到不了；另 ${item.cellsUnknown} 格待确认或测距未完成。` : ` 地图上 ${item.cellsMissing} / ${census.total} 格，步行 1 公里内到不了它。`
-                : ''}
-            </p>
+            <strong className="exam-facility-name">{item.nearest?.name ?? '检索范围内没有这一类'}</strong>
+            {item.nearest && <div className="exam-facility-meta"><span>直线 {Math.round(item.nearest.straightM)} 米</span><span>{item.nearest.inside ? '生活圈内' : '生活圈外'}</span><span>圈内 {item.inCircle} 处</span></div>}
+            {item.cellsMissing != null && census && <div className="exam-cell-status">
+              <p>{census.total > item.cellsUnknown ? `步行 1 公里内缺失 ${item.cellsMissing} / ${census.total - item.cellsUnknown} 个已判定网格` : '本类网格尚未完成判定'}</p>
+              {item.cellsUnknown > 0 && <p className="exam-cell-pending">另 {item.cellsUnknown} 格待确认或测距未完成</p>}
+            </div>}
+            {onTrip && <div className="exam-facility-action"><button type="button" className="trip-report-link" onClick={() => onTrip(item.category)} aria-label={`${item.category}：查看设施步行路线`}>
+              <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><circle cx="4" cy="15" r="2" /><circle cx="16" cy="5" r="2" /><path d="M4 13V7a3 3 0 0 1 3-3h2a3 3 0 0 1 0 6h4a3 3 0 0 0 3-3" /></svg><span>怎么走</span><span aria-hidden="true">→</span>
+            </button></div>}
           </li>
         ))}
       </ul>
@@ -439,16 +440,20 @@ export function ReportCard({
                 )}
               </div>
               <ul className="sim-metrics">
-                <li>
+                {simulation.grid_evaluated !== false && <li>
                   <span>改善该品类网格</span>
                   <b>{simulation.covered_count} 个</b>
-                </li>
-                <li>
+                </li>}
+                {simulation.grid_evaluated !== false && <li>
                   <span>盲区网格总数</span>
                   <b>
                     {simulation.before.blind_count ?? '—'} → {simulation.after.blind_count ?? '—'}
                   </b>
-                </li>
+                </li>}
+                {simulation.facility_count_before != null && simulation.facility_count_after != null && <li>
+                  <span>圈内该类设施</span>
+                  <b>{simulation.facility_count_before} → {simulation.facility_count_after} 处</b>
+                </li>}
                 <li>
                   <span>体检总分</span>
                   <b>
@@ -473,7 +478,7 @@ export function ReportCard({
                 )}
               </ul>
               <p className="hint">
-                {simulation.basis === 'network'
+                {simulation.grid_evaluated === false || simulation.candidate_count === 0 ? '' : simulation.basis === 'network'
                   ? `候选 ${simulation.candidate_count} 格，实测步行够得着 ${simulation.covered_count} 格。`
                   : '直线估算，是覆盖的上限。'}
                 {simulation.approximation}
