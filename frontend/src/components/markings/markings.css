@@ -1068,21 +1068,14 @@
 
 /* ---------- 侧栏卡片 ---------- */
 
-.mk-panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
 /* 标题不让位：按钮再宽也不能把「共享标注」挤成两行 */
-.mk-panel-head .card-title {
+.mk-panel .report-section-head > .card-title {
   flex: none;
   margin: 0;
   white-space: nowrap;
 }
 
-.mk-panel-head .mk-btn {
+.mk-panel .report-section-actions > .mk-btn {
   --mk-accent: var(--accent-dark);
   /* 全局的 button.primary 是 width: 100%，在标题行里会把按钮撑满 */
   flex: none;

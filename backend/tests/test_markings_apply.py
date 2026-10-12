@@ -3,6 +3,8 @@
 import asyncio
 import math
 
+import pytest
+
 from app.isochrone.geometry import haversine_m, offset_point
 from app.isochrone.refine import Closure
 from app.main import AnalysisState, IsochroneRequest, _analysis_steps
@@ -196,11 +198,11 @@ class FakePipelineClient:
     async def walking_matrix(self, origin, destinations):
         return await self.route_matrix("walk", origin, destinations)
 
-    async def walking_matrix_grid(self, origins, destinations):
+    async def walking_matrix_grid(self, origins, destinations, dest_grid_m=None, **_):
         self.pairs += len(origins) * len(destinations)
         return [[self._walk(o, d) for d in destinations] for o in origins]
 
-    async def walking_route(self, origin, destination, fresh=False):
+    async def walking_route(self, origin, destination, fresh=False, **_):
         mid = ((origin[0] + destination[0]) / 2, (origin[1] + destination[1]) / 2)
         total = haversine_m(*origin, *destination) * 1.25
         return {
@@ -322,11 +324,16 @@ def test_pipeline_with_an_extra_pharmacy_reports_both_scores(monkeypatch):
     assert all(
         "医药" not in b_cells[(round(c["lat"], 5), round(c["lng"], 5))]["missing"] for c in changed
     )
-    restored = len(
-        {(round(c["lat"], 5), round(c["lng"], 5)) for c in changed}
-        | {k for k, c in b_cells.items() if c["missing"]}
-    )
-    assert restored == before
+    # 前端的还原方式：B 的网格里换回变了的 A 格，再按面积数（细分过的格只数圈内子格）
+    a_cells = {**b_cells, **{(round(c["lat"], 5), round(c["lng"], 5)): c for c in changed}}
+
+    def units(c):
+        if c.get("quarters"):
+            return 0.25 * sum(1 for q in c["quarters"] if q.get("in_circle", True) and q["missing"])
+        return 1.0 if c["missing"] else 0.0
+
+    restored = sum(units(c) for c in a_cells.values())
+    assert restored == pytest.approx(before)
     assert base["places"] is not None
     assert not any(p.get("source") == "user" for p in base["places"])
     assert base["regions"] is not None and base["ring"] is None and base["inner_rings"] is None

@@ -83,6 +83,11 @@ class Settings:
     admin_token: str = ""
     marking_salt: str = ""
 
+    # 网格交叉校核（isochrone/gridcheck.py）每次分析最多新增的批量算路点对与步行路线。
+    # 命中缓存的不计；预算用完就停，没核验到的写明「待核实」
+    gridcheck_max_pairs: int = 400
+    gridcheck_max_routes: int = 40
+
     trip_day_pairs: int = 500
     trip_hour_pairs: int = 120
     trip_request_pairs: int = 120
@@ -135,6 +140,8 @@ def get_settings() -> Settings:
         else PROJECT_ROOT / "data" / "user",
         admin_token=os.environ.get("ADMIN_TOKEN", ""),
         marking_salt=os.environ.get("MARKING_SALT", ""),
+        gridcheck_max_pairs=max(0, int(os.environ.get("GRIDCHECK_MAX_PAIRS", "400"))),
+        gridcheck_max_routes=max(0, int(os.environ.get("GRIDCHECK_MAX_ROUTES", "40"))),
         trip_day_pairs=max(0, int(os.environ.get("TRIP_DAY_PAIRS", "500"))),
         trip_hour_pairs=max(0, int(os.environ.get("TRIP_HOUR_PAIRS", "120"))),
         trip_request_pairs=max(0, int(os.environ.get("TRIP_REQUEST_PAIRS", "120"))),

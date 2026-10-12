@@ -7,6 +7,7 @@ from app.config import Settings
 from app.poi.catalog import by_name
 from app.poi.collect import CategoryResult, CleanStats, CoverageResult, Poi
 from app.report.blindspot import (
+    REACH_GRID_M,
     BlindspotConfig,
     CellResult,
     _judge_category,
@@ -60,7 +61,10 @@ class FakeClient:
         entry = None if self.reach_s is None else {"distance_m": 400.0, "duration_s": self.reach_s}
         return [entry for _ in destinations]
 
-    async def walking_matrix_grid(self, origins, destinations):
+    async def walking_matrix_grid(self, origins, destinations, dest_grid_m=None, **_):
+        if dest_grid_m == REACH_GRID_M and len(origins) == 1 and tuple(origins[0]) == CENTER:
+            # 中心 → 格心的测时（热力），不计入盲区判定的请求与点对
+            return [await self.walking_matrix(origins[0], destinations)]
         self.requests += 1
         self.pairs += len(origins) * len(destinations)
         rows = []

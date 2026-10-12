@@ -1,4 +1,5 @@
 import type { IsochroneFeature } from '../types'
+import { gridCensus } from './grid'
 
 /**
  * 「纯算法 / 含标注」两种看法。
@@ -40,10 +41,12 @@ export function algorithmView(feature: IsochroneFeature): IsochroneFeature {
     ? (() => {
         const changed = new Map(base.cells_changed!.map((c) => [cellKey(c.lat, c.lng), c]))
         const cells = p.blindspots.cells.map((c) => changed.get(cellKey(c.lat, c.lng)) ?? c)
+        // 按面积计：50 米细分过的格按子格各 1/4，与后端 blind_count 同一口径
+        const blind = gridCensus({ ...p.blindspots, cells })?.blind ?? 0
         return {
           ...p.blindspots,
           cells,
-          blind_count: cells.filter((c) => c.missing.length > 0).length,
+          blind_count: Math.round(blind * 100) / 100,
         }
       })()
     : p.blindspots

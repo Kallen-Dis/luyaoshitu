@@ -389,6 +389,44 @@ def test_matrix_grid_requests_only_uncached_origins(tmp_path, monkeypatch):
     assert all(row[0] is not None for row in table)
 
 
+def test_fine_origin_key_keeps_nearby_origins_apart(tmp_path, monkeypatch):
+    """50 米子格离父格心只有二三十米：按 50 米量化会拿到父格的结果，起点细键要分开。"""
+    client = _client(tmp_path)
+    calls: list[int] = []
+    monkeypatch.setattr(client, "_request", _echo_matrix(calls))
+    dest = [(31.30, 121.50)]
+    q = 50 / 111_320  # 50 米缓存格
+    parent = (round(31.24 / q) * q, round(121.41 / q) * q)  # 落在缓存格正中
+    child = (parent[0] + 20 / 111_320, parent[1])  # 正北 20 米，仍在同一个缓存格
+
+    asyncio.run(client.walking_matrix_grid([parent], dest))
+    asyncio.run(client.walking_matrix_grid([child], dest))
+    coarse_hits = list(calls)
+    asyncio.run(client.walking_matrix_grid([child], dest, origin_grid_m=10.0))
+
+    assert coarse_hits == [1]  # 粗键下子格直接拿到父格的缓存
+    assert calls == [1, 1]  # 细键另测一次
+    assert client.missing_pairs("walk", [child], dest, origin_grid_m=10.0) == 0
+    assert client.missing_pairs("walk", [child], dest, origin_grid_m=10.0, dest_grid_m=10.0) == 1
+
+
+def test_fine_keys_leave_existing_cache_keys_unchanged(tmp_path):
+    """细键只在显式给出时加进键里：已有的 50 米缓存与入口终点的 10 米缓存照常命中。"""
+    from app.travel import get_mode
+
+    client = _client(tmp_path)
+    walk = get_mode("walk")
+    o, d = (31.24, 121.41), (31.25, 121.42)
+    plain = client._cache.key_for_pair(walk.cache_ns, *o, *d)
+    assert client._pair_key(walk, o, d, None) == plain
+    step = 10.0 / 111_320.0
+    entry = client._cache.key_for_pair(
+        walk.cache_ns, *o, *d, "d", "10", round(d[0] / step), round(d[1] / step)
+    )
+    assert client._pair_key(walk, o, d, 10.0) == entry
+    assert client._pair_key(walk, o, d, 10.0, 10.0) not in (plain, entry)
+
+
 def test_matrix_grid_groups_origins_by_their_missing_destinations(tmp_path, monkeypatch):
     client = _client(tmp_path)
     calls: list[int] = []

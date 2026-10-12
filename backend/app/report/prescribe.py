@@ -25,6 +25,7 @@ from typing import Any
 from ..isochrone.geometry import bearing_deg, haversine_m
 from ..poi.catalog import KEY_CATEGORIES
 from .regions import _compass, classify_missing, region_labels
+from .subgrid import base_spacing, fmt, refined_view, total, weight
 
 # 规划建议只对命题点名的三类设施开方，避免把养老、公园也写成「必须新建」。
 KEY_NAMES = tuple(c.name for c in KEY_CATEGORIES)
@@ -90,6 +91,12 @@ def _cluster(cells: list[dict[str, Any]], spacing_m: float) -> list[list[dict[st
     for i, cell in enumerate(cells):
         groups.setdefault(find(i), []).append(cell)
     return sorted(groups.values(), key=len, reverse=True)
+
+
+def _count(v: float) -> float | int:
+    """覆盖格数：整数照旧是整数，50 米细分出的 1/4 格保留到 0.25。"""
+    v = round(v * 4) / 4
+    return int(v) if v == int(v) else v
 
 
 def _centroid(cells: list[dict[str, Any]]) -> tuple[float, float]:
@@ -158,18 +165,21 @@ def _connect_item(
         key = (str(p.get("name")), float(p["lat"]), float(p["lng"]))
         groups.setdefault(key, []).append(i)
         if labels.get(i):
-            per_region[labels[i]] = per_region.get(labels[i], 0) + 1
+            per_region[labels[i]] = per_region.get(labels[i], 0) + weight(cells[i])
     if not groups:
         return None
-    (pname, plat, plng), members = max(groups.items(), key=lambda kv: len(kv[1]))
+    (pname, plat, plng), members = max(
+        groups.items(), key=lambda kv: (total(cells, kv[1]), -min(kv[1]))
+    )
     regional = max((per_region.get(labels[i], 0) for i in members if labels.get(i)), default=0)
-    if len(members) < min_members and regional < min_members:
+    size = total(cells, members)
+    if size < min_members and regional < min_members:
         return None
 
     closest = min(members, key=lambda i: causes[i][name]["straight_m"])
     straight = causes[closest][name]["straight_m"]
     walk = (cells[closest].get("nearest_m") or {}).get(name)
-    gain = sum(1 for i in members if causes[i][name]["straight_m"] * detour <= limit)
+    gain = total(cells, [i for i in members if causes[i][name]["straight_m"] * detour <= limit])
     if gain == 0:
         # 这些格子离那一家直线都在 1000/绕行 米开外：就算打通，按本圈的绕行也进不了 1 公里，
         # 开一条「打通」处方没有意义
@@ -186,16 +196,16 @@ def _connect_item(
     return _item(
         "connect",
         f"打通往{direction}的步行连接，让{where}走得到「{pname}」",
-        f"{where}有 {len(members)} 格缺{name}、直线 1 公里内最近的就是「{pname}」"
+        f"{where}有 {fmt(size)} 格缺{name}、直线 1 公里内最近的就是「{pname}」"
         f"（最近一格直线 {round(straight)} 米{walk_text}），缺口在路网而不在数量。"
-        f"按本圈典型绕行 {detour:.2f} 倍估算，打通后约 {gain} 格能进入步行 1 公里。"
+        f"按本圈典型绕行 {detour:.2f} 倍估算，打通后约 {fmt(gain)} 格能进入步行 1 公里。"
         "优先核查两者之间的铁路、河道、围墙与缺失的过街设施。",
         category=name,
         lat=mid_lat,
         lng=mid_lng,
-        covers=gain,
+        covers=_count(gain),
         basis="estimate",
-        cells=len(members),
+        cells=_count(size),
         region=ids[0] if ids else None,
         direction=direction,
         target={"name": pname, "lat": round(plat, 6), "lng": round(plng, 6)},
@@ -224,10 +234,10 @@ def rank_sites(
         if covered:
             ranked.append((j, covered))
 
-    def key(item: tuple[int, set[int]]) -> tuple[int, int, int]:
+    def key(item: tuple[int, set[int]]) -> tuple[float, float, int]:
         j, covered = item
-        inside = sum(1 for i in covered if cells[i].get("in_circle", True))
-        return (-len(covered), -inside, j)
+        inside = total(cells, [i for i in covered if cells[i].get("in_circle", True)])
+        return (-total(cells, covered), -inside, j)
 
     ranked.sort(key=key)
     return ranked
@@ -251,10 +261,10 @@ def greedy_sites(
     for _ in range(max_sites):
         best = max(
             ((j, covered & remaining) for j, covered in ranked),
-            key=lambda x: (len(x[1]), -x[0]),
+            key=lambda x: (total(cells, x[1]), -x[0]),
             default=None,
         )
-        if best is None or len(best[1]) < min_gain:
+        if best is None or total(cells, best[1]) < min_gain:
             break
         picks.append(best)
         remaining -= best[1]
@@ -277,21 +287,23 @@ def _site_items(
     for k, (j, covered) in enumerate(sites, start=1):
         ids = sorted({labels[i] for i in covered if labels.get(i)})
         where = _where(ids, "缺口方格")
-        inside = sum(1 for i in covered if cells[i].get("in_circle", True))
+        inside = total(cells, [i for i in covered if cells[i].get("in_circle", True)])
+        size = total(cells, covered)
         # 现版网格只铺在圈内，「其中圈内几格」就是全部，不再重复写
-        within = f"（其中圈内 {inside} 格）" if inside < len(covered) else ""
+        within = f"（其中圈内 {fmt(inside)} 格）" if inside < size else ""
         out.append(
             _item(
                 "site",
                 f"在{where}补设「{name}」" + (f"（第 {k} 处）" if k > 1 else ""),
-                f"网格里有 {len(demand)} 格直线 1 公里内都没有{name}，属于供给缺口，修路也到不了。"
+                f"网格里有 {fmt(total(cells, demand))} 格直线 1 公里内都没有{name}，"
+                "属于供给缺口，修路也到不了。"
                 f"按最大覆盖贪心选址：按本圈典型绕行 {detour:.2f} 倍折算，此处步行 1 公里"
-                f"约能覆盖 {len(covered)} 个缺口格{within}。"
+                f"约能覆盖 {fmt(size)} 个缺口格{within}。"
                 "估算未经路网核验，点「核验选址」用真实路网复核并比较备选点位。",
                 category=name,
                 lat=float(cells[j]["lat"]),
                 lng=float(cells[j]["lng"]),
-                covers=len(covered),
+                covers=_count(size),
                 basis="estimate",
                 region=ids[0] if ids else None,
                 rank=k,
@@ -306,9 +318,11 @@ def _grid_prescriptions(
     blindspots: dict[str, Any],
     failed: set[str],
 ) -> list[dict[str, Any]]:
+    blindspots = refined_view(blindspots) or blindspots
     cells = list(blindspots.get("cells") or [])
     limit = float(blindspots.get("walk_limit_m") or 1000.0)
-    spacing = float(blindspots.get("grid_spacing_m") or THRESHOLD_SPACING_M)
+    # 门槛按面积：细分后的子格各占 1/4 格，计数按 100 米格折算，所以门槛也按 100 米格算
+    spacing = base_spacing(blindspots, THRESHOLD_SPACING_M)
     _, causes = classify_missing(cells, coverage, limit)
     labels = region_labels(blindspots)
     detour = typical_detour(properties)
@@ -356,10 +370,10 @@ def _legacy_prescriptions(
             missing_cells = [c for c in cells if name in (c.get("missing") or [])]
             clusters = _cluster(missing_cells, spacing)
             lat = lng = None
-            covers = len(missing_cells)
+            covers = _count(total(missing_cells))
             if clusters:
                 lat, lng = _centroid(clusters[0])
-                covers = len(clusters[0])
+                covers = _count(total(clusters[0]))
             if near > 0:
                 out.append(
                     _item(
@@ -396,16 +410,17 @@ def _legacy_prescriptions(
         if not clusters:
             continue
         lat, lng = _centroid(clusters[0])
+        size = total(clusters[0])
         out.append(
             _item(
                 "densify",
-                f"在「{name}」最大盲区加密一处，覆盖约 {len(clusters[0])} 个走不到的居民点",
+                f"在「{name}」最大盲区加密一处，覆盖约 {fmt(size)} 格走不到的居民点",
                 f"{ratio:.0%} 的已判定网格步行 1 公里内到不了该类设施，"
                 "但圈内并非完全没有——缺的是被屏障切开的局部，适合小点位补点而不是撤并。",
                 category=name,
                 lat=lat,
                 lng=lng,
-                covers=len(clusters[0]),
+                covers=_count(size),
             )
         )
     return out
@@ -422,6 +437,7 @@ def prescribe(
     out: list[dict[str, Any]] = []
     failed_set = set(failed)
     compactness = float(properties.get("compactness") or 1.0)
+    blindspots = refined_view(blindspots)
 
     if compactness < 0.55:
         out.append(
@@ -445,9 +461,9 @@ def prescribe(
 
     # 全部正常时也给一条可执行的维持建议，避免报告在「优/良」时变成空白
     if not out:
-        blind = sum(1 for c in (blindspots or {}).get("cells") or [] if c.get("missing"))
+        blind = total([c for c in (blindspots or {}).get("cells") or [] if c.get("missing")])
         reason = (
-            f"还有 {blind} 格盲区，但都是零散的小块，没有达到开方的面积门槛。"
+            f"还有 {fmt(blind)} 格盲区，但都是零散的小块，没有达到开方的面积门槛。"
             "可以在地图上逐格核实，属实的用共享标注记下来。"
             if blind
             else (

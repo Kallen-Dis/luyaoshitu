@@ -29,6 +29,7 @@ STAGE_LABELS: dict[str, str] = {
     "isochrone": "等时圈采样",
     "coverage": "设施检索",
     "blindspots": "网格盲区判定",
+    "gridcheck": "网格交叉校核",
     "report": "生成报告",
     "geocode": "地址解析",
     "simulate": "模拟新建",

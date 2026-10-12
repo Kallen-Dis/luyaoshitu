@@ -185,10 +185,18 @@ def template_text(facts: dict[str, Any]) -> str:
         problems.append(text + "。")
     grid = facts.get("网格盲区")
     if grid:
-        blind_in, in_circle = grid.get("圈内缺设施的方格"), grid.get("圈内方格")
+        blind, blind_in = grid.get("缺至少一类的方格"), grid.get("圈内缺设施的方格")
+        in_circle = grid.get("圈内方格")
+        # 现版网格只铺在圈内，缺设施的方格全在圈内，「其中圈内几格」不再重复写。圈内面积可能比方格数
+        # 略小（细分出的小格中心在圈外的不计），这时给出按面积折算的分母
+        if blind_in is not None and blind_in != blind:
+            tail = f"，其中圈内 {blind_in} / {in_circle} 格"
+        elif in_circle is not None and in_circle != grid.get("方格总数"):
+            tail = f"（按面积折算，圈内共 {in_circle} 格）"
+        else:
+            tail = ""
         problems.append(
-            f"{grid.get('方格总数')} 个方格中 {grid.get('缺至少一类的方格')} 格步行 1 公里到不了"
-            f"至少一类关键设施，其中圈内 {blind_in} / {in_circle} 格。"
+            f"{grid.get('方格总数')} 个方格中 {blind} 格步行 1 公里到不了至少一类关键设施{tail}。"
         )
     for g in (facts.get("灰色区域") or [])[:2]:
         causes = "；".join(

@@ -1,4 +1,5 @@
 import type { ExamReport, IsochroneProperties } from '../types'
+import { ReportSection } from './ReportSection'
 
 /**
  * 图签栏：这份结果的可追溯信息（中心点、坐标系、采样、数据来源、生成时间）。
@@ -12,7 +13,7 @@ export function SignatureCard({
   report: ExamReport
 }) {
   return (
-    <section className="card signature" aria-label="图签：结果的可追溯信息">
+    <ReportSection title="结果图签" className="signature" ariaLabel="图签：结果的可追溯信息">
       <dl className="sig-grid">
         <div>
           <dt>图名</dt>
@@ -61,6 +62,6 @@ export function SignatureCard({
           <dd>路遥识途 · 真实路网口径</dd>
         </div>
       </dl>
-    </section>
+    </ReportSection>
   )
 }

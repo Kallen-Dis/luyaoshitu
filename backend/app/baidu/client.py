@@ -454,16 +454,23 @@ class BaiduMapClient:
         origins: Sequence[tuple[float, float]],
         destinations: Sequence[tuple[float, float]],
         dest_grid_m: float | None = None,
+        origin_grid_m: float | None = None,
     ) -> list[list[dict[str, float] | None]]:
-        return await self.route_matrix_grid("walk", origins, destinations, dest_grid_m)
+        return await self.route_matrix_grid(
+            "walk", origins, destinations, dest_grid_m, origin_grid_m
+        )
 
     async def walking_route(
         self,
         origin: tuple[float, float],
         destination: tuple[float, float],
         fresh: bool = False,
+        fine_m: float | None = None,
     ) -> dict[str, Any] | None:
         """步行路线规划（directionlite/v1/walking）：一条路线的分段、耗时与折线。
+
+        fine_m 给定时，起终点另按这个更细的网格量化并加进缓存键：网格交叉校核的子点相距
+        只有 25 米，按 50 米量化会拿到别的点的路线。不给时与原来的键完全相同。
 
         批量算路给的耗时只是距离 ÷ 步速，路线规划在过马路、主干道路段的步骤里
         带额外秒数，并返回每段折线。前者用于校正过街等待，后者用于判定是否穿过围挡。
@@ -474,8 +481,12 @@ class BaiduMapClient:
         返回 None 表示查询失败（含配额耗尽、服务未开通）。路线只是增强信息，
         失败时调用方退回批量算路的耗时并标注，不让整个分析失败。
         """
+        extra: list[Any] = []
+        if fine_m:
+            step = fine_m / METERS_PER_DEGREE
+            extra = ["f", f"{fine_m:g}", *(round(v / step) for v in (*origin, *destination))]
         cache_path = self._cache.key_for_pair(
-            "route_walk", origin[0], origin[1], destination[0], destination[1]
+            "route_walk", origin[0], origin[1], destination[0], destination[1], *extra
         )
         if not fresh:
             cached = self._cache.read(cache_path, self._ttl())
@@ -641,26 +652,43 @@ class BaiduMapClient:
         o: tuple[float, float],
         d: tuple[float, float],
         dest_grid_m: float | None,
+        origin_grid_m: float | None = None,
     ) -> Any:
-        """点对缓存键。dest_grid_m 给定时，终点另按这个更细的网格量化并加进键里。
+        """点对缓存键。dest_grid_m 给定时，终点另按这个更细的网格量化并加进键里；
+        origin_grid_m 对起点同理。
 
         默认的 50 米量化对网格中心与设施点够用；学校的几个门常常相距只有二三十米，
         按 50 米量化会落进同一格、共用一个测距结果，按门测距就白做了。
-        只给入口终点加细键，已有的 50 米缓存照常命中。
+        50 米细分的子格离父格心只有 25~35 米，作起点时同样要细键。
+        只给需要的那一端加细键，已有的 50 米缓存照常命中。
+
+        细键只解决「不同的点共用一个缓存结果」，解决不了接口自己把点吸附到哪条路上。
         """
-        if not dest_grid_m:
-            return self._cache.key_for_pair(mode.cache_ns, o[0], o[1], d[0], d[1])
-        step = dest_grid_m / METERS_PER_DEGREE
-        return self._cache.key_for_pair(
-            mode.cache_ns,
-            o[0],
-            o[1],
-            d[0],
-            d[1],
-            "d",
-            f"{dest_grid_m:g}",
-            round(d[0] / step),
-            round(d[1] / step),
+        extra: list[Any] = []
+        if dest_grid_m:
+            step = dest_grid_m / METERS_PER_DEGREE
+            extra += ["d", f"{dest_grid_m:g}", round(d[0] / step), round(d[1] / step)]
+        if origin_grid_m:
+            step = origin_grid_m / METERS_PER_DEGREE
+            extra += ["o", f"{origin_grid_m:g}", round(o[0] / step), round(o[1] / step)]
+        return self._cache.key_for_pair(mode.cache_ns, o[0], o[1], d[0], d[1], *extra)
+
+    def missing_pairs(
+        self,
+        mode_id: str,
+        origins: Sequence[tuple[float, float]],
+        destinations: Sequence[tuple[float, float]],
+        dest_grid_m: float | None = None,
+        origin_grid_m: float | None = None,
+    ) -> int:
+        """这组点对里缓存没有的个数，即真正要花的配额。按预算挑点时用，不发请求。"""
+        mode = get_mode(mode_id)
+        ttl = self._ttl(mode)
+        return sum(
+            1
+            for o in origins
+            for d in destinations
+            if self._cache.read(self._pair_key(mode, o, d, dest_grid_m, origin_grid_m), ttl) is None
         )
 
     async def route_matrix_grid(
@@ -669,6 +697,7 @@ class BaiduMapClient:
         origins: Sequence[tuple[float, float]],
         destinations: Sequence[tuple[float, float]],
         dest_grid_m: float | None = None,
+        origin_grid_m: float | None = None,
     ) -> list[list[dict[str, float] | None]]:
         """多起点 × 多终点矩阵。乘积上限随出行方式变化（骑行文档为 50）。
 
@@ -686,7 +715,10 @@ class BaiduMapClient:
         mode = get_mode(mode_id)
         ttl = self._ttl(mode)
         out: list[list[dict[str, float] | None]] = [
-            [self._cache.read(self._pair_key(mode, o, d, dest_grid_m), ttl) for d in destinations]
+            [
+                self._cache.read(self._pair_key(mode, o, d, dest_grid_m, origin_grid_m), ttl)
+                for d in destinations
+            ]
             for o in origins
         ]
 
@@ -715,6 +747,7 @@ class BaiduMapClient:
                     [origins[i] for i in rows],
                     [destinations[j] for j in cols],
                     dest_grid_m,
+                    origin_grid_m,
                 )
                 for rows, cols in blocks
             ),
@@ -743,6 +776,7 @@ class BaiduMapClient:
         origins: Sequence[tuple[float, float]],
         destinations: Sequence[tuple[float, float]],
         dest_grid_m: float | None = None,
+        origin_grid_m: float | None = None,
     ) -> list[list[dict[str, float] | None]]:
         """请求一个矩形块（调用方已确认这些点对都不在缓存里），结果逐个点对写入缓存。
 
@@ -790,7 +824,7 @@ class BaiduMapClient:
                     continue
                 entry = {"distance_m": float(distance), "duration_s": float(duration)}
                 block[i][j] = entry
-                self._cache.write(self._pair_key(mode, o, d, dest_grid_m), entry)
+                self._cache.write(self._pair_key(mode, o, d, dest_grid_m, origin_grid_m), entry)
         return block
 
     def _stale_traffic(

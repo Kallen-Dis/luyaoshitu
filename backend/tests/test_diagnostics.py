@@ -24,7 +24,7 @@ from app.diagnostics import (
 )
 from app.poi.catalog import by_name
 from app.poi.collect import CategoryResult, CleanStats, CoverageResult, Poi
-from app.report.blindspot import BlindspotConfig, identify_blindspots
+from app.report.blindspot import REACH_GRID_M, BlindspotConfig, identify_blindspots
 
 
 def test_service_labels_name_the_actual_api():
@@ -190,7 +190,9 @@ class _FailingMatrix:
     async def walking_matrix(self, origin, destinations):
         return [{"distance_m": 400.0, "duration_s": 300.0} for _ in destinations]
 
-    async def walking_matrix_grid(self, origins, destinations):
+    async def walking_matrix_grid(self, origins, destinations, dest_grid_m=None, **_):
+        if dest_grid_m == REACH_GRID_M and len(origins) == 1:
+            return [await self.walking_matrix(origins[0], destinations)]
         return [[None] * len(destinations) for _ in origins]
 
 

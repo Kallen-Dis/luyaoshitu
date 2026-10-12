@@ -23,6 +23,7 @@ from typing import Any
 
 from ..isochrone.geometry import METERS_PER_DEG_LAT, bearing_deg
 from ..poi.entries import straight_m
+from .subgrid import base_spacing, refined_view, total, weight
 
 # 地图上逐块编号标注的上限；更小的零散块仍然画灰，只是不单独编号
 MAX_LABELED = 12
@@ -189,12 +190,23 @@ def _blocks(cells: list[dict[str, Any]], spacing: float) -> list[list[int]]:
     index, _ = _lattice(cells, spacing)
     by_key = {index(c): i for i, c in enumerate(cells) if c.get("missing")}
     blocks = [[by_key[k] for k in block] for block in _components(set(by_key))]
-    blocks.sort(key=lambda b: (-len(b), -sum(1 for i in b if cells[i].get("in_circle", True))))
+    # 按面积排（50 米细分后的子格各占 1/4），面积相同时圈内的多的在前，再按位置保证稳定
+    blocks.sort(
+        key=lambda b: (
+            -total(cells, b),
+            -total(cells, [i for i in b if cells[i].get("in_circle", True)]),
+            min(b),
+        )
+    )
     return blocks
 
 
 def region_labels(blindspots: dict[str, Any] | None) -> dict[int, str | None]:
-    """格子下标 → 所在灰色区域编号（A、B……；超出编号上限的零散块为 None）。"""
+    """格子下标 → 所在灰色区域编号（A、B……；超出编号上限的零散块为 None）。
+
+    做过 50 米细分的结果按派生的 50 米格网编号，下标是派生格网的下标（subgrid.refined_view）。
+    """
+    blindspots = refined_view(blindspots)
     cells = list((blindspots or {}).get("cells") or [])
     if not cells:
         return {}
@@ -210,7 +222,12 @@ def region_labels(blindspots: dict[str, Any] | None) -> dict[int, str | None]:
 def gray_regions(
     blindspots: dict[str, Any] | None, coverage: dict[str, Any] | None
 ) -> dict[str, Any] | None:
-    """由网格盲区结果推导灰色区域与成因诊断。没有网格判定时返回 None。"""
+    """由网格盲区结果推导灰色区域与成因诊断。没有网格判定时返回 None。
+
+    做过 50 米细分的结果在派生的 50 米格网上合片；格数按 100 米格折算（子格各 1/4），
+    面积由子格面积相加，不和父格重复统计。
+    """
+    blindspots = refined_view(blindspots)
     cells = list((blindspots or {}).get("cells") or [])
     if not cells:
         return None
@@ -222,22 +239,24 @@ def gray_regions(
         return {"regions": [], "region_count": 0, "blind_cells": 0, "diagnosable": True}
 
     diagnosable, causes = classify_missing(cells, coverage, limit)
-    cell_km2 = spacing * spacing / 1e6
+    base = base_spacing(blindspots, spacing)
+    cell_km2 = base * base / 1e6  # 一个 100 米格的面积；子格按 weight 折算
 
     regions: list[dict[str, Any]] = []
     for block in blocks:
         members = [cells[i] for i in block]
-        missing: dict[str, int] = defaultdict(int)
-        barrier: dict[str, int] = defaultdict(int)
-        supply: dict[str, int] = defaultdict(int)
+        missing: dict[str, float] = defaultdict(float)
+        barrier: dict[str, float] = defaultdict(float)
+        supply: dict[str, float] = defaultdict(float)
         near_example: dict[str, dict[str, Any]] = {}
         for i in block:
             c = cells[i]
+            w = weight(c)
             for name in c.get("missing") or []:
-                missing[name] += 1
+                missing[name] += w
                 info = causes[i][name]
                 if info["cause"] == "barrier":
-                    barrier[name] += 1
+                    barrier[name] += w
                     ex = near_example.get(name)
                     place = info["place"]
                     if ex is None or info["straight_m"] < ex["straight_m"]:
@@ -255,7 +274,7 @@ def gray_regions(
                             ),
                         }
                 elif info["cause"] == "supply":
-                    supply[name] += 1
+                    supply[name] += w
 
         lat_c = sum(float(c["lat"]) for c in members) / len(members)
         lng_c = sum(float(c["lng"]) for c in members) / len(members)
@@ -277,19 +296,22 @@ def gray_regions(
             diagnosis.append(
                 {
                     "category": name,
-                    "cells": count,
-                    "barrier_cells": b,
-                    "supply_cells": s,
+                    "cells": _num(count),
+                    "barrier_cells": _num(b),
+                    "supply_cells": _num(s),
                     "cause": cause,
                     "nearby": near_example.get(name),
                 }
             )
+        size = total(members)
         regions.append(
             {
-                "cells": len(members),
-                "area_km2": round(len(members) * cell_km2, 3),
-                "in_circle_cells": sum(1 for c in members if c.get("in_circle", True)),
-                "missing": dict(sorted(missing.items(), key=lambda kv: -kv[1])),
+                "cells": _num(size),
+                "area_km2": round(size * cell_km2, 3),
+                "in_circle_cells": _num(total([c for c in members if c.get("in_circle", True)])),
+                # 其中细分过的 50 米子格数（实测或继承）；没细分时为 0
+                "sub_cells": sum(1 for c in members if c.get("split")),
+                "missing": {k: _num(v) for k, v in sorted(missing.items(), key=lambda kv: -kv[1])},
                 "diagnosis": diagnosis,
                 "anchor": {"lat": float(anchor["lat"]), "lng": float(anchor["lng"])},
                 "rings": [
@@ -307,12 +329,23 @@ def gray_regions(
     return {
         "regions": regions,
         "region_count": len(regions),
-        "blind_cells": sum(len(b) for b in blocks),
+        "blind_cells": _num(sum(total(cells, b) for b in blocks)),
         "diagnosable": diagnosable,
         "basis": (
             "相邻盲区方格合并成片；成因按直线 1 公里内有无同类设施区分：有则路网阻隔，无则供给缺口"
+            + (
+                "；边界格按 50 米细分，格数按 100 米格折算"
+                if blindspots.get("view") == "refined"
+                else ""
+            )
         ),
     }
+
+
+def _num(v: float) -> float | int:
+    """格数：整数照旧是整数，细分出的 1/4 格保留到 0.25。"""
+    v = round(v * 4) / 4
+    return int(v) if v == int(v) else v
 
 
 _CAUSE_TEXT = {"barrier": "路网阻隔", "supply": "供给缺口", "unknown": "成因未知"}

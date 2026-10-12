@@ -37,6 +37,7 @@ from .diagnostics import (
     traffic_summary,
 )
 from .isochrone.algorithm import IsochroneConfig, compute_isochrone
+from .isochrone.gridcheck import GridcheckConfig, cross_check, ray_samples_of
 from .isochrone.recheck import NoBaselineError, baselines, recheck_routes
 from .isochrone.refine import (
     MAX_CLOSURE_RADIUS_M,
@@ -130,6 +131,13 @@ class IsochroneRequest(BaseModel):
     markings: MarkingOptions = Field(
         default_factory=lambda: MarkingOptions(),
         description="附近用户标注的使用方式",
+    )
+    gridcheck: bool = Field(
+        True,
+        description=(
+            "步行时用另一组网格样本交叉校核射线圈：圈内超时格加测子点、相邻格找绕行线索"
+            "（命中缓存不计，单次新增点对与路线受 GRIDCHECK_MAX_* 限制）"
+        ),
     )
 
 
@@ -536,6 +544,35 @@ async def _analysis_steps(
         props["report"] = build_report(props, coverage_dict, props["blindspots"])
         state.finish("网格盲区")
         yield "blindspots", {"feature": payload}
+
+        if req.gridcheck:
+            # 只是辅助图层：射线圈仍是主几何，评分与盲区占比都不变
+            state.enter("gridcheck")
+            yield (
+                "stage",
+                {
+                    "stage": "gridcheck",
+                    "message": "正在用另一组网格样本交叉校核等时圈（超时格加测子点、找绕行线索）…",
+                },
+            )
+            settings = get_settings()
+            checked = await cross_check(
+                client,
+                center,
+                result.polygon,
+                props["blindspots"],
+                result.refine,
+                ray_samples_of(result),
+                result.area_m2 / 1e6,
+                GridcheckConfig(
+                    max_pairs=settings.gridcheck_max_pairs,
+                    max_routes=settings.gridcheck_max_routes,
+                ),
+            )
+            if checked is not None:
+                props["gridcheck"] = checked
+            state.finish("网格交叉校核")
+            yield "gridcheck", {"feature": payload}
     elif req.blindspots:
         props["blindspots_skipped"] = (
             "网格盲区只对步行等时圈计算：判定口径是居民点步行 1 公里能否到达设施。"
@@ -649,7 +686,10 @@ def _current(props: dict) -> dict:
             coverage.get("fresh_breakdown", {}).get(status, 0) for status in ("pending", "excluded")
         )
     ):
-        for cell in grid.get("cells", []):
+        for cell in [
+            *grid.get("cells", []),
+            *(q for c in grid.get("cells", []) for q in c.get("quarters") or []),
+        ]:
             cell["missing"] = [c for c in cell.get("missing", []) if c != FRESH]
             if FRESH not in cell.setdefault("unknown", []):
                 cell["unknown"].append(FRESH)
@@ -939,6 +979,8 @@ async def preview_closures(
         closures=req.closures,
         mode="walk",
         crossing_delay=True,
+        # 封路预览要算两遍、只比较报告，不做网格交叉校核
+        gridcheck=False,
         markings=MarkingOptions(
             mode="auto", include=[m["id"] for m in (props.get("markings") or {}).get("applied", [])]
         ),

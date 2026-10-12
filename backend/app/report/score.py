@@ -31,7 +31,9 @@ from typing import Any
 
 from ..poi.fresh import FRESH, eligible
 from .prescribe import prescribe
-from .regions import gray_regions
+from .regions import _num, gray_regions
+from .subgrid import base_spacing, is_refined, refined_view
+from .subgrid import total as cell_total
 
 # 常人步行速度。直线距离除以它，是步行时间的下界。
 WALK_SPEED_M_PER_S = 1.2
@@ -158,8 +160,13 @@ def grid_basis(blindspots: dict[str, Any] | None) -> str | None:
     """用一句话说清网格判定的口径，报告、图例与导出共用。"""
     if not blindspots:
         return None
-    spacing = float(blindspots.get("grid_spacing_m") or 0)
+    spacing = base_spacing(blindspots, 0.0)
     limit_km = float(blindspots.get("walk_limit_m") or 1000) / 1000
+    refined = (
+        "；与邻格结论不同或贴近阈值的边界格再切成 4 个 50 米子格实测，按面积计"
+        if blindspots.get("view") == "refined" or is_refined(blindspots)
+        else ""
+    )
     if blindspots.get("layout") == "disc":
         extent_km = float(blindspots.get("extent_m") or 1500) / 1000
         return (
@@ -169,7 +176,7 @@ def grid_basis(blindspots: dict[str, Any] | None) -> str | None:
     scoped = "（较早的结果，只取其中落在圈内的格子）" if blindspots.get("scoped_from") else ""
     return (
         f"真实路网：15 分钟步行圈内 {spacing:.0f} 米方格，"
-        f"逐格实测步行 {limit_km:.0f} 公里内能否到达{scoped}"
+        f"逐格实测步行 {limit_km:.0f} 公里内能否到达{scoped}{refined}"
     )
 
 
@@ -197,7 +204,8 @@ def build_report(
         categories = coverage.get("categories")
         failed_categories = list(coverage.get("failed_categories") or [])
 
-    grid = blindspots or None
+    # 做过 50 米细分时展开成均匀的 50 米格网：计数按 100 米格折算，子格面积替代父格，不重复统计
+    grid = refined_view(blindspots) if blindspots else None
     cells = (grid or {}).get("cells") or []
     blind_ratio = grid.get("blind_ratio") if grid else None
     in_circle = [c for c in cells if c.get("in_circle", True)]
@@ -252,8 +260,10 @@ def build_report(
         "blind_cell_count": grid.get("blind_count") if grid else None,
         "cell_count": grid.get("cell_count") if grid else None,
         # 15 分钟圈内的格子单独计数：圈内也缺设施，比圈外缺更说明问题
-        "blind_in_circle": sum(1 for c in in_circle if c.get("missing")) if cells else None,
-        "cells_in_circle": len(in_circle) if cells else None,
+        "blind_in_circle": _num(cell_total([c for c in in_circle if c.get("missing")]))
+        if cells
+        else None,
+        "cells_in_circle": _num(cell_total(in_circle)) if cells else None,
         "grid_basis": grid_basis(grid),
         # 自动标注的灰色区域（相邻盲区格合并成片）与逐片成因诊断
         "gray_regions": gray_regions(grid, proof_coverage),

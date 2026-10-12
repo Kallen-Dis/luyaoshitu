@@ -19,8 +19,9 @@ from ..baidu.client import BaiduMapClient
 from ..baidu.errors import QuotaExhaustedError
 from ..isochrone.geometry import haversine_m
 from .prescribe import rank_sites, supply_demand, typical_detour
-from .regions import classify_missing, region_labels
+from .regions import _num, classify_missing, region_labels
 from .simulate import simulate_facility
+from .subgrid import origin_groups, refined_view, total
 
 ALTERNATIVE_GAP_M = 300.0
 
@@ -35,7 +36,8 @@ def site_candidates(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """该品类补设的前几名候选点（估算），以及估算口径。没有缺口格时返回空列表。"""
     props = feature.get("properties") or {}
-    blindspots = props.get("blindspots") or {}
+    # 做过 50 米细分时在派生的 50 米格网上选址，覆盖格数按 100 米格折算
+    blindspots = refined_view(props.get("blindspots") or {}) or {}
     cells = list(blindspots.get("cells") or [])
     if not cells:
         raise ValueError("当前结果没有网格盲区判定，无法选址。请先做一次含盲区判定的步行分析。")
@@ -59,15 +61,17 @@ def site_candidates(
             {
                 "lat": lat,
                 "lng": lng,
-                "estimated": len(covered),
-                "estimated_in_circle": sum(1 for i in covered if cells[i].get("in_circle", True)),
+                "estimated": _num(total(cells, covered)),
+                "estimated_in_circle": _num(
+                    total(cells, [i for i in covered if cells[i].get("in_circle", True)])
+                ),
                 "region": ids[0] if ids else None,
             }
         )
         if len(picks) >= count:
             break
     basis = {
-        "demand_cells": len(demand),
+        "demand_cells": _num(total(cells, demand)),
         "detour": round(detour, 2),
         "radius_m": round(radius),
     }
@@ -89,21 +93,25 @@ async def plan_site(
             "应优先按「打通」处方处理。"
         )
     props = feature.get("properties") or {}
-    cells = (props.get("blindspots") or {}).get("cells") or []
-    limit = float((props.get("blindspots") or {}).get("walk_limit_m") or 1000.0)
+    view = refined_view(props.get("blindspots") or {}) or {}
+    cells = view.get("cells") or []
+    limit = float(view.get("walk_limit_m") or 1000.0)
     verify = client is not None and not props.get("simulated")
 
     used = 0
     quota_hit = False
     results: list[dict[str, Any]] = []
     for rank, p in enumerate(picks, start=1):
-        # 模拟新建要测的点对 = 缺这一类、且到候选点直线 ≤ 1 公里的方格数
-        need = sum(
-            1
-            for c in cells
+        # 模拟新建要测的点对 = 缺这一类、且到候选点直线 ≤ 1 公里的格要从几个起点出发
+        # （细分过这一类的子格各自出发，其余按父格心共用一次）
+        near = [
+            i
+            for i, c in enumerate(cells)
             if category in (c.get("missing") or [])
             and haversine_m(float(c["lat"]), float(c["lng"]), p["lat"], p["lng"]) <= limit
-        )
+        ]
+        parents, quarters = origin_groups(cells, near, category)
+        need = len(parents) + len(quarters)
         entry: dict[str, Any] = {**p, "rank_estimate": rank, "pairs_needed": need}
         if verify and not quota_hit and used + need > budget_pairs:
             entry.update(status="over_budget", verified=None, simulation=None)

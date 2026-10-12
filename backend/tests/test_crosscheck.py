@@ -66,12 +66,15 @@ def test_coordinate_round_trip_is_within_a_metre():
 
 
 def test_gaps_follow_the_gray_regions_largest_first():
-    gaps = cc.gaps_of(_caoyang())
-    assert [(g.region, g.category, len(g.cells)) for g in gaps] == [
-        ("A", "基础教育", 15),
-        ("B", "基础教育", 2),
-        ("C", "基础教育", 1),
+    feature = _caoyang()
+    gaps = cc.gaps_of(feature)
+    regions = feature["properties"]["report"]["gray_regions"]["regions"]
+    # 与灰色区域同一张格网、同一顺序；格数按 100 米格折算（边界格按 50 米细分）
+    assert [(g.region, g.category, g.size) for g in gaps] == [
+        (r["id"], "基础教育", r["missing"]["基础教育"]) for r in regions if r["id"]
     ]
+    assert [g.size for g in gaps] == sorted((g.size for g in gaps), reverse=True)
+    assert all(len(g.cells) == round(g.size * 4) for g in gaps)  # 每个子格各占 1/4
 
 
 def test_region_name_comes_from_the_reverse_geocoded_address():
@@ -100,7 +103,8 @@ def test_suspects_are_only_unmatched_places_near_the_gap(tmp_path):
             return result, cc.as_payload(result, REGION, ap)
 
     result, payload = asyncio.run(go(httpx.MockTransport(handler)))
-    assert len(seen) == 3 and payload["agent_plan"] == {"requests": 3, "cache_hits": 0}
+    n = len(cc.gaps_of(feature))  # 每片编号的灰色区域 × 缺的关键品类，各问一次
+    assert len(seen) == n and payload["agent_plan"] == {"requests": n, "cache_hits": 0}
     first = seen[0]
     assert first.headers["Authorization"] == "Bearer sk-ap-test"
     assert first.url.params["region"] == REGION and first.url.params["sort"] == "distance"
@@ -120,7 +124,7 @@ def test_suspects_are_only_unmatched_places_near_the_gap(tmp_path):
         raise AssertionError("不应该再发请求")
 
     _, again = asyncio.run(go(httpx.MockTransport(boom)))
-    assert again["agent_plan"] == {"requests": 0, "cache_hits": 3}
+    assert again["agent_plan"] == {"requests": 0, "cache_hits": n}
     assert again["suspects"] == payload["suspects"]
 
 

@@ -7,7 +7,9 @@
 1. 在 15 分钟步行圈内按 100 米铺网格（曹杨约 144 格、桃浦约 116 格）。体检的是这个生活圈，
    灰色区域只标圈内；但设施照样检索到圈外 1 公里，圈边上的居民走到圈外的药店也算有；
 2. 中心点到各网格做一次批量算路，得到步行耗时，即热力图的强度；
-   步行时再用等时圈各方向的路线剖面补回过街等待（见 isochrone/refine.py）；
+   步行时再用等时圈各方向的路线剖面补回过街等待（见 isochrone/refine.py）。
+   格心终点按 10 米细键缓存：按 50 米量化时，同一缓存格里别的点测出的结果会被当成这一格的，
+   2026-10-09 在桃浦复测出 6 格偏差超过 50 米，最大一格缓存值 2631 米、精确坐标实测 902 米；
 3. 对每个关键品类，为各网格预筛若干直线最近的候选设施，
    用**多起点批量算路**求真实路网步行距离；
 4. 步行 1 公里内一家都到不了（或该品类附近无设施）的网格，标为该品类的盲区点位。
@@ -46,10 +48,12 @@ from typing import Any
 from ..baidu.client import BaiduMapClient
 from ..baidu.errors import QuotaExhaustedError
 from ..isochrone.geometry import (
+    METERS_PER_DEG_LAT,
     disc_cells,
     first_entry_along,
     grid_points,
     haversine_m,
+    meters_per_deg_lng,
     point_in_polygon,
 )
 from ..isochrone.refine import Closure, RefineResult
@@ -57,6 +61,10 @@ from ..poi.catalog import KEY_CATEGORIES, Category
 from ..poi.collect import CoverageResult, Poi
 from ..poi.entries import ENTRY_GRID_M, destinations, straight_m
 from ..poi.fresh import FRESH, VERSION, eligible, fields
+
+# 中心 → 格心测时的终点缓存粒度（米）。格心相距 100 米，但别的分析（换中心、50 米子点、
+# 出行起点）会在同一个 50 米缓存格里测别的点，按 50 米量化就可能拿到别人的结果
+REACH_GRID_M = 10.0
 
 
 @dataclass(frozen=True)
@@ -90,6 +98,16 @@ class BlindspotConfig:
     # 配额在判定途中用完时，只测到的一小撮网格算出的占比没有代表性。
     min_judged_share: float = 0.5
 
+    # 50 米叠加细分：100 米判定之后，对每个品类的「边界格」（与四邻结论不同）与「临界格」
+    # （最近一家步行距离在阈值 ± refine_critical_m 内），把格切成 4 个 50 米子格分别实测。
+    # 子格作起点按 10 米细键缓存；没细分的品类、没细分的格都继承父格结论。
+    # 子格中心落在射线圈外的不测、不计（与 100 米格「格心在圈内才算」同一条规则）。
+    refine_boundary: bool = True
+    refine_critical_m: float = 50.0
+    # 细分最多新增的批量算路点对（命中缓存不计），是硬上限：每批请求发出前按缓存缺口算成本，
+    # 超出剩余额度的那批不发，涉及的子格这一品类照旧继承父格
+    refine_max_pairs: int = 1500
+
 
 @dataclass
 class CellResult:
@@ -100,6 +118,9 @@ class CellResult:
     reach_s: float | None = None
     # 未补过街等待的批量算路耗时
     reach_raw_s: float | None = None
+    # 中心到该格的路网距离（米）。网格交叉校核用它找绕行线索：距离每格独立测得，
+    # 不像耗时那样含有从射线插值来的过街等待
+    reach_m: float | None = None
     # 品类 -> 最近设施的真实路网步行距离（米）。None 表示无法判定。
     nearest_m: dict[str, float | None] = field(default_factory=dict)
     # 1 公里内确无此类设施的品类
@@ -111,10 +132,31 @@ class CellResult:
     in_circle: bool = True
     # 从中心过来的路线被施工围挡挡住
     closure_blocked: bool = False
+    # 50 米叠加细分：只有细分过的格才有，按西北、东北、西南、东南排
+    quarters: list[CellResult] | None = None
+    # 子格自己：位置标签与实测过的品类（其余品类继承父格）
+    q: str | None = None
+    measured: list[str] = field(default_factory=list)
 
     @property
     def is_blind(self) -> bool:
         return bool(self.missing)
+
+    def quarter_dict(self) -> dict[str, Any]:
+        return {
+            "q": self.q,
+            "lat": round(self.lat, 6),
+            "lng": round(self.lng, 6),
+            # 子格中心是否在射线圈内；圈外的子格不测、不判定，也不进任何计数
+            "in_circle": self.in_circle,
+            "nearest_m": {
+                k: (round(v) if v is not None else None) for k, v in self.nearest_m.items()
+            },
+            "missing": self.missing,
+            "unknown": self.unknown,
+            "unknown_reasons": self.unknown_reasons,
+            "measured": self.measured,
+        }
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -122,6 +164,7 @@ class CellResult:
             "lng": round(self.lng, 6),
             "reach_s": round(self.reach_s) if self.reach_s is not None else None,
             "reach_raw_s": round(self.reach_raw_s) if self.reach_raw_s is not None else None,
+            "reach_m": round(self.reach_m) if self.reach_m is not None else None,
             "nearest_m": {
                 k: (round(v) if v is not None else None) for k, v in self.nearest_m.items()
             },
@@ -130,6 +173,46 @@ class CellResult:
             "unknown_reasons": self.unknown_reasons,
             "in_circle": self.in_circle,
             "closure_blocked": self.closure_blocked,
+            **({"quarters": [q.quarter_dict() for q in self.quarters]} if self.quarters else {}),
+        }
+
+
+@dataclass
+class Refinement:
+    """50 米叠加细分的统计。"""
+
+    spacing_m: float
+    max_pairs: int = 0
+    parents: dict[str, int] = field(default_factory=dict)  # 品类 → 细分的格数
+    pairs: int = 0  # 新增点对（命中缓存不计），受 max_pairs 约束
+    requested_pairs: int = 0  # 发给客户端的点对总数，含命中缓存的；与缓存状态无关
+    stopped: list[str] = field(default_factory=list)  # 预算用完、没细分完的品类
+    fallback: dict[str, int] = field(default_factory=dict)  # 品类 → 因预算退回继承的子格数
+
+    def as_dict(self, cells: list[CellResult]) -> dict[str, Any]:
+        split = [c for c in cells if c.quarters]
+        quarters = [q for c in split for q in c.quarters or []]
+        return {
+            "spacing_m": self.spacing_m,
+            "split_cells": len(split),
+            "by_category": self.parents,
+            "measured_quarters": sum(1 for q in quarters if q.measured),
+            # 中心落在射线圈外的子格：不测、不计，父格按圈内子格的面积计
+            "outside_quarters": sum(1 for q in quarters if not q.in_circle),
+            "pairs": self.pairs,
+            "requested_pairs": self.requested_pairs,
+            "max_pairs": self.max_pairs,
+            "stopped_categories": self.stopped,
+            "fallback_quarters": self.fallback,
+            "basis": (
+                "100 米判定后，对每个品类与四邻结论不同的边界格、"
+                "以及最近一家步行距离贴近阈值的临界格，切成 4 个 50 米子格分别实测"
+                "（子格作起点按 10 米细键缓存）；其余格与其余品类继承父格。"
+                "子格中心落在射线圈外的不测、不计。"
+                "占比与灰色区域按面积计，子格面积替代父格，不重复统计。"
+                "新增点对有硬上限：每批请求前按缓存缺口计成本，超出剩余额度的那批不发，"
+                "涉及的子格这一品类继承父格。"
+            ),
         }
 
 
@@ -169,10 +252,16 @@ class BlindspotResult:
     closure_check: ClosureCheck | None = None
     # 判定成功的网格不足、没有给出占比的品类
     incomplete_categories: list[str] = field(default_factory=list)
+    refinement: Refinement | None = None
 
     @property
     def blind_cells(self) -> list[CellResult]:
         return [c for c in self.cells if c.is_blind]
+
+    @property
+    def blind_units(self) -> float:
+        """缺任一类的面积，按 100 米格计（细分过的格按圈内子格各 1/4 计）。"""
+        return sum(w for u, w in area_units(self.cells) if u.missing)
 
     def as_dict(self) -> dict[str, Any]:
         cells = self.cells
@@ -182,10 +271,13 @@ class BlindspotResult:
             "basis": "network",
             "layout": self.config.layout,
             "grid_spacing_m": self.config.grid_spacing_m,
+            # 中心 → 格心的终点缓存粒度；没有这个字段的旧结果按 50 米量化测得
+            "reach_grid_m": REACH_GRID_M,
             "extent_m": self.config.extent_m if self.config.layout == "disc" else None,
             "walk_limit_m": self.config.walk_limit_m,
             "cell_count": len(cells),
-            "blind_count": len(self.blind_cells),
+            # 按面积计的 100 米格数：细分过的格按子格各 1/4 计，可能带小数
+            "blind_count": round(self.blind_units, 2),
             "in_circle_count": sum(1 for c in cells if c.in_circle),
             "max_reach_s": round(max_reach) if max_reach is not None else None,
             "blind_ratio": {k: round(v, 3) for k, v in self.blind_ratio.items()},
@@ -196,7 +288,20 @@ class BlindspotResult:
             "closures": [c.as_dict() for c in self.closures],
             "closure_check": self.closure_check.as_dict() if self.closure_check else None,
             "incomplete_categories": self.incomplete_categories,
+            "refinement": self.refinement.as_dict(cells) if self.refinement else None,
         }
+
+
+def area_units(cells: list[CellResult]) -> list[tuple[CellResult, float]]:
+    """按面积计数的单元：没细分的格占 1；细分过的格由圈内子格各占 1/4 替代，不和父格重复统计。
+    子格中心落在射线圈外的不计，与 100 米格「格心在圈内才算」是同一条规则。"""
+    out: list[tuple[CellResult, float]] = []
+    for c in cells:
+        if c.quarters:
+            out += [(q, 0.25) for q in c.quarters if q.in_circle]
+        else:
+            out.append((c, 1.0))
+    return out
 
 
 def rank_candidates(
@@ -255,9 +360,14 @@ async def _route_blocked(
     a: tuple[float, float],
     b: tuple[float, float],
     closures: tuple[Closure, ...],
+    fine_m: float | None = None,
 ) -> bool | None:
     """取一条步行路线核验是否穿过围挡。None 表示路线取不到、无法核验。"""
-    route = await client.walking_route(a, b)
+    route = (
+        await client.walking_route(a, b, fine_m=fine_m)
+        if fine_m
+        else await client.walking_route(a, b)
+    )
     if route is None:
         return None
     points = [
@@ -270,9 +380,13 @@ async def _route_blocked(
     return first_entry_along(points, [c.as_circle() for c in closures]) is not None
 
 
-async def _judge_category(client, cells, category, coverage, cfg, closures=(), check=None):
+async def _judge_category(
+    client, cells, category, coverage, cfg, closures=(), check=None, origin_grid_m=None
+):
     if category.name != FRESH or FRESH in coverage.failed:
-        return await _judge_candidates(client, cells, category, coverage, cfg, closures, check)
+        return await _judge_candidates(
+            client, cells, category, coverage, cfg, closures, check, origin_grid_m
+        )
     pois = coverage.pois_of(FRESH)
     accepted = [p for p in pois if eligible(p)]
     uncertain = [p for p in pois if fields(p)["fresh_status"] == "pending"]
@@ -290,14 +404,16 @@ async def _judge_category(client, cells, category, coverage, cfg, closures=(), c
         )
 
     pruned, naive = await _judge_candidates(
-        client, cells, category, subset(accepted), cfg, closures, check
+        client, cells, category, subset(accepted), cfg, closures, check, origin_grid_m
     )
     # 已有可信候选可达时，不为核对普通超市额外消耗点对。
     unresolved = [c for c in cells if FRESH in c.missing or FRESH in c.unknown]
     if not uncertain or not unresolved:
         return pruned, naive + naive_pending
     probes = [CellResult(c.lat, c.lng) for c in unresolved]
-    await _judge_candidates(client, probes, category, subset(uncertain), cfg, closures, check)
+    await _judge_candidates(
+        client, probes, category, subset(uncertain), cfg, closures, check, origin_grid_m
+    )
     pruned -= sum(
         id(c) in free and bool(rank_candidates(c, available_pending, cfg.walk_limit_m + 30))
         for c in unresolved
@@ -324,11 +440,14 @@ async def _judge_candidates(
     cfg: BlindspotConfig,
     closures: tuple[Closure, ...] = (),
     check: ClosureCheck | None = None,
+    origin_grid_m: float | None = None,
 ) -> tuple[int, int]:
     """就地填充各网格对某一品类的判定结果。
 
     返回 (直线剪枝判定数, 朴素点对数)：前者是零请求完成的网格 × 品类判定，
     后者是「每个网格对每个设施测一次」的朴素口径，两者一起量化省下的配额。
+
+    origin_grid_m 给定时起点按这个细键缓存（50 米子格离父格心只有 25~35 米）。
     """
     name = category.name
 
@@ -398,6 +517,8 @@ async def _judge_candidates(
             # 入口终点用更细的缓存键：两个门相距二三十米时不能共用一个测距结果。
             # 没有入口时不传这个参数，测试里的假客户端与旧缓存都照旧
             fine: dict[str, float] = {"dest_grid_m": ENTRY_GRID_M} if poi.entries else {}
+            if origin_grid_m:
+                fine["origin_grid_m"] = origin_grid_m
             try:
                 matrix = await client.walking_matrix_grid(
                     [(cells[ci].lat, cells[ci].lng) for ci in cell_indices], dests, **fine
@@ -436,7 +557,7 @@ async def _judge_candidates(
                         out.append(ci)
                         continue
                     check.checked += 1  # 先占预算再等待，并发的组不会超额
-                    hit = await _route_blocked(client, a, b, suspects)
+                    hit = await _route_blocked(client, a, b, suspects, origin_grid_m)
                     if hit is None:
                         check.unverified += 1
                         failed.add(ci)
@@ -544,9 +665,13 @@ async def identify_blindspots(
     if not cells:
         return BlindspotResult(center=center, cells=[], config=cfg, closures=closures)
 
-    # 中心到各网格的步行耗时：单起点，一次请求可带 100 个终点，150 格以内只需 2 次请求
+    # 中心到各网格的步行耗时：单起点，步行一次请求最多 50 个终点，150 格约 3 次请求。
+    # 终点按 10 米细键缓存，不复用同一 50 米缓存格里别的点的结果（见 REACH_GRID_M）
     try:
-        reach = await client.walking_matrix(center, [(c.lat, c.lng) for c in cells])
+        rows = await client.walking_matrix_grid(
+            [center], [(c.lat, c.lng) for c in cells], dest_grid_m=REACH_GRID_M
+        )
+        reach = rows[0] if rows else [None] * len(cells)
     except QuotaExhaustedError:
         # 热力是附加信息：配额耗尽时各格耗时记为未知，盲区判定照常尝试
         reach = [None] * len(cells)
@@ -555,6 +680,7 @@ async def identify_blindspots(
             continue
         cell.reach_raw_s = entry["duration_s"]
         cell.reach_s = entry["duration_s"]
+        cell.reach_m = entry["distance_m"]
         if refine is not None:
             delay, blocked, _ = refine.adjust_point(center, cell.lat, cell.lng, entry["distance_m"])
             cell.reach_s = entry["duration_s"] + delay
@@ -574,13 +700,23 @@ async def identify_blindspots(
         total_pruned += pruned
         total_naive += naive
 
+    refinement = None
+    if cfg.refine_boundary and cfg.layout == "polygon" and len(cells) > 1:
+        refinement = await _refine(
+            client, cells, categories, coverage, cfg, closures, check, polygon
+        )
+
+    # 占比按面积计：细分过的格由圈内子格（各占 1/4）替代，不和父格重复统计
+    units = area_units(cells)
     blind_ratio: dict[str, float] = {}
     incomplete: list[str] = []
     for category in categories:
-        judged = [c for c in cells if category.name not in c.unknown]
-        if judged and len(judged) >= cfg.min_judged_share * len(cells):
-            blind = sum(1 for c in judged if category.name in c.missing)
-            blind_ratio[category.name] = blind / len(judged)
+        judged = sum(w for u, w in units if category.name not in u.unknown)
+        if judged > 0 and judged >= cfg.min_judged_share * sum(w for _, w in units):
+            blind = sum(
+                w for u, w in units if category.name not in u.unknown and category.name in u.missing
+            )
+            blind_ratio[category.name] = blind / judged
         elif category.name not in coverage.failed:
             # 检索失败的品类已在覆盖层单独说明，这里只记「测了但没测够」
             incomplete.append(category.name)
@@ -596,4 +732,193 @@ async def identify_blindspots(
         closures=closures,
         closure_check=check,
         incomplete_categories=incomplete,
+        refinement=refinement,
     )
+
+
+QUARTERS = (("NW", 1, -1), ("NE", 1, 1), ("SW", -1, -1), ("SE", -1, 1))
+
+
+def _quarters_of(
+    cell: CellResult, half_m: float, mpl: float, polygon: list[tuple[float, float]]
+) -> list[CellResult]:
+    """切成 4 个子格，先整体继承父格的结论；实测过的品类再逐个替换。
+
+    子格中心是否在圈内按子格自己判（与 100 米格「格心在圈内才算」同一条规则）：
+    父格心在圈内、子格中心在圈外的，不测、不判定，也不进任何计数。
+    """
+    dlat = half_m / METERS_PER_DEG_LAT
+    dlng = half_m / mpl
+    out = []
+    for label, sy, sx in QUARTERS:
+        lat, lng = cell.lat + sy * dlat, cell.lng + sx * dlng
+        inside = point_in_polygon(lat, lng, polygon) if len(polygon) >= 3 else cell.in_circle
+        out.append(
+            CellResult(
+                lat=lat,
+                lng=lng,
+                nearest_m=dict(cell.nearest_m) if inside else {},
+                missing=list(cell.missing) if inside else [],
+                unknown=list(cell.unknown) if inside else [],
+                unknown_reasons=dict(cell.unknown_reasons) if inside else {},
+                in_circle=inside,
+                q=label,
+            )
+        )
+    return out
+
+
+class _PairGuard:
+    """细分专用的点对闸：每批请求发出前按缓存缺口逐个起点算要花多少新点对，放不下的起点不发。
+
+    只拦放不下的起点（子格），被拦过的子格在这一品类后面的请求里直接剔掉：它的结论反正要
+    退回继承父格，再测就是白花点对。放得下的子格照常测完，剩下的额度不浪费。
+    计数只看经过这道闸的请求，与进程里别的分析同时花的点对无关；假客户端没有缓存时
+    每个点对都按新增计。路线规划（围挡核验）原样转给客户端，它有自己的预算。
+    """
+
+    def __init__(self, client: Any, budget: int) -> None:
+        self._client = client
+        self.budget = budget
+        self.used = 0
+        self.requested = 0
+        self.refused: set[tuple[float, float]] = set()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._client, name)
+
+    def _cost(self, origins, destinations, dest_grid_m, origin_grid_m) -> int:
+        probe = getattr(self._client, "missing_pairs", None)
+        if probe is None:
+            return len(origins) * len(destinations)
+        return int(
+            probe(
+                "walk",
+                origins,
+                destinations,
+                dest_grid_m=dest_grid_m,
+                origin_grid_m=origin_grid_m,
+            )
+        )
+
+    async def walking_matrix_grid(
+        self, origins, destinations, dest_grid_m=None, origin_grid_m=None
+    ) -> list[list[dict[str, float] | None]]:
+        out: list[list[dict[str, float] | None]] = [[None] * len(destinations) for _ in origins]
+        keep: list[int] = []
+        for i, o in enumerate(origins):
+            at = (o[0], o[1])
+            if at in self.refused:
+                continue
+            # 逐个起点算成本：一批放不下时，放得下的起点照常测，剩下的才拦
+            cost = self._cost([o], destinations, dest_grid_m, origin_grid_m)
+            if cost and self.used + cost > self.budget:
+                self.refused.add(at)  # 这一品类没测完：调用方把它退回继承父格
+                continue
+            self.used += cost
+            keep.append(i)
+        if not keep:
+            return out
+        sub = [origins[i] for i in keep]
+        self.requested += len(sub) * len(destinations)
+        kwargs: dict[str, float] = {}
+        if dest_grid_m is not None:
+            kwargs["dest_grid_m"] = dest_grid_m
+        if origin_grid_m is not None:
+            kwargs["origin_grid_m"] = origin_grid_m
+        rows = await self._client.walking_matrix_grid(sub, destinations, **kwargs)
+        for i, row in zip(keep, rows, strict=True):
+            out[i] = row
+        return out
+
+
+async def _refine(
+    client: BaiduMapClient,
+    cells: list[CellResult],
+    categories: tuple[Category, ...],
+    coverage: CoverageResult,
+    cfg: BlindspotConfig,
+    closures: tuple[Closure, ...],
+    check: ClosureCheck | None,
+    polygon: list[tuple[float, float]] | None = None,
+) -> Refinement:
+    """50 米叠加细分：每个品类的边界格与临界格切成 4 个子格，用同一套判定分别实测。
+
+    新增点对不超过 cfg.refine_max_pairs：判定照常分轮发请求，每批都先过 _PairGuard。
+    被拦下的子格这一品类保留继承来的父格结论，记进 fallback；一个品类都没测成的父格撤掉子格。
+    """
+    spacing = cfg.grid_spacing_m
+    ref = Refinement(spacing_m=spacing / 2, max_pairs=cfg.refine_max_pairs)
+    lat0 = min(c.lat for c in cells)
+    lng0 = min(c.lng for c in cells)
+    mean_lat = sum(c.lat for c in cells) / len(cells)
+    mpl = meters_per_deg_lng(mean_lat)
+    dlat, dlng = spacing / METERS_PER_DEG_LAT, spacing / mpl
+    index = {(round((c.lat - lat0) / dlat), round((c.lng - lng0) / dlng)): c for c in cells}
+    guard = _PairGuard(client, cfg.refine_max_pairs)
+    ring = polygon or []
+
+    for category in categories:
+        name = category.name
+        if name in coverage.failed:
+            continue
+        targets = []
+        for (y, x), c in index.items():
+            if name in c.unknown:
+                continue
+            here = name in c.missing
+            boundary = any(
+                nb is not None and name not in nb.unknown and (name in nb.missing) != here
+                for nb in (
+                    index.get((y + dy, x + dx)) for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1))
+                )
+            )
+            near = c.nearest_m.get(name)
+            critical = near is not None and abs(near - cfg.walk_limit_m) <= cfg.refine_critical_m
+            if boundary or critical:
+                targets.append(c)
+        if not targets:
+            continue
+        targets.sort(key=lambda c: (c.lat, c.lng))
+        split: list[CellResult] = []
+        for c in targets:
+            if c.quarters is None:
+                quarters = _quarters_of(c, spacing / 4, mpl, ring)
+                if not any(q.in_circle for q in quarters):
+                    continue  # 4 个子格中心都在圈外（极窄的圈边）：保持 100 米格
+                c.quarters = quarters
+            split.append(c)
+        subs = [(c, q) for c in split for q in c.quarters or [] if q.in_circle]
+        if not subs:
+            continue
+        probes = [CellResult(lat=q.lat, lng=q.lng) for _, q in subs]
+        guard.refused.clear()  # 按品类各自计：别的品类被拦过的子格，这一品类照样能测
+        await _judge_category(
+            guard, probes, category, coverage, cfg, closures, check, origin_grid_m=REACH_GRID_M
+        )
+        fallback = 0
+        refined: set[int] = set()
+        for (c, q), p in zip(subs, probes, strict=True):
+            if (p.lat, p.lng) in guard.refused:
+                fallback += 1  # 预算拦下了这个子格的请求：这一品类照旧继承父格
+                continue
+            q.missing = [m for m in q.missing if m != name] + ([name] if name in p.missing else [])
+            q.unknown = [u for u in q.unknown if u != name] + ([name] if name in p.unknown else [])
+            q.nearest_m[name] = p.nearest_m.get(name)
+            q.unknown_reasons.pop(name, None)
+            if name in p.unknown_reasons:
+                q.unknown_reasons[name] = p.unknown_reasons[name]
+            q.measured.append(name)
+            refined.add(id(c))
+        if fallback:
+            ref.fallback[name] = fallback
+            ref.stopped.append(name)
+        if refined:
+            ref.parents[name] = len(refined)
+    # 一个品类都没测成的格不算细分过：撤掉子格，照旧按一整格计
+    for c in cells:
+        if c.quarters and not any(q.measured for q in c.quarters):
+            c.quarters = None
+    ref.pairs = guard.used
+    ref.requested_pairs = guard.requested
+    return ref

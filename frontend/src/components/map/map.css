@@ -311,6 +311,21 @@
   border: 2px dashed #0f766e;
 }
 
+/* 是否卖菜待确认的超市：和地图标记同色同形（MapView.placeLabel） */
+.legend-mark.compact-mark {
+  flex: none;
+}
+
+.legend-mark i.fresh-pending {
+  width: 22px;
+  height: 22px;
+  color: #826020;
+  font-size: 11px;
+  letter-spacing: -0.5px;
+  background: #f5edd8;
+  border: 2px dashed #b68b43;
+}
+
 .map-legend {
   gap: 6px;
   max-width: 340px;
@@ -473,6 +488,14 @@
   padding-left: calc(2.6em + 7px);
   font-size: 11px;
   color: #8a8270;
+}
+
+/* 校核卡片的「标签 … 数值」：数值靠右、等宽数字 */
+.map-pop-facts .map-pop-fact b {
+  order: 2;
+  font-family: var(--font-figure);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 .map-pop-cause {

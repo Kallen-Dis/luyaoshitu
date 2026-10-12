@@ -3,6 +3,7 @@ import { loadBaiduMap } from '../baiduMap'
 import { buildHeatTile, heatColor } from '../lib/heatRaster'
 import { blindCells } from '../lib/grid'
 import { clipBlindCell, clipRegionOutlines } from '../lib/grayDisplay'
+import { gapPolygons } from '../lib/gridCheck'
 import { tripPath, tripColor } from '../lib/trip'
 import { hitTripRoute, itineraryLineStyle, itineraryPath, tripCameraRequest, tripSegmentColor, tripViewBounds, tripViewportMargins, type TripViewStamp } from '../lib/itinerary'
 import { afterStableMapSize, originViewBounds } from '../lib/guide'
@@ -11,8 +12,11 @@ import type { ResultView, ViewSwitch } from '../lib/resultView'
 import type { Draft } from './markings/draft'
 import {
   BLIND_COLORS,
+  CHECK_CLUE_COLOR,
+  CHECK_ESTIMATE_COLOR,
+  CHECK_GAP_COLOR,
   PLACE_MARK,
-  heatScaleS,
+  heatTargetS,
   type LayerState,
   type MapContext,
   type MapIntent,
@@ -29,6 +33,7 @@ import type {
   ClosureSpec,
   ConstructionCandidate,
   GridCell,
+  GridCheckClue,
   IsochroneFeature,
   Marking,
   Place,
@@ -396,6 +401,22 @@ export function MapView({
         : []
     })
   }, [layers.regions, isochrone, blindCategory, simulation])
+  // 网格交叉校核（辅助图层）：缺口裁到射线圈里画斜线；绕行线索与校核估计范围默认关
+  const check = isochrone?.properties.gridcheck ?? null
+  const gapShapes = useMemo(() => {
+    if (!check || !layers.checkGaps || simulation) return []
+    const circle = isochrone?.geometry.coordinates[0] ?? []
+    return check.gaps
+      .map(gap => ({ gap, polygons: gapPolygons(gap, circle) }))
+      .filter(shape => shape.polygons.length > 0)
+  }, [check, layers.checkGaps, simulation, isochrone])
+  // 点开缺口或线索卡片时，才把对应的示意路线画出来
+  const focusClues = useMemo<GridCheckClue[]>(() => {
+    const ctx = popover?.ctx
+    if (ctx?.kind === 'clue') return [ctx.clue]
+    if (ctx?.kind === 'gap') return ctx.clues
+    return []
+  }, [popover])
   const mapOutlines = useMemo<MapOutline[]>(() => {
     const outlines: MapOutline[] = []
     const circle = (ring: [number, number][], weight: number, color: string, alpha = 1, dash?: number[]) => {
@@ -416,8 +437,26 @@ export function MapView({
     }
     if (compare) circle(compare.geometry.coordinates[0] ?? [], 1.75, '#b0801f', 0.95, [7, 4])
     outlines.push(...grayOutlines.map(outline => ({ ...outline, color: REGION_COLOR, haloWidth: 1 })))
+    if (check && !simulation) {
+      for (const { polygons } of gapShapes) {
+        outlines.push({ rings: polygons.flat(), weight: 1.1, color: CHECK_GAP_COLOR, alpha: 0.9, dash: [3, 3], haloWidth: 1, hatch: CHECK_GAP_COLOR })
+      }
+      if (layers.checkEstimate && check.estimate_rings.length) {
+        outlines.push({ rings: check.estimate_rings, weight: 1.5, color: CHECK_ESTIMATE_COLOR, alpha: 0.9, dash: [7, 3, 1.5, 3], haloWidth: 1.5 })
+      }
+      if (layers.detourClues) {
+        for (const clue of check.clues) {
+          const confirmed = clue.status === 'confirmed'
+          outlines.push({ rings: clue.path, closed: false, weight: confirmed ? 3 : 2, color: CHECK_CLUE_COLOR, alpha: confirmed ? 1 : 0.8, dash: confirmed ? undefined : [5, 4], haloWidth: 2 })
+        }
+      }
+      for (const clue of focusClues) {
+        const path = clue.verification.route_path
+        if (path && path.length > 1) outlines.push({ rings: [path], closed: false, weight: 2.5, color: CHECK_CLUE_COLOR, alpha: 0.9, dash: [2, 4], haloWidth: 2, arrows: true })
+      }
+    }
     return outlines
-  }, [isochrone, layers.innerRings, altRing, compare, grayOutlines])
+  }, [isochrone, layers.innerRings, altRing, compare, grayOutlines, check, simulation, gapShapes, layers.checkEstimate, layers.detourClues, focusClues])
   const guideOutlines = useMemo<MapOutline[]>(() => {
     if (!guide?.item.route) return []
     const route = guide.item.route
@@ -480,13 +519,13 @@ export function MapView({
     // 3D / 卫星视角下的热力：每格一块矢量方格，由地图按透视画，倾斜旋转都贴着地面。
     // 平面视角仍用下面的画布色场（格子之间平滑过渡，更好看）
     if (blindspots && layers.heat && vectorHeat) {
-      const maxS = heatScaleS(blindspots.max_reach_s, isochrone?.properties.minutes)
+      const targetS = heatTargetS(isochrone?.properties.minutes)
       for (const cell of blindspots.cells) {
         if (cell.reach_s === null) continue
         const corners = cellCorners(cell, spacing).map(([lng, lat]) => new BMapGL.Point(lng, lat))
         const tile = new BMapGL.Polygon(corners, {
           strokeWeight: 0,
-          fillColor: heatColor(cell.reach_s, maxS),
+          fillColor: heatColor(cell.reach_s, targetS),
           fillOpacity: 0.42 * fade,
           enableClicking: false,
         })
@@ -501,9 +540,12 @@ export function MapView({
       const color = BLIND_COLORS[blindCategory] ?? BLIND_COLORS.all
       // 「缺任一类」的格子连成片后由外框勾出区域，格线就不画了，否则一片灰里全是细线
       const gray = blindCategory === 'all'
-      for (const { cell, missing } of wide) {
+      // 热力打开时灰底减半：色场半透明地盖在方格上，灰底太重会把橙、红压成褐色；外框和编号照常画
+      const grayFill = layers.heat ? 0.1 : 0.2
+      for (const { cell, missing, size_m } of wide) {
         const inside = cell.in_circle ?? true
-        const parts = clipBlindCell(cellCorners(cell, spacing), circle)
+        // 50 米细分过的格按子格分别画，没细分的照旧画 100 米格
+        const parts = clipBlindCell(cellCorners(cell, size_m), circle)
         for (const part of parts) {
           const points = part.map(([lng, lat]) => new BMapGL.Point(lng, lat))
           const area = new BMapGL.Polygon(points, {
@@ -511,7 +553,7 @@ export function MapView({
             strokeWeight: gray ? 0 : inside ? 1 : 0.5,
             strokeOpacity: (gray ? 0 : inside ? 0.45 : 0.25) * fade,
             fillColor: color,
-            fillOpacity: (gray ? 0.2 : inside ? 0.22 : 0.1) * fade,
+            fillOpacity: (gray ? grayFill : inside ? 0.22 : 0.1) * fade,
           })
           area.setZIndex?.(2)
           const detail: GridCell = { ...cell, missing }
@@ -576,17 +618,79 @@ export function MapView({
       add(tag)
     }
 
+    // 网格交叉校核：缺口在平面视图里由画布画斜线，这里的淡色填充同时是点击目标；
+    // 3D / 卫星视图下画布对不上地面，改由地图覆盖物画实色填充与虚线
+    if (check && !simulation) {
+      for (const { gap, polygons } of gapShapes) {
+        for (const polygon of polygons) {
+          const points = polygon[0].map(([lng, lat]) => new BMapGL.Point(lng, lat))
+          const piece = new BMapGL.Polygon(points, {
+            strokeColor: CHECK_GAP_COLOR,
+            strokeWeight: vectorHeat ? 1.2 : 0,
+            strokeOpacity: vectorHeat ? 0.9 * fade : 0,
+            strokeStyle: 'dashed',
+            fillColor: CHECK_GAP_COLOR,
+            fillOpacity: (vectorHeat ? 0.28 : 0.08) * fade,
+          })
+          piece.setZIndex?.(7)
+          piece.addEventListener('click', () => {
+            if (drawingRef.current || pickEnabledRef.current) return
+            suppressPickRef.current = true
+            const clues = gap.clues.flatMap(id => check.clues.filter(c => c.id === id))
+            openPopover({ kind: 'gap', gap, clues, targetS: check.target_s }, gap.anchor)
+          })
+          add(piece)
+        }
+      }
+      if (layers.detourClues) {
+        for (const clue of check.clues) {
+          for (const path of clue.path) {
+            // 平面视图下可见的线由画布画，这条宽而淡的线只用来接住点击
+            const line = new BMapGL.Polyline(
+              path.map(([lng, lat]) => new BMapGL.Point(lng, lat)),
+              {
+                strokeColor: CHECK_CLUE_COLOR,
+                strokeWeight: vectorHeat ? 3 : 12,
+                strokeOpacity: (vectorHeat ? 0.95 : 0.12) * fade,
+                strokeStyle: vectorHeat && clue.status !== 'confirmed' ? 'dashed' : 'solid',
+              },
+            )
+            line.setZIndex?.(12)
+            line.addEventListener('click', () => {
+              if (drawingRef.current || pickEnabledRef.current) return
+              suppressPickRef.current = true
+              const mid = path[Math.floor(path.length / 2)]
+              openPopover({ kind: 'clue', clue }, { lat: mid[1], lng: mid[0] })
+            })
+            add(line)
+          }
+        }
+      }
+      if (vectorHeat && layers.checkEstimate) {
+        for (const ring of check.estimate_rings) {
+          const line = new BMapGL.Polyline(
+            [...ring, ring[0]].map(([lng, lat]) => new BMapGL.Point(lng, lat)),
+            { strokeColor: CHECK_ESTIMATE_COLOR, strokeWeight: 1.5, strokeOpacity: 0.9 * fade, strokeStyle: 'dashed' },
+          )
+          line.setZIndex?.(5)
+          add(line)
+        }
+      }
+    }
+
     // 保留等时圈填充；平面轮廓统一交给独立画布，3D / 卫星使用地图地面覆盖物。
     const viewPoints: any[] = []
     if (isochrone) {
       const ring = isochrone.geometry.coordinates[0] ?? []
       const points = ring.map(([lng, lat]) => new BMapGL.Point(lng, lat))
+      // 热力打开时圈和内圈都不填绿：绿底叠在色阶上会把黄、橙、红调成发灰的橄榄色，只留轮廓线
+      const heatShown = Boolean(layers.heat && blindspots)
       const outer = new BMapGL.Polygon(points, {
         strokeColor: '#1f7a42',
         strokeWeight: vectorHeat ? 1.5 : 0,
         strokeOpacity: vectorHeat ? 1 : 0,
         fillColor: '#2f9e5a',
-        fillOpacity: 0.06,
+        fillOpacity: heatShown ? 0 : 0.06,
         enableClicking: false,
       })
       outer.setZIndex?.(4)
@@ -633,7 +737,7 @@ export function MapView({
             strokeWeight: vectorHeat ? (inner.minutes <= 5 ? 1 : 1.25) : 0,
             strokeOpacity: vectorHeat ? 0.95 : 0,
             fillColor: '#2f9e5a',
-            fillOpacity: (inner.minutes <= 5 ? 0.28 : 0.16) * fade,
+            fillOpacity: heatShown ? 0 : (inner.minutes <= 5 ? 0.28 : 0.16) * fade,
             enableClicking: false,
           })
           layer.setZIndex?.(inner.minutes <= 5 ? 8 : 6)
@@ -903,7 +1007,33 @@ export function MapView({
     vectorHeat,
     grayOutlines,
     guideActive,
+    check,
+    gapShapes,
   ])
+
+  // 3D / 卫星视图下，点开缺口或线索卡片时画示意路线。单独成层：开关卡片不重建整层网格
+  const checkFocusRef = useRef<any[]>([])
+  useEffect(() => {
+    const map = mapRef.current
+    const BMapGL = window.BMapGL
+    if (!ready || !map || !BMapGL) return
+    const drawn: any[] = []
+    if (vectorHeat) {
+      for (const clue of focusClues) {
+        const path = clue.verification.route_path
+        if (!path || path.length < 2) continue
+        const line = new BMapGL.Polyline(
+          path.map(([lng, lat]) => new BMapGL.Point(lng, lat)),
+          { strokeColor: CHECK_CLUE_COLOR, strokeWeight: 2.5, strokeOpacity: 0.9, strokeStyle: 'dashed' },
+        )
+        line.setZIndex?.(13)
+        map.addOverlay(line)
+        drawn.push(line)
+      }
+    }
+    checkFocusRef.current = drawn
+    return () => drawn.forEach(o => map.removeOverlay(o))
+  }, [ready, focusClues, vectorHeat])
 
   const rays = isochrone?.properties.rays
   const [radiusLo, radiusHi] = radiusLimits
@@ -1234,8 +1364,8 @@ export function MapView({
         ? buildHeatTile(
             blindspots.cells,
             blindspots.grid_spacing_m,
-            heatScaleS(blindspots.max_reach_s, isochrone?.properties.minutes),
-            0.32,
+            heatTargetS(isochrone?.properties.minutes),
+            0.5,
           )
         : null
     const ring = isochrone?.geometry.coordinates[0] ?? []
@@ -1537,6 +1667,7 @@ export function MapView({
             regions: labeledRegions,
             markings: markings.length,
             clues: suspects.length + constructionSites.length + recheckRays.length,
+            check: check ? { gaps: check.gaps.length, clues: check.clues.length } : null,
           }}
           blindCategory={blindCategory}
           blindCategories={blindCategories}
@@ -1600,7 +1731,8 @@ function placeMarker(BMapGL: any, place: Place, dim: boolean, onClick: () => voi
   const mark = PLACE_MARK[place.category] ?? { glyph: '·', color: '#4b4e45' }
   const user = place.source === 'user'
   const pending = place.fresh_status === 'pending'
-  const label = new BMapGL.Label(pending ? `${mark.glyph}?` : mark.glyph, {
+  // 是否卖菜待确认的超市：同一个「菜」字，浅底、虚线圈区分，不另加问号
+  const label = new BMapGL.Label(mark.glyph, {
     position: new BMapGL.Point(place.lng, place.lat),
     offset: new BMapGL.Size(-11, -11),
   })

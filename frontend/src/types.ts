@@ -130,6 +130,108 @@ export interface IsochroneProperties {
   traffic?: TrafficInfo | null
   /** 这次计算叠加了哪些用户标注、与纯算法结果差多少 */
   markings?: MarkingsResult
+  /** 另一组网格样本交叉校核（辅助图层）。射线圈仍是主几何，评分不受它影响。 */
+  gridcheck?: GridCheck
+}
+
+/** 交叉校核里的一个测时点（叶子方格）。 */
+export interface GridCheckLeaf {
+  lat: number
+  lng: number
+  /** 方格边长：网格间距 s、s/2 或 s/4（默认 100 / 50 / 25 米） */
+  size_m: number
+  /** 批量算路耗时，不含过街等待 */
+  raw_s: number | null
+  /** 补上过街等待后的耗时；受围挡阻断为 null */
+  eff_s: number | null
+  blocked: boolean
+  dist_m: number | null
+  straight_m: number
+  /** 等待从哪来：ray_interp 相邻射线插值；own_route 这个点自己的路线；none 未计 */
+  delay_source: 'ray_interp' | 'own_route' | 'none'
+  /** 单独取过步行路线时，路线自己给的耗时与距离。较早的结果没有。 */
+  route_s?: number | null
+  route_m?: number | null
+  off_network: boolean
+}
+
+/** 射线圈里确认走不到（超过 900 秒）的一片。 */
+export interface GridCheckGap {
+  id: string
+  /** 落在射线圈内的面积（平方米） */
+  area_m2: number
+  anchor: { lat: number; lng: number }
+  leaves: GridCheckLeaf[]
+  worst: GridCheckLeaf
+  /** 取过自己的步行路线、路线耗时也超过 900 秒的点数；0 表示只有批量算路的结论。较早的结果没有。 */
+  route_confirmed?: number
+  /** 附近的绕行线索编号 */
+  clues: number[]
+  /** 只是部分走不到的格数 */
+  partial_cells: number
+}
+
+/** 绕行线索：相邻两格路网距离之差远超直线距离。位置是两格公共边，不是障碍真实位置。 */
+export interface GridCheckClue {
+  id: number
+  /** 若干条折线，[经度, 纬度] */
+  path: [number, number][][]
+  edges: number
+  max_jump_m: number
+  status: 'confirmed' | 'unverified'
+  verification: {
+    /** 离中心近的格（B）与远的格（A），[经度, 纬度] */
+    from: [number, number]
+    to: [number, number]
+    straight_m: number
+    center_to_from_m: number
+    center_to_to_m: number
+    /** 三角不等式给出的 B → A 下界：D(A) − D(B) */
+    bound_m: number
+    /** 直接测得的 B → A 路网距离（批量算路，同一口径） */
+    measured_m: number | null
+    /** 步行路线规划给的 B → A 距离，只作示意 */
+    route_m: number | null
+    route_path: [number, number][] | null
+  }
+}
+
+export interface GridCheck {
+  version: number
+  basis: string
+  target_s: number
+  ray_area_km2: number
+  /** 校核估计面积：射线点与网格点一起做受约束局部线性插值 */
+  estimate_area_km2: number
+  estimate_unknown_km2: number
+  /** 校核估计范围的边界环（外环与孔洞，按奇偶规则组合），[经度, 纬度] */
+  estimate_rings: [number, number][][]
+  estimate_holes: boolean[]
+  gaps: GridCheckGap[]
+  gap_area_km2: number
+  clues: GridCheckClue[]
+  clue_summary: {
+    edges: number
+    chains: number
+    shown: number
+    contradicted: number
+    disputed?: number
+    threshold_m: number
+    show_m: number
+  }
+  points: { cells: number; outer: number; sub50: number; sub25: number; rays: number }
+  remeasured: number
+  corrected: number
+  over_unverified: number
+  outside_reachable: number
+  /** 存疑、没画出的点：路线耗时与「批量算路距离 + 等待」分处 900 秒两侧；groups 是代表点被推翻的整片 */
+  disputed?: { points: number; groups: number; area_m2: number; outside_points?: number }
+  routes: { requested: number; ok: number; points_verified: number; representatives?: number }
+  usage: { matrix_pairs: number; routes: number }
+  budget: { max_pairs: number; max_routes: number }
+  stopped: 'budget' | 'quota' | 'error' | null
+  params: { kappa: number; eps_m: number; clue_show_m: number; raster_m: number; max_edge_m: number }
+  notes: string[]
 }
 
 export interface AnalysisWarning {
@@ -550,6 +652,8 @@ export interface GridCell {
   reach_s: number | null
   /** 批量算路给的耗时（不含过街等待）。 */
   reach_raw_s?: number | null
+  /** 中心到此的路网距离（米）。较早的结果没有。 */
+  reach_m?: number | null
   /** 品类 -> 最近设施的真实路网步行距离（米）。 */
   nearest_m: Record<string, number | null>
   /** 步行 1 公里内确无此类设施 */
@@ -560,6 +664,25 @@ export interface GridCell {
   in_circle?: boolean
   /** 从中心过来的路线被施工围挡挡住 */
   closure_blocked?: boolean
+  /** 50 米叠加细分：边界格、临界格才有，按西北、东北、西南、东南排 */
+  quarters?: GridQuarter[]
+  /** 前端展开后的子格才有：所在 50 米子格与实测过的品类 */
+  sub?: { q: string; measured: string[]; size_m: number }
+}
+
+/** 一个 50 米子格的判定。没实测的品类继承父格。 */
+export interface GridQuarter {
+  q: 'NW' | 'NE' | 'SW' | 'SE'
+  lat: number
+  lng: number
+  nearest_m: Record<string, number | null>
+  missing: string[]
+  unknown: string[]
+  unknown_reasons?: Record<string, string>
+  /** 在这个子格上实测过的品类 */
+  measured: string[]
+  /** 子格中心是否在射线圈内；false 的不测、不画、不计。较早的结果没有，视为在圈内。 */
+  in_circle?: boolean
 }
 
 export interface Blindspots {
@@ -587,6 +710,23 @@ export interface Blindspots {
     blocked_pairs: number
     unverified_pairs: number
     excluded_places: number
+  } | null
+  /** 50 米叠加细分的统计；没细分为 null 或缺省 */
+  refinement?: {
+    spacing_m: number
+    split_cells: number
+    by_category: Record<string, number>
+    measured_quarters: number
+    /** 中心落在射线圈外、不计的子格数 */
+    outside_quarters?: number
+    /** 本次新增的点对（命中缓存不计），不超过 max_pairs */
+    pairs: number
+    requested_pairs?: number
+    max_pairs?: number
+    stopped_categories: string[]
+    /** 品类 -> 因预算退回继承父格的子格数 */
+    fallback_quarters?: Record<string, number>
+    basis: string
   } | null
 }
 

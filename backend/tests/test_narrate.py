@@ -70,3 +70,29 @@ def test_export_always_carries_the_same_conclusion():
     md = build_markdown(FEATURE)
     assert "## 综合结论" in md
     assert template_text(build_facts(FEATURE)) in md
+
+
+def _with_grid(**report):
+    feature = json.loads(json.dumps(FEATURE))
+    feature["properties"]["report"].update(report)
+    return narrate(feature)["text"]
+
+
+def test_grid_sentence_does_not_repeat_the_in_circle_count():
+    """现版网格只铺在圈内：缺设施的方格全在圈内，不写「其中圈内 x / y 格」，免得像有格在圈外。"""
+    text = _with_grid(blind_cell_count=116, blind_in_circle=116, cells_in_circle=116)
+    assert "116 个方格中 116 格步行 1 公里到不了至少一类关键设施。" in text
+    assert "其中圈内" not in text
+
+
+def test_grid_sentence_gives_the_area_denominator_when_quarters_fall_outside():
+    """细分出的小格中心在圈外的不计：圈内面积比方格数少，这时写出按面积折算的分母。"""
+    text = _with_grid(blind_cell_count=114.75, blind_in_circle=114.75, cells_in_circle=114.75)
+    assert "116 个方格中 114.75 格步行 1 公里到不了至少一类关键设施" in text
+    assert "（按面积折算，圈内共 114.75 格）。" in text
+    assert "其中圈内" not in text
+
+
+def test_grid_sentence_still_splits_out_the_circle_for_old_disc_results():
+    text = _with_grid(blind_cell_count=60, blind_in_circle=40, cells_in_circle=116)
+    assert "其中圈内 40 / 116 格" in text

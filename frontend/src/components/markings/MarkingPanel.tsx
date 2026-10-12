@@ -4,6 +4,7 @@ import { TYPE_META, formatDate, formatDistance } from '../../lib/markings'
 import type { Marking, MarkingConfig } from '../../types'
 import { Icon, TypeBadge } from './Icon'
 import { MarkingDetailView, StatusStamp } from './MarkingDetail'
+import { ReportSection } from '../ReportSection'
 import type { ToastSpec } from './UndoToast'
 
 interface Props {
@@ -114,14 +115,17 @@ export function MarkingPanel({
   const ownNearby = nearby.filter((m) => m.mine).length
 
   return (
-    <section className="card mk-panel" aria-label="共享标注">
-      <div className="mk-panel-head">
-        <h2 className="card-title">共享标注</h2>
+    <ReportSection
+      key={selectedId ?? 'list'}
+      title="共享标注"
+      className="mk-panel"
+      headerActions={
         <button type="button" className="mk-btn primary small" onClick={onCreate}>
           <Icon name="plus" size={14} />
           新建
         </button>
-      </div>
+      }
+    >
 
       {selectedId !== null ? (
         <MarkingDetailView
@@ -221,6 +225,6 @@ export function MarkingPanel({
           )}
         </>
       )}
-    </section>
+    </ReportSection>
   )
 }

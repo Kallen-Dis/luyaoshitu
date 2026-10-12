@@ -13,6 +13,8 @@ export interface LayerAvailability {
   markings: number
   /** 复测疑似点与工地候选数 */
   clues: number
+  /** 网格交叉校核：确认缺口片数与显示的绕行线索段数；没有校核结果为 null */
+  check: { gaps: number; clues: number } | null
 }
 
 interface Props {
@@ -110,6 +112,28 @@ export function MapViewBar({
         },
       ],
     },
+    ...(available.check
+      ? [
+          {
+            title: '网格交叉校核',
+            rows: [
+              {
+                key: 'checkGaps' as const,
+                label: '射线圈里走不到的缺口',
+                disabled: available.check.gaps === 0,
+                note: available.check.gaps > 0 ? `确认 ${available.check.gaps} 片，斜线` : '没有确认的缺口',
+              },
+              { key: 'checkEstimate' as const, label: '校核估计范围', note: '射线点加网格点重新估的边界，点划线' },
+              {
+                key: 'detourClues' as const,
+                label: '绕行线索',
+                disabled: available.check.clues === 0,
+                note: available.check.clues > 0 ? `${available.check.clues} 段，位置约 ±50 米` : '没有达到显示阈值的线索',
+              },
+            ],
+          },
+        ]
+      : []),
     {
       title: '标注',
       rows: [

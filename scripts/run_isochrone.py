@@ -35,6 +35,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 from app.baidu.client import BaiduMapClient  # noqa: E402
 from app.baidu.errors import BaiduApiError  # noqa: E402
 from app.isochrone.algorithm import IsochroneConfig, compute_isochrone  # noqa: E402
+from app.isochrone.gridcheck import GridcheckConfig, cross_check, ray_samples_of  # noqa: E402
 from app.isochrone.refine import RefineOptions, closures_from  # noqa: E402
 from app.poi.collect import collect_coverage  # noqa: E402
 from app.report.blindspot import BlindspotConfig, identify_blindspots  # noqa: E402
@@ -81,6 +82,7 @@ STAGE_NAMES = {
     "isochrone": "等时圈（含过街校正）",
     "coverage": "设施采集",
     "blindspots": "网格盲区",
+    "gridcheck": "网格交叉校核",
 }
 
 
@@ -114,6 +116,11 @@ async def main() -> None:
         "--no-delay",
         action="store_true",
         help="不做过街等待校正（不调用步行路线规划）",
+    )
+    parser.add_argument(
+        "--no-gridcheck",
+        action="store_true",
+        help="不做网格交叉校核（超时格子点、外圈格、绕行线索）",
     )
     parser.add_argument(
         "--closure",
@@ -184,6 +191,7 @@ async def main() -> None:
 
         coverage = None
         blind = None
+        gridcheck = None
         blind_cfg = BlindspotConfig(grid_spacing_m=args.grid_spacing, extent_m=args.grid_extent)
         if not args.no_coverage:
             # 检索半径罩住网格范围再加 1 公里判定阈值：圈边上的居民走到圈外的设施也算有
@@ -203,6 +211,21 @@ async def main() -> None:
                         closures=closures,
                     )
                     close_stage("blindspots")
+                    if not args.no_gridcheck:
+                        s = client._s
+                        gridcheck = await cross_check(
+                            client,
+                            center,
+                            iso.polygon,
+                            blind.as_dict(),
+                            iso.refine,
+                            ray_samples_of(iso),
+                            iso.area_m2 / 1e6,
+                            GridcheckConfig(
+                                max_pairs=s.gridcheck_max_pairs, max_routes=s.gridcheck_max_routes
+                            ),
+                        )
+                        close_stage("gridcheck")
             except BaiduApiError as exc:
                 raise SystemExit(f"设施采集失败：{exc}") from exc
 
@@ -327,6 +350,15 @@ async def main() -> None:
         props["coverage"] = cov
     if blind is not None:
         props["blindspots"] = blind.as_dict()
+    if gridcheck is not None:
+        props["gridcheck"] = gridcheck
+        print(
+            f"\n网格交叉校核：射线圈 {gridcheck['ray_area_km2']} km²，"
+            f"校核估计 {gridcheck['estimate_area_km2']} km²；"
+            f"确认缺口 {len(gridcheck['gaps'])} 片 {gridcheck['gap_area_km2']} km²，"
+            f"绕行线索 {gridcheck['clue_summary']['shown']} 段；"
+            f"新增点对 {gridcheck['usage']['matrix_pairs']}、路线 {gridcheck['usage']['routes']}"
+        )
     props["report"] = build_report(props, props.get("coverage"), props.get("blindspots"))
     props["api_usage"] = {
         "note": "本次生成的实发量（命中缓存的不计）；同一中心此前测过的点对会命中缓存",

@@ -20,7 +20,7 @@ import {
   simulateClosures,
   sitePlan,
 } from './api'
-import { gridCensus } from './lib/grid'
+import { cellCount, gridCensus } from './lib/grid'
 import { CompareCard } from './components/CompareCard'
 import { DirectionRadar } from './components/DirectionRadar'
 import { ExportCard } from './components/ExportCard'
@@ -41,6 +41,8 @@ import { algorithmView, viewSwitch, type ResultView } from './lib/resultView'
 import { NarrativeCard } from './components/NarrativeCard'
 import { ReportCard } from './components/ReportCard'
 import { SignatureCard } from './components/SignatureCard'
+import { PageIntro } from './components/PageIntro'
+import { rememberPageIntro, shouldOfferPageIntro } from './lib/pageIntro'
 import { AdminReview } from './components/markings/AdminReview'
 import { applyMapClick, emptyDraft, useDraftHistory } from './components/markings/draft'
 import { Icon } from './components/markings/Icon'
@@ -160,7 +162,7 @@ function Verdict({ feature }: { feature: IsochroneFeature }) {
     census
       ? props.blindspots?.layout === 'disc'
         ? `周围 ${extentKm} 公里 ${census.total} 个方格里，${census.blind} 格步行 1 公里到不了菜场、药店或小学（逐格实测路网，圈内 ${census.blindInCircle} / ${census.inCircle} 格）。`
-        : `15 分钟圈内 ${census.total} 个 ${spacingM} 米方格里，${census.blind} 格步行 1 公里到不了菜场、药店或小学（逐格实测路网）。`
+        : `15 分钟圈内 ${census.total} 个 ${spacingM} 米方格里，${cellCount(census.blind)} 格步行 1 公里到不了菜场、药店或小学（逐格实测路网${census.refined ? '；边界格切成 50 米小格实测，按面积折算' : ''}）。`
       : '还没有做网格盲区判定。',
   ]
   return (
@@ -192,6 +194,8 @@ function Verdict({ feature }: { feature: IsochroneFeature }) {
 }
 
 export default function App() {
+  const [introOpen, setIntroOpen] = useState(shouldOfferPageIntro)
+  const closeIntro = useCallback(() => { rememberPageIntro(); setIntroOpen(false) }, [])
   const [config, setConfig] = useState<AppConfig | null>(null)
   const [samples, setSamples] = useState<SampleMeta[]>([])
   const [histories, setHistories] = useState<HistoryMeta[]>([])
@@ -281,6 +285,7 @@ export default function App() {
   } | null>(null)
   // 标注模式下侧栏收成窄条，把地图让出来；用户点开窄条可以临时展开
   const [railOpen, setRailOpen] = useState(false)
+  const [reportCollapsed, setReportCollapsed] = useState(false)
   const sidebarRef = useRef<HTMLElement>(null)
   const sidebarScrollRef = useRef(0)
   const [reveal, setReveal] = useState<{
@@ -937,7 +942,7 @@ export default function App() {
     }
   }
 
-  const railMode = (composer !== null || Boolean(scoped(tripEntry, isochrone))) && !railOpen
+  const railMode = reportCollapsed || ((composer !== null || Boolean(scoped(tripEntry, isochrone))) && !railOpen)
   useLayoutEffect(() => {
     if (railMode || !sidebarRef.current) return
     sidebarRef.current.scrollTop = sidebarScrollRef.current
@@ -1075,6 +1080,10 @@ export default function App() {
           </div>
         </div>
         <div className="topbar-spacer" />
+        <button type="button" className="page-intro-entry" aria-haspopup="dialog" onClick={() => setIntroOpen(true)}>
+          <span className="page-intro-entry-mark" aria-hidden="true">?</span>
+          一起看看
+        </button>
         {!activeSampleId && (
           <span className={props?.simulated ? 'source-chip demo' : 'source-chip live'}>
             <i />
@@ -1100,16 +1109,34 @@ export default function App() {
             <button
               type="button"
               title="展开体检报告（地图会变窄）"
-              aria-label="展开侧栏"
-              onClick={() => setRailOpen(true)}
+              aria-label="展开体检报告"
+              aria-expanded={false}
+              aria-controls="report-sidebar"
+              onClick={() => { setReportCollapsed(false); setRailOpen(true) }}
             >
               <Icon name="chevron" size={16} />
             </button>
             <span>体检报告</span>
           </aside>
         )}
-        <aside className="sidebar" ref={sidebarRef}>
-          {(trip || composer) && railOpen && <button type="button" className="trip-sidebar-collapse" onClick={() => { sidebarScrollRef.current = sidebarRef.current?.scrollTop ?? 0; setRailOpen(false) }}>收起体检报告 ‹</button>}
+        <aside className="sidebar" id="report-sidebar" aria-label="体检报告" ref={sidebarRef}>
+          <div className="sidebar-report-toolbar">
+            <span>体检报告</span>
+            <button
+              type="button"
+              className="report-sidebar-toggle"
+              aria-expanded={true}
+              aria-controls="report-sidebar"
+              onClick={() => {
+                sidebarScrollRef.current = sidebarRef.current?.scrollTop ?? 0
+                if (trip || composer) setRailOpen(false)
+                else setReportCollapsed(true)
+              }}
+            >
+              <Icon name="back" size={14} />
+              收起报告
+            </button>
+          </div>
           {isochrone && <Verdict feature={isochrone} />}
 
           <details className="card">
@@ -1940,6 +1967,7 @@ export default function App() {
           {toast && <UndoToast key={toast.id} toast={toast} onDone={() => setToast(null)} />}
         </main>
       </div>
+      {introOpen && <PageIntro onClose={closeIntro} />}
     </div>
   )
 }

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { ApiError, exportFeature } from '../api'
 import type { IsochroneFeature } from '../types'
+import { ReportSection } from './ReportSection'
 
 type Format = 'zip' | 'md' | 'geojson' | 'csv' | 'json'
 
@@ -51,8 +52,7 @@ export function ExportCard({ feature, sampleId }: Props) {
   const simulated = Boolean(feature.properties.simulated)
 
   return (
-    <section className="card">
-      <h2 className="card-title">成果导出</h2>
+    <ReportSection title="成果导出" defaultExpanded={false}>
       <p className="hint">
         {sampleId ? '基于当前载入的快照生成' : '基于当前这次结果生成'}
         ，含综合结论、体检报告、灰色区域诊断与设施覆盖表，零 API 消耗。
@@ -87,6 +87,6 @@ export function ExportCard({ feature, sampleId }: Props) {
           {error}
         </p>
       )}
-    </section>
+    </ReportSection>
   )
 }

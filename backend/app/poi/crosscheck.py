@@ -33,7 +33,8 @@ from typing import Any
 import httpx
 
 from ..isochrone.geometry import haversine_m
-from ..report.regions import region_labels
+from ..report.regions import _num, region_labels
+from ..report.subgrid import refined_view, total
 from .catalog import by_name
 from .collect import normalize_name
 
@@ -223,14 +224,19 @@ class Gap:
     category: str
     anchor: tuple[float, float]  # BD09
     cells: list[tuple[float, float]]
-    supply: int
-    barrier: int
+    supply: float
+    barrier: float
+    # 按 100 米格折算的格数（50 米细分出的子格各 1/4）
+    size: float = 0.0
 
 
 def gaps_of(feature: dict[str, Any]) -> list[Gap]:
-    """每片编了号的灰色区域 × 每个缺的关键品类。格子多的排前面，问题数封顶时先问大片的。"""
+    """每片编了号的灰色区域 × 每个缺的关键品类。格子多的排前面，问题数封顶时先问大片的。
+
+    做过 50 米细分的结果按派生的 50 米格网取格子（与灰色区域的编号同一张格网）。
+    """
     p = feature.get("properties") or {}
-    blind = p.get("blindspots") or {}
+    blind = refined_view(p.get("blindspots") or {}) or {}
     cells = blind.get("cells") or []
     regions = ((p.get("report") or {}).get("gray_regions") or {}).get("regions") or []
     labels = region_labels(blind)
@@ -244,24 +250,25 @@ def gaps_of(feature: dict[str, Any]) -> list[Gap]:
             cat = diag.get("category")
             if cat not in QUESTIONS:
                 continue
-            in_region = [
-                (c["lat"], c["lng"])
+            members = [
+                c
                 for i, c in enumerate(cells)
                 if labels.get(i) == rid and cat in (c.get("missing") or [])
             ]
-            if not in_region:
+            if not members:
                 continue
             gaps.append(
                 Gap(
                     region=rid,
                     category=cat,
                     anchor=(float(anchor["lat"]), float(anchor["lng"])),
-                    cells=in_region,
-                    supply=int(diag.get("supply_cells") or 0),
-                    barrier=int(diag.get("barrier_cells") or 0),
+                    cells=[(c["lat"], c["lng"]) for c in members],
+                    supply=float(diag.get("supply_cells") or 0),
+                    barrier=float(diag.get("barrier_cells") or 0),
+                    size=total(members),
                 )
             )
-    gaps.sort(key=lambda g: -len(g.cells))
+    gaps.sort(key=lambda g: -g.size)
     return gaps
 
 
@@ -455,9 +462,9 @@ def as_payload(
             {
                 "region": gap.region,
                 "category": gap.category,
-                "cells": len(gap.cells),
-                "supply_cells": gap.supply,
-                "barrier_cells": gap.barrier,
+                "cells": _num(gap.size),
+                "supply_cells": _num(gap.supply),
+                "barrier_cells": _num(gap.barrier),
                 "error": row["error"],
                 "returned": row.get("returned", 0),
                 "found": [place_out(f) for f in row["found"]],

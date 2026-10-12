@@ -41,6 +41,60 @@ def export_name(payload: dict[str, Any], ext: str) -> str:
     return f"路遥识途_{safe}_体检报告.{ext}"
 
 
+def _gridcheck_section(check: dict[str, Any] | None) -> list[str]:
+    """网格交叉校核：射线圈仍是主结果，这里只列核对出的缺口、绕行线索与校核估计面积。"""
+    if not check:
+        return []
+    lines = [
+        "",
+        "## 网格交叉校核",
+        "",
+        f"- 口径：{check.get('basis', '')}",
+        f"- 射线法面积 {check.get('ray_area_km2')} km²（主结果，评分按它）；"
+        f"校核估计面积 {check.get('estimate_area_km2')} km²（受约束局部线性插值，另一种估计）。",
+        f"- 射线圈里确认走不到的缺口 {len(check.get('gaps') or [])} 片，"
+        f"约 {round((check.get('gap_area_km2') or 0) * 1e6)} 平方米；"
+        f"只靠插值等待才超时、未核验的点 {check.get('over_unverified', 0)} 个。",
+    ]
+    disputed = check.get("disputed") or {}
+    if disputed.get("points"):
+        lines.append(
+            f"- 存疑、未画出的点 {disputed['points']} 个（约 {disputed.get('area_m2', 0)} 平方米，"
+            f"其中整片存疑 {disputed.get('groups', 0)} 片）：这些点单独取过步行路线，"
+            "路线耗时与「批量算路距离 + 等待」分处 900 秒两侧。"
+        )
+    for gap in check.get("gaps") or []:
+        w = gap.get("worst") or {}
+        confirmed = gap.get("route_confirmed")
+        checked = (
+            f"；{confirmed} 点取过自己的路线、同样超时"
+            if confirmed
+            else ("；只有批量算路的结论，未取路线核验" if confirmed == 0 else "")
+        )
+        lines.append(
+            f"  - {gap.get('id')}：约 {gap.get('area_m2')} 平方米；"
+            f"最远一点直线 {w.get('straight_m')} 米、路网 {w.get('dist_m')} 米，"
+            f"不计等待 {round((w.get('raw_s') or 0) / 60)} 分钟{checked}"
+        )
+    summary = check.get("clue_summary") or {}
+    lines.append(
+        f"- 绕行线索 {summary.get('shown', 0)} 段（候选边 {summary.get('edges', 0)} 条，"
+        f"显示阈值 {summary.get('show_m')} 米为经验值；复测存疑 "
+        f"{(summary.get('contradicted') or 0) + (summary.get('disputed') or 0)} 段未列出）。"
+    )
+    for clue in check.get("clues") or []:
+        v = clue.get("verification") or {}
+        measured = v.get("measured_m")
+        lines.append(
+            f"  - 线索 {clue.get('id')}：相距 {v.get('straight_m')} 米的两格，中心步行分别 "
+            f"{v.get('center_to_from_m')} / {v.get('center_to_to_m')} 米，推得近格 → 远格至少 "
+            f"{v.get('bound_m')} 米，直接测得 {measured if measured is not None else '—'} 米"
+        )
+    for note in check.get("notes") or []:
+        lines.append(f"- {note}")
+    return lines
+
+
 def build_markdown(payload: dict[str, Any]) -> str:
     """生成 Markdown 体检报告。结构与侧栏一致，可直接提交为交付文档。"""
     props = payload.get("properties", {})
@@ -172,6 +226,8 @@ def build_markdown(payload: dict[str, Any]) -> str:
             f"- 被围挡截断的方向：{delay.get('closure_rays', 0)} 个。"
             "接口不能绕开围挡重新规划，受阻按保守口径处理，需现场复核。"
         )
+
+    lines += _gridcheck_section(props.get("gridcheck"))
 
     if blindspots:
         lines += [
@@ -350,26 +406,40 @@ def build_csv(payload: dict[str, Any]) -> str:
             "判为盲区的品类",
             "无法判定的品类",
             "受施工围挡影响",
+            "格边长米",
+            "50米子格（实测的品类）",
         ]
     )
+    spacing = blindspots.get("grid_spacing_m") or 100
     for cell in cells:
-        nearest = cell.get("nearest_m") or {}
-        writer.writerow(
-            [
-                safe_cell(value)
-                for value in (
-                    cell.get("lat", ""),
-                    cell.get("lng", ""),
-                    "是" if cell.get("in_circle", True) else "否",
-                    cell.get("reach_s", ""),
-                    cell.get("reach_raw_s", ""),
-                    ";".join(f"{k}={v}" for k, v in nearest.items() if v is not None),
-                    "、".join(cell.get("missing") or []),
-                    "、".join(cell.get("unknown") or []),
-                    "是" if cell.get("closure_blocked") else "",
-                )
-            ]
-        )
+        # 细分过的格先写父格（格心的结论），再逐个写 4 个子格；占比按子格面积计，不重复统计
+        rows = [(cell, spacing, "")]
+        for q in cell.get("quarters") or []:
+            if q.get("in_circle") is False:
+                label = f"{q.get('q')}（中心在圈外，不计）"
+            else:
+                label = f"{q.get('q')}（{'、'.join(q.get('measured') or []) or '继承'}）"
+            rows.append(({**cell, **q}, spacing / 2, label))
+        for row, size, sub in rows:
+            nearest = row.get("nearest_m") or {}
+            writer.writerow(
+                [
+                    safe_cell(value)
+                    for value in (
+                        row.get("lat", ""),
+                        row.get("lng", ""),
+                        "是" if row.get("in_circle", True) else "否",
+                        row.get("reach_s", ""),
+                        row.get("reach_raw_s", ""),
+                        ";".join(f"{k}={v}" for k, v in nearest.items() if v is not None),
+                        "、".join(row.get("missing") or []),
+                        "、".join(row.get("unknown") or []),
+                        "是" if row.get("closure_blocked") else "",
+                        size,
+                        sub,
+                    )
+                ]
+            )
     return buf.getvalue()
 
 

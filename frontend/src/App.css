@@ -204,6 +204,54 @@ body {
   border-radius: 6px;
 }
 
+.sidebar-report-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0 10px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.sidebar-report-toolbar > span {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.report-sidebar-toggle,
+.report-section-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  flex: none;
+  padding: 5px 7px;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--accent-dark);
+  font: 600 11px/1.4 var(--font-sans);
+  white-space: nowrap;
+}
+
+.report-sidebar-toggle:hover:not(:disabled),
+.report-section-toggle:hover:not(:disabled) {
+  background: var(--panel-soft);
+  border-color: var(--border);
+}
+
+.report-sidebar-toggle:focus-visible,
+.report-section-toggle:focus-visible,
+.sidebar-rail button:focus-visible {
+  outline: 2px solid var(--accent-dark);
+  outline-offset: 2px;
+}
+
 /* ---------- 卡片 ---------- */
 
 /* 侧栏卡片按出现顺序自动编号（01/02/03…），形成规划图纸的分节感 */
@@ -235,6 +283,30 @@ details.card {
   font-size: 14px;
   font-weight: 700;
   letter-spacing: 0.02em;
+}
+
+.report-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.report-section-head > .card-title {
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+.report-section-head > .card-title::before {
+  flex: none;
+}
+
+.report-section-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
 }
 
 .verdict-place {
@@ -1420,9 +1492,11 @@ button.primary:disabled {
   color: var(--muted);
 }
 
+/* 5 / 10 分钟内圈：和地图上一致，绿色细实线、浅绿底 */
 .legend-swatch.ring-inner {
-  background: transparent;
-  border: 1.5px dashed #2563eb;
+  background: rgb(47 158 90 / 22%);
+  border: 1.2px solid #1f7a42;
+  border-radius: 50%;
 }
 
 .busy-mask {
@@ -1580,6 +1654,19 @@ button.primary:disabled {
     display: none !important;
   }
 
+  .sidebar-report-toolbar,
+  .report-section-toggle {
+    display: none !important;
+  }
+
+  .report-section-body[hidden] {
+    display: block !important;
+  }
+
+  .layout.rail .sidebar {
+    display: flex;
+  }
+
   .app {
     height: auto;
   }
@@ -1710,27 +1797,11 @@ button.primary:disabled {
   color: var(--muted);
 }
 
-.legend-scale {
-  display: flex;
-  flex: none;
-  overflow: hidden;
-  border-radius: 3px;
-}
-
-.legend-scale i {
-  width: 22px;
-  height: 14px;
-}
-
 .legend-ends {
   display: flex;
   flex: none;
   gap: 6px;
   color: var(--muted);
-}
-
-.legend-ends em {
-  font-style: normal;
 }
 
 .legend-swatch {
@@ -1746,6 +1817,53 @@ button.primary:disabled {
   border: 1px solid #60a5fa;
 }
 
+/* 热力里被围挡挡住的方格：与地图上的褐色方格一致 */
+.legend-swatch.heat-blocked {
+  background: rgb(124 45 18 / 35%);
+  border: 1px solid #7c2d12;
+}
+
+/* 热力色阶：渐变条下面标分钟刻度 */
+.legend-heat {
+  align-items: flex-start;
+}
+
+.legend-heat .legend-title {
+  padding-top: 1px;
+}
+
+.legend-heat-scale {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 150px;
+  max-width: 190px;
+  padding-bottom: 15px;
+}
+
+.legend-heat-scale > i {
+  display: block;
+  height: 12px;
+  border-radius: 3px;
+}
+
+.legend-heat-ticks em {
+  position: absolute;
+  top: 14px;
+  font-size: 11px;
+  font-style: normal;
+  line-height: 1;
+  color: var(--muted);
+  transform: translateX(-50%);
+}
+
+.legend-heat-ticks em:first-child {
+  transform: none;
+}
+
+.legend-heat-ticks em:last-child {
+  transform: translateX(-100%);
+}
+
 /* 灰色区域（设施匮乏）：与地图上的灰色方格一致 */
 .legend-swatch.gray-region {
   background: rgb(107 114 128 / 42%);
@@ -1755,6 +1873,28 @@ button.primary:disabled {
 .legend-swatch.region-outline {
   background: rgb(107 114 128 / 20%);
   border: 2px solid #374151;
+}
+
+/* 网格交叉校核：与地图上的斜线缺口、点划线范围、赭色线索一致 */
+.legend-swatch.check-gap {
+  background: repeating-linear-gradient(135deg, #9f1239 0 1.4px, transparent 1.4px 5px);
+  border: 1px dashed #9f1239;
+}
+
+.legend-swatch.check-estimate {
+  height: 0;
+  background: transparent;
+  border: 0;
+  border-top: 1.5px dashed #4338ca;
+  border-radius: 0;
+}
+
+.legend-swatch.check-clue {
+  height: 0;
+  background: transparent;
+  border: 0;
+  border-top: 3px solid #92400e;
+  border-radius: 0;
 }
 
 .legend-swatch.blind {
@@ -2140,6 +2280,16 @@ button.primary:disabled {
   padding: 0;
   overflow: hidden;
   border: 1px solid var(--border);
+}
+
+.signature .report-section-head {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--bg);
+}
+
+.signature .card-title::before {
+  content: none;
 }
 
 .sig-grid {

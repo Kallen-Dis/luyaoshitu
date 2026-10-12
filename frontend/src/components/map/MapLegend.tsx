@@ -1,8 +1,8 @@
-import { HEAT_COLORS } from '../../lib/heatRaster'
-import { blindCells } from '../../lib/grid'
+import { HEAT_MAX, heatGradientCss } from '../../lib/heatRaster'
+import { blindArea, blindCells, cellCount, gridCensus } from '../../lib/grid'
 import type { ResultView } from '../../lib/resultView'
 import type { IsochroneFeature, SimulationResult } from '../../types'
-import { BLIND_COLORS, PLACE_MARK, heatScaleS, type LayerState } from './context'
+import { BLIND_COLORS, PLACE_MARK, heatTargetS, type LayerState } from './context'
 
 interface Props {
   tripShown?: boolean
@@ -41,13 +41,21 @@ export function MapLegend({
   const blindspots = p?.blindspots
   const rawShown = Boolean(p?.delay?.applied && p?.raw_ring)
   const inner = layers.innerRings ? (p?.rings ?? []) : []
-  const shownBlind = blindspots ? blindCells(blindspots, blindCategory, simulation).length : 0
+  const shownBlind = blindspots ? blindArea(blindCells(blindspots, blindCategory, simulation)) : 0
+  // 分母按面积：细分出的小格中心在圈外的不计，可能比方格数略少（曹杨 144 格、按面积 141 格）
+  const blindTotal = gridCensus(blindspots)?.units ?? blindspots?.cell_count ?? 0
+  const refined = Boolean(blindspots?.refinement?.split_cells)
   const labeled = (p?.report?.gray_regions?.regions ?? []).filter((r) => r.id).length
   const blindColor = BLIND_COLORS[blindCategory] ?? BLIND_COLORS.all
   const places = (p?.coverage?.places ?? []).filter(place => place.fresh_status !== 'excluded' && (layers.outsidePlaces || place.in_circle))
   const present = new Set(places.map(place => place.category))
   const userPlaces = places.some((place) => place.source === 'user')
-  const scale = blindspots ? heatScaleS(blindspots.max_reach_s, p?.minutes) : 0
+  // 色阶刻度：0 到阈值的 4/3 倍，等分四段（15 分钟阈值即 0 / 5 / 10 / 15 / 20 分钟）
+  const targetMin = heatTargetS(p?.minutes) / 60
+  const ticks = [0, 1, 2, 3, 4].map((k) => Math.round((targetMin * HEAT_MAX * k) / 4))
+  const unmeasured = (blindspots?.cells ?? []).filter((c) => c.reach_s === null && !c.closure_blocked).length
+  const blocked = (blindspots?.cells ?? []).filter((c) => c.closure_blocked).length
+  const check = p?.gridcheck ?? null
 
   return (
     <div className="map-legend floating" aria-label="图例">
@@ -81,26 +89,32 @@ export function MapLegend({
 
       {layers.heat && blindspots && (
         <>
-          <div className="legend-row">
-            <span className="legend-title">步行耗时</span>
-            <span className="legend-scale">
-              {HEAT_COLORS.map((c) => (
-                <i key={c} style={{ background: c }} />
-              ))}
+          <div className="legend-row legend-heat">
+            <span className="legend-title">从中心步行</span>
+            <span className="legend-heat-scale">
+              <i style={{ background: heatGradientCss() }} />
+              <span className="legend-heat-ticks">
+                {ticks.map((t, k) => (
+                  <em key={k} style={{ left: `${k * 25}%` }}>
+                    {k === ticks.length - 1 ? `${t}+` : t}
+                  </em>
+                ))}
+              </span>
             </span>
-            <span className="legend-ends">
-              <em>近</em>
-              <em>
-                {blindspots.max_reach_s !== null
-                  ? `${blindspots.max_reach_s > scale ? '≥ ' : ''}${Math.round(scale / 60)} 分钟`
-                  : '远'}
-              </em>
-            </span>
+            <span className="legend-ends">分钟</span>
           </div>
-          <div className="legend-row">
-            <span className="legend-swatch unknown" />
-            <span>浅蓝：测距失败；褐色：被围挡挡住。都不代表「很远」</span>
-          </div>
+          {unmeasured > 0 && (
+            <div className="legend-row">
+              <span className="legend-swatch unknown" />
+              <span>浅蓝方格 {unmeasured} 个：没测到从中心过去的耗时（接口没返回结果），不是走不到</span>
+            </div>
+          )}
+          {blocked > 0 && (
+            <div className="legend-row">
+              <span className="legend-swatch heat-blocked" />
+              <span>褐色方格 {blocked} 个：从中心过来的路被施工围挡挡住，不画耗时</span>
+            </div>
+          )}
           {vectorHeat && (
             <div className="legend-row">
               <span>3D / 卫星视角下按方格着色，不做格间平滑</span>
@@ -117,9 +131,10 @@ export function MapLegend({
             style={{ background: `${blindColor}44`, borderColor: blindColor }}
           />
           <span>
-            {blindCategory === 'all' ? '缺任一类设施' : `缺${blindCategory}`}：{shownBlind} /{' '}
-            {blindspots.cell_count} 格
+            {blindCategory === 'all' ? '缺任一类设施' : `缺${blindCategory}`}：{cellCount(shownBlind)} /{' '}
+            {cellCount(blindTotal)} 格
             {blindspots.layout === 'disc' ? '' : '（只看 15 分钟圈内）'}
+            {refined ? '；边界格切成 50 米小格，按面积折算' : ''}
           </span>
         </div>
       )}
@@ -131,10 +146,27 @@ export function MapLegend({
           </span>
         </div>
       )}
+      {check && !simulation && layers.checkGaps && check.gaps.length > 0 && (
+        <div className="legend-row">
+          <span className="legend-swatch check-gap" />
+          <span>斜线：射线圈里确认走不到的缺口 {check.gaps.length} 片（网格交叉校核，点开看证据）</span>
+        </div>
+      )}
+      {check && !simulation && layers.checkEstimate && (
+        <div className="legend-row">
+          <span className="legend-swatch check-estimate" />
+          <span>点划线：把射线点和网格点放在一起重新估的 15 分钟边界，{check.estimate_area_km2.toFixed(2)} km²，只作对照，评分仍按实线圈</span>
+        </div>
+      )}
+      {check && !simulation && layers.detourClues && check.clues.length > 0 && (
+        <div className="legend-row">
+          <span className="legend-swatch check-clue" />
+          <span>赭色线：绕行线索。线两边的方格挨着，从中心走过去却要多绕几百米，中间可能隔着围墙、河道等；线只标大致位置</span>
+        </div>
+      )}
 
       {present.size > 0 && (
         <div className="legend-marks compact">
-          {places.some(place => place.fresh_status === 'pending') && <span className="legend-mark">菜? · 是否卖菜待确认</span>}
           {Object.entries(PLACE_MARK)
             .filter(([name]) => present.has(name))
             .map(([name, mark]) => (
@@ -149,6 +181,15 @@ export function MapLegend({
               用户补录
             </span>
           )}
+        </div>
+      )}
+      {/* 和地图上的标记同样画法：浅底、虚线圈的「菜」 */}
+      {places.some((place) => place.fresh_status === 'pending') && (
+        <div className="legend-row">
+          <span className="legend-mark compact-mark">
+            <i className="fresh-pending">菜</i>
+          </span>
+          <span>超市，但不确定是否卖菜</span>
         </div>
       )}
 

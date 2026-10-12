@@ -11,6 +11,34 @@ export interface MapOutline {
   anchor?: { lat: number; lng: number }
   closed?: boolean
   arrows?: boolean
+  /** 给出颜色时，环内（奇偶规则）铺斜线 */
+  hatch?: string
+}
+
+const hatchPatterns = new Map<string, HTMLCanvasElement>()
+
+/** 8×8 的斜线小图，平铺成「确认走不到」的阴影线。按屏幕像素铺，不随缩放变疏变密。 */
+function hatchTile(color: string): HTMLCanvasElement {
+  const cached = hatchPatterns.get(color)
+  if (cached) return cached
+  const tile = document.createElement('canvas')
+  tile.width = 8
+  tile.height = 8
+  const c = tile.getContext('2d')
+  if (c) {
+    c.strokeStyle = color
+    c.lineWidth = 1.4
+    c.beginPath()
+    c.moveTo(-2, 10)
+    c.lineTo(10, -2)
+    c.moveTo(-2, 2)
+    c.lineTo(2, -2)
+    c.moveTo(6, 10)
+    c.lineTo(10, 6)
+    c.stroke()
+  }
+  hatchPatterns.set(color, tile)
+  return tile
 }
 
 interface Props {
@@ -61,6 +89,14 @@ export function MapOutlines({ mapRef, ready, active, outlines, opacity, arrowsOn
         return { ...outline, path, arrowPositions: arrows }
       })
       if (!arrowsOnly) {
+        for (const { path, hatch, alpha = 1 } of paths) {
+          if (!hatch) continue
+          const pattern = ctx.createPattern(hatchTile(hatch), 'repeat')
+          if (!pattern) continue
+          ctx.globalAlpha = opacity * alpha * 0.75
+          ctx.fillStyle = pattern
+          ctx.fill(path, 'evenodd')
+        }
         // 窄衬线保留原有直角和坐标；虚线的衬线也留出同样的间隔。
         ctx.strokeStyle = '#f8fafc'
         for (const { path, weight, dash, alpha = 1, haloWidth = 2 } of paths) {

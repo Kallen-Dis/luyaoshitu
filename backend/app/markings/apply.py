@@ -22,6 +22,8 @@ from typing import Any
 from ..isochrone.geometry import first_entry_along, haversine_m, point_in_polygon
 from ..isochrone.refine import MAX_CLOSURES, Closure
 from ..poi.collect import CoverageResult, Poi, normalize_name
+from ..report.regions import _num
+from ..report.subgrid import refined_view, weight
 from .models import parse_time
 
 MODES = ("auto", "all", "none")
@@ -320,9 +322,12 @@ def compute_effects(
     coverage_a: dict[str, Any] | None,
     coverage_b: dict[str, Any] | None,
 ) -> None:
-    """逐条算出标注对结果的影响，写进 marking_plan.effects。"""
-    cells_a = _cells_by_key(blind_a)
-    cells_b = _cells_by_key(blind_b)
+    """逐条算出标注对结果的影响，写进 marking_plan.effects。
+
+    做过 50 米细分时在派生的 50 米格网上比较，格数按 100 米格折算（子格各 1/4）。
+    """
+    cells_a = _cells_by_key(refined_view(blind_a))
+    cells_b = _cells_by_key(refined_view(blind_b))
     limit = float((blind_b or blind_a or {}).get("walk_limit_m") or 1000.0)
     places = (coverage_a or {}).get("places") or []
     for m in marking_plan.applied:
@@ -349,9 +354,9 @@ def compute_effects(
                         continue
                     was = cat in (ca.get("missing") or [])
                     now = cat in (cb.get("missing") or [])
-                    gained += int(now and not was)
-                    cleared += int(was and not now)
-                data.update(gained=gained, cleared=cleared)
+                    gained += weight(cb) * int(now and not was)
+                    cleared += weight(cb) * int(was and not now)
+                data.update(gained=_num(gained), cleared=_num(cleared))
             else:
                 data.update(
                     before=int(((coverage_a or {}).get("categories") or {}).get(cat, 0)),
@@ -360,15 +365,27 @@ def compute_effects(
         else:
             ring = [(float(p[1]), float(p[0])) for p in spec["polygon"]]
             inside = [c for key, c in cells_b.items() if point_in_polygon(key[0], key[1], ring)]
-            data["cells"] = len(inside)
-            data["agree"] = sum(
-                1 for c in inside if set(c.get("missing") or []) & set(spec["categories"])
+            data["cells"] = _num(sum(weight(c) for c in inside))
+            data["agree"] = _num(
+                sum(
+                    weight(c)
+                    for c in inside
+                    if set(c.get("missing") or []) & set(spec["categories"])
+                )
             )
         data["text"] = _effect_text(m, data)
         marking_plan.effects[mid] = data
 
 
-CELL_FIELDS = ("missing", "unknown", "nearest_m", "reach_s", "reach_raw_s", "closure_blocked")
+CELL_FIELDS = (
+    "missing",
+    "unknown",
+    "nearest_m",
+    "reach_s",
+    "reach_raw_s",
+    "closure_blocked",
+    "quarters",
+)
 
 
 def changed_cells(

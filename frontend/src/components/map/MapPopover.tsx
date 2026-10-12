@@ -2,9 +2,18 @@ import { freshEligible, freshLabel } from '../../lib/fresh'
 import { FreshFeedback } from '../trip/FreshFeedback'
 import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from 'react'
 import { TYPE_META, formatDistance, metersBetween, type LatLng } from '../../lib/markings'
-import type { GrayRegion, GridCell, MarkingType, Place, RecheckSuspect } from '../../types'
+import { DELAY_SOURCE_TEXT, gapReason, minutesText, routeCheckText } from '../../lib/gridCheck'
+import type { GrayRegion, GridCell, GridCheckClue, GridCheckGap, MarkingType, Place, RecheckSuspect } from '../../types'
 import { Icon, type IconName } from '../markings/Icon'
-import { PLACE_MARK, SHORT_NAME, type ComposerPreset, type MapContext, type MapIntent } from './context'
+import {
+  CHECK_CLUE_COLOR,
+  CHECK_GAP_COLOR,
+  PLACE_MARK,
+  SHORT_NAME,
+  type ComposerPreset,
+  type MapContext,
+  type MapIntent,
+} from './context'
 
 interface Props {
   ctx: MapContext
@@ -105,6 +114,14 @@ function cellContent(
   else if (freshReason === 'fresh_legacy') notes.push('旧快照的买菜能力待确认，请重新体检')
   const distanceUnknown = cell.unknown.filter(category => category !== '生鲜采买' || !freshReason)
   if (distanceUnknown.length > 0) notes.push(`测距失败、无法判定：${distanceUnknown.map(short).join('、')}`)
+  if (cell.sub) {
+    const measured = cell.sub.measured.map(short)
+    notes.push(
+      measured.length > 0
+        ? `50 米小格：${measured.join('、')}按这一小格实测，其余继承所在 100 米格`
+        : '50 米小格：结论继承所在 100 米格',
+    )
+  }
   if (cell.closure_blocked) notes.push('从中心过来的路线被围挡挡住')
   else if (cell.reach_s != null) notes.push(`自中心步行约 ${Math.round(cell.reach_s / 60)} 分钟`)
   if (cell.in_circle === false) notes.push('在 15 分钟圈外')
@@ -327,6 +344,82 @@ function suspectContent(s: RecheckSuspect, canMark: boolean): Content {
   }
 }
 
+function fact(label: string, value: string) {
+  return (
+    <li key={label}>
+      <div className="map-pop-fact">
+        <span>{label}</span>
+        <b>{value}</b>
+      </div>
+    </li>
+  )
+}
+
+function clueFacts(clue: GridCheckClue) {
+  const v = clue.verification
+  return (
+    <ul className="map-pop-facts">
+      {fact('两格相距（直线）', `${v.straight_m} 米`)}
+      {fact('中心步行到近格 / 远格', `${v.center_to_from_m} / ${v.center_to_to_m} 米`)}
+      {fact('推得近格 → 远格至少', `${v.bound_m} 米`)}
+      {fact('直接测近格 → 远格', v.measured_m != null ? `${v.measured_m} 米` : '预算内没测')}
+    </ul>
+  )
+}
+
+function clueContent(clue: GridCheckClue): Content {
+  const v = clue.verification
+  return {
+    badge: { glyph: '绕', color: CHECK_CLUE_COLOR },
+    title: `绕行线索 ${clue.id}`,
+    sub: clue.status === 'confirmed' ? '已直接测得两格之间要绕远' : '跳变够大，但预算内没有直接复测',
+    body: (
+      <>
+        {clueFacts(clue)}
+        <p className="map-pop-note">
+          线是两格的公共边，不是围墙、河道的真实位置（约 ±50 米）。推算假定两次测距吸附在同一条路上；
+          {v.route_m != null ? `地图上的虚线是步行路线规划给的走法（${v.route_m} 米，口径与批量算路略有不同，只作示意）。` : '没取到示意路线。'}
+        </p>
+      </>
+    ),
+    actions: [],
+    foot: '400 米显示阈值、60 米吸附余量都是经验值，不是已证明的误差上限',
+  }
+}
+
+function gapContent(gap: GridCheckGap, clues: GridCheckClue[], targetS: number): Content {
+  const w = gap.worst
+  const parts = gap.leaves.length
+  const body = (
+    <>
+      <ul className="map-pop-facts">
+        {fact('最远一点：直线 / 路网', `${w.straight_m} / ${w.dist_m ?? '—'} 米`)}
+        {fact('不计等待 / 计入等待', `${minutesText(w.raw_s)} / ${w.blocked ? '受阻' : minutesText(w.eff_s)}`)}
+        {w.route_s != null && fact('它自己的步行路线', `${minutesText(w.route_s)} · ${w.route_m ?? '—'} 米`)}
+      </ul>
+      <p className="map-pop-note">
+        {gapReason(w, targetS)}。{DELAY_SOURCE_TEXT[w.delay_source]}。{routeCheckText(gap)}
+        {gap.partial_cells > 0 ? `其中 ${gap.partial_cells} 个网格只有一部分走不到，按子点分别保留，没有整格删掉。` : ''}
+      </p>
+      {clues.length > 0 && (
+        <p className="map-pop-note">
+          附近有绕行线索 {clues.map((c) => c.id).join('、')}：相距 {clues[0].verification.straight_m} 米的两格，
+          中心走过去差 {clues[0].verification.bound_m} 米
+          {clues[0].verification.measured_m != null ? `，直接测两格之间要走 ${clues[0].verification.measured_m} 米` : ''}。
+        </p>
+      )}
+    </>
+  )
+  return {
+    badge: { glyph: '缺', color: CHECK_GAP_COLOR },
+    title: `射线圈里的缺口 ${gap.id}`,
+    sub: `约 ${Math.round(gap.area_m2)} 平方米 · ${parts} 个测时点（50 / 25 米子点）`,
+    body,
+    actions: [],
+    foot: '网格交叉校核：射线圈仍是主结果，这片不改动面积与评分',
+  }
+}
+
 function pointContent(lat: number, lng: number): Content {
   const at = { lat, lng }
   const context = '来自地图上点的位置'
@@ -373,6 +466,10 @@ function build(ctx: MapContext, props: Props): Content {
         ),
       }
     }
+    case 'gap':
+      return gapContent(ctx.gap, ctx.clues, ctx.targetS)
+    case 'clue':
+      return clueContent(ctx.clue)
     case 'point':
       return pointContent(ctx.lat, ctx.lng)
   }

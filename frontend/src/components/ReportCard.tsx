@@ -1,7 +1,9 @@
 import { freshEligible } from '../lib/fresh'
-import { gridCensus } from '../lib/grid'
+import { cellCount, gridCensus } from '../lib/grid'
+import { areaDelta } from '../lib/gridCheck'
 import { CrosscheckPanel } from './CrosscheckPanel'
 import { ScoreRadar } from './ScoreRadar'
+import { ReportSection } from './ReportSection'
 import { PLACE_MARK } from './map/context'
 import type {
   Coverage,
@@ -150,7 +152,7 @@ function FacilitySheet({
 }: {
   reads: FacilityRead[]
   detour: number | null
-  census: { total: number; blind: number } | null
+  census: { total: number; units: number; blind: number; refined?: boolean } | null
   delayPerKmS: number | null
   extentKm: string | null
   onTrip?: (category: string) => void
@@ -165,7 +167,7 @@ function FacilitySheet({
         {census
           ? extentKm
             ? `菜场、药店、小学的方格与地图是同一套：周围 ${extentKm} 公里共 ${census.total} 格，按网格判定，未知格不计入缺失；其中 ${census.blind} 格步行 1 公里内缺至少一类。`
-            : `菜场、药店、小学的方格与地图是同一套：15 分钟圈内共 ${census.total} 格，按网格判定，未知格不计入缺失；其中 ${census.blind} 格步行 1 公里内缺至少一类。`
+            : `菜场、药店、小学的方格与地图是同一套：15 分钟圈内共 ${census.total} 格，按网格判定，未知格不计入缺失；其中 ${cellCount(census.blind)} 格步行 1 公里内缺至少一类${census.refined ? '（与邻格结论不同的边界格切成 50 米小格实测，按面积折算，子格不和父格重复计）' : ''}。`
           : ''}
       </p></details>
       <ul className="exam-list facility-sheet">
@@ -187,8 +189,8 @@ function FacilitySheet({
             <strong className="exam-facility-name">{item.nearest?.name ?? '检索范围内没有这一类'}</strong>
             {item.nearest && <div className="exam-facility-meta"><span>直线 {Math.round(item.nearest.straightM)} 米</span><span>{item.nearest.inside ? '生活圈内' : '生活圈外'}</span><span>圈内 {item.inCircle} 处</span></div>}
             {item.cellsMissing != null && census && <div className="exam-cell-status">
-              <p>{census.total > item.cellsUnknown ? `步行 1 公里内缺失 ${item.cellsMissing} / ${census.total - item.cellsUnknown} 个已判定网格` : '本类网格尚未完成判定'}</p>
-              {item.cellsUnknown > 0 && <p className="exam-cell-pending">另 {item.cellsUnknown} 格待确认或测距未完成</p>}
+              <p>{census.units > item.cellsUnknown ? `步行 1 公里内缺失 ${cellCount(item.cellsMissing)} / ${cellCount(census.units - item.cellsUnknown)} 个已判定网格` : '本类网格尚未完成判定'}</p>
+              {item.cellsUnknown > 0 && <p className="exam-cell-pending">另 {cellCount(item.cellsUnknown)} 格待确认或测距未完成</p>}
             </div>}
             {onTrip && <div className="exam-facility-action"><button type="button" className="trip-report-link" onClick={() => onTrip(item.category)} aria-label={`${item.category}：查看设施步行路线`}>
               <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><circle cx="4" cy="15" r="2" /><circle cx="16" cy="5" r="2" /><path d="M4 13V7a3 3 0 0 1 3-3h2a3 3 0 0 1 0 6h4a3 3 0 0 0 3-3" /></svg><span>怎么走</span><span aria-hidden="true">→</span>
@@ -228,6 +230,8 @@ export function ReportCard({
   const blindspots = meta?.blindspots
   const census = gridCensus(blindspots)
   const delay = meta?.delay
+  const check = meta?.gridcheck ?? null
+  const checkSpacing = blindspots?.grid_spacing_m ?? 100
   const delayPerKmS = delay?.applied ? delay.delay_per_km_s : null
   const speed = delay?.base_speed_m_per_s ?? meta?.speed_m_per_s ?? 1.17
   const extentKm =
@@ -269,8 +273,7 @@ export function ReportCard({
       </section>
 
       {grayRegions.length > 0 && (
-        <section className="card">
-          <h2 className="card-title">灰色区域（设施匮乏，自动标注）</h2>
+        <ReportSection title="灰色区域（设施匮乏，自动标注）" defaultExpanded={false}>
           <p className="hint">
             相邻的盲区方格合并成片，按面积编号。成因按直线 1 公里内有没有同类设施区分：
             有却走不到是<b>路网阻隔</b>（该打通），没有是<b>供给缺口</b>（该补设）。
@@ -327,12 +330,11 @@ export function ReportCard({
               onShare={onShareSuspect}
             />
           )}
-        </section>
+        </ReportSection>
       )}
 
       {report.prescriptions && report.prescriptions.length > 0 && (
-        <section className="card">
-          <h2 className="card-title">自动诊疗</h2>
+        <ReportSection title="自动诊疗">
           <p className="hint">
             {report.prescriptions.some((p) => p.basis)
               ? '按灰色区域的逐格成因开方，不另耗配额：路网阻隔 → 打通，供给缺口 → 补设（最大覆盖贪心选址）。' +
@@ -485,12 +487,11 @@ export function ReportCard({
               </p>
             </div>
           )}
-        </section>
+        </ReportSection>
       )}
 
       {(meta?.warnings?.length ?? 0) > 0 && (
-        <section className="card warn-card" role="status" aria-label="本次分析的降级说明">
-          <h2 className="card-title">这次分析有 {meta?.warnings?.length} 处降级</h2>
+        <ReportSection title={`这次分析有 ${meta?.warnings?.length} 处降级`} className="warn-card" role="status" ariaLabel="本次分析的降级说明">
           <ul className="warn-list">
             {meta?.warnings?.map((w, i) => (
               <li key={`${w.stage}-${i}`}>
@@ -502,12 +503,11 @@ export function ReportCard({
           <p className="hint">
             降级是为了不把「没测到」写成「没有」：未能判定的部分不计入评分，也不会被画成盲区。
           </p>
-        </section>
+        </ReportSection>
       )}
 
       {meta?.traffic && (
-        <section className="card">
-          <h2 className="card-title">实时路况的时效</h2>
+        <ReportSection title="实时路况的时效">
           <p>
             本次用到的路况里，最旧的是 <b>{meta.traffic.max_age_min}</b> 分钟前查到的
             （{meta.traffic.fresh_ttl_min} 分钟内的缓存视为实时）。
@@ -515,12 +515,11 @@ export function ReportCard({
               ? ` 其中 ${meta.traffic.stale_points} 个采样点因接口失败用了旧路况兜底，最旧 ${meta.traffic.stale_max_age_min ?? '—'} 分钟前。`
               : ''}
           </p>
-        </section>
+        </ReportSection>
       )}
 
       {(delay || meta?.refine_skipped) && (
-        <section className="card">
-          <h2 className="card-title">过街等待与施工围挡</h2>
+        <ReportSection title="过街等待与施工围挡">
           {delay?.applied ? (
             <>
               <ul className="sim-metrics">
@@ -582,11 +581,81 @@ export function ReportCard({
               围挡内的设施 {blindspots.closure_check.excluded_places} 处视为暂不可用。
             </p>
           )}
-        </section>
+        </ReportSection>
       )}
 
-      <section className="card">
-        <h2 className="card-title">圈内各类民生设施覆盖</h2>
+      {check && (
+        <ReportSection title="网格交叉校核" defaultExpanded={false}>
+          <ul className="sim-metrics">
+            <li>
+              <span>射线法面积（主结果，评分按它）</span>
+              <b>{check.ray_area_km2.toFixed(3)} km²</b>
+            </li>
+            <li>
+              <span>校核估计面积</span>
+              <b>
+                {check.estimate_area_km2.toFixed(3)} km² · {areaDelta(check)}
+              </b>
+            </li>
+            <li>
+              <span>射线圈里确认走不到的缺口</span>
+              <b>
+                {check.gaps.length} 片 · 约 {Math.round(check.gap_area_km2 * 1e6).toLocaleString()} m²
+              </b>
+            </li>
+            {(check.disputed?.points ?? 0) > 0 && (
+              <li>
+                <span>存疑、未画出的点（路线与批量算路结论相反）</span>
+                <b>
+                  {check.disputed?.points} 个 · 约 {(check.disputed?.area_m2 ?? 0).toLocaleString()} m²
+                </b>
+              </li>
+            )}
+            <li>
+              <span>射线圈外、实测 15 分钟内走得到的点</span>
+              <b>
+                {check.outside_reachable} 个
+                {check.disputed?.outside_points ? `（另 ${check.disputed.outside_points} 个路线说超时，存疑不计）` : ''}
+              </b>
+            </li>
+            <li>
+              <span>绕行线索（显示 / 候选边）</span>
+              <b>
+                {check.clue_summary.shown} 段 / {check.clue_summary.edges} 条
+              </b>
+            </li>
+            <li>
+              <span>
+                测时点：圈内格 · 外圈格 · {checkSpacing / 2} / {checkSpacing / 4} 米子点
+              </span>
+              <b>
+                {check.points.cells} · {check.points.outer} · {check.points.sub50} / {check.points.sub25}
+              </b>
+            </li>
+            <li>
+              <span>校核时新增点对 · 步行路线（命中缓存不计）</span>
+              <b>
+                {check.usage.matrix_pairs} · {check.usage.routes}
+              </b>
+            </li>
+          </ul>
+          <p className="hint">
+            用另一组网格样本交叉核对射线圈：方格的路网距离与不含等待的耗时逐点实测，过街等待仍取自相邻射线，
+            只有单独取过路线的 {check.routes.points_verified} 个点用自己的等待，所以不是独立校核。
+            缺口只画确认超过 15 分钟的点（不计等待已超时，或用自己的路线补上等待后超时）
+            {check.over_unverified > 0 ? `；另有 ${check.over_unverified} 个点只靠插值等待才超时，记为待核实、不画` : ''}。
+            取过路线的点，路线自己的耗时也要超过 15 分钟，两者结论相反的记为存疑、不画；
+            一个点都没取过路线的片，再取最远的一点核验
+            {check.routes.representatives ? `（核验了 ${check.routes.representatives} 片）` : ''}。
+            校核估计面积：把射线点和网格点连成三角网，在每个三角形里按位置比例估耗时（不跨绕行线索），再取 15 分钟边界；
+            它只作对照，面积和评分仍按射线圈。
+            {check.corrected > 0 ? ` 重测纠正了 ${check.corrected} 个格心的缓存值。` : ''}
+            {check.stopped ? ` 预算或配额用完，校核没做完（${check.stopped}）。` : ''}
+          </p>
+        </ReportSection>
+      )}
+
+      <ReportSection title="圈内各类民生设施覆盖">
         {report.categories ? (
           <>
             <p className="exam-lead">
@@ -678,11 +747,10 @@ export function ReportCard({
             </p>
           </div>
         )}
-      </section>
+      </ReportSection>
 
       {reads && (
-        <section className="card">
-          <h2 className="card-title">逐类最近设施</h2>
+        <ReportSection title="逐类最近设施" defaultExpanded={false}>
           <FacilitySheet
             reads={reads}
             detour={meta?.mean_detour ?? null}
@@ -691,7 +759,7 @@ export function ReportCard({
             extentKm={extentKm}
             onTrip={onTrip}
           />
-        </section>
+        </ReportSection>
       )}
     </>
   )
