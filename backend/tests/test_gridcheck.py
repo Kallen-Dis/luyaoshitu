@@ -97,6 +97,14 @@ class FakeNet:
         else:
             dist = self.dist(origin, destination)
         dist *= self.route_scale
+        parts = max(1, math.ceil(haversine_m(*origin, *destination) / 50))
+        path = [
+            [
+                origin[0] + (destination[0] - origin[0]) * i / parts,
+                origin[1] + (destination[1] - origin[1]) * i / parts,
+            ]
+            for i in range(parts + 1)
+        ]
         return {
             "distance_m": dist,
             "duration_s": dist / SPEED + self.route_wait_s,
@@ -105,8 +113,10 @@ class FakeNet:
                     "distance_m": dist,
                     "duration_s": dist / SPEED + self.route_wait_s,
                     "instruction": "过马路",
+                    "start_location": {"lat": origin[0], "lng": origin[1]},
+                    "end_location": {"lat": destination[0], "lng": destination[1]},
                     "turn_type": "",
-                    "path": [list(origin), list(destination)],
+                    "path": path,
                 }
             ],
         }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { clipBlindCell, clipRegionOutlines } from '../src/lib/grayDisplay.ts'
+import { clipBlindCell, clipBlindSurface, clipRegionOutlines } from '../src/lib/grayDisplay.ts'
 
 const square = (x0, y0, x1, y1) => [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
 const area = ring => Math.abs(ring.reduce((sum, point, index) => {
@@ -43,17 +43,17 @@ test('outside and edge-touching geometry produce no gray fill or outline', () =>
   assert.deepEqual(clipRegionOutlines([square(2, 2, 3, 3)], circle), [])
 })
 
-test('the real sample C outline is clipped while the snapshot and report remain intact', () => {
+test('an old sample edge cell is clipped to the updated full surface without changing the report', () => {
   const feature = JSON.parse(readFileSync(new URL('../../data/samples/isochrone-caoyang-15min.geojson', import.meta.url), 'utf8'))
   const source = JSON.stringify(feature)
   // 快照内区域由原网格生成；这里只用现版圈内C区对应的单格外环作显示裁剪。
-  const circle = feature.geometry.coordinates[0]
+  const circle = feature.geometry
   const cell = { lat: 31.244053, lng: 121.419224 }
   const halfLat = 50 / 111320
   const halfLng = halfLat / Math.cos(cell.lat * Math.PI / 180)
   const corners = square(cell.lng - halfLng, cell.lat - halfLat, cell.lng + halfLng, cell.lat + halfLat)
-  const parts = clipBlindCell(corners, circle)
-  assert.ok(parts.length > 0)
-  assert.ok(parts.reduce((sum, ring) => sum + area(ring), 0) < area(corners))
+  const parts = clipBlindSurface(corners, circle)
+  const cutArea = parts.reduce((sum, face) => sum + area(face[0]) - face.slice(1).reduce((s, hole) => s + area(hole), 0), 0)
+  assert.ok(cutArea < area(corners))
   assert.equal(JSON.stringify(feature), source)
 })

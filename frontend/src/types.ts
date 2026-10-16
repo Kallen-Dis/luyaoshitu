@@ -77,6 +77,15 @@ export type TripReanchorResult = TripPlanResult & { routing_feature: IsochroneFe
 export type TripNearbyResult = TripNearestResult & { routing_feature: IsochroneFeature }
 
 export interface IsochroneProperties {
+  geometry_method?: 'ray' | 'fusion'
+  algorithm_version?: string
+  geographic_warning?: string
+  geographic_domain?: { status: string; source?: string; version?: string; reason?: string; provider?: string; alignment_verified?: boolean }
+  area_estimate_only?: boolean
+  fusion_fallback?: string
+  fusion_review?: { version: string; quality: FusionInfo['quality']; validation: FusionInfo['validation']; adoption?: FusionInfo['adoption'] }
+  fusion?: FusionInfo
+  fusion_budget?: { matrix_pairs: number; routes: number; max_pairs: number; max_routes: number; refused_pairs: number; refused_routes: number; pair_attempts?: number; route_attempts?: number }
   minutes: number
   area_m2: number
   area_km2: number
@@ -112,7 +121,7 @@ export interface IsochroneProperties {
   /** 离线模拟标记：为 true 时结果由确定性伪随机生成，不代表真实路网。 */
   simulated?: boolean
   /** 同一次采样插出的内圈。快照若是旧格式则没有。 */
-  rings?: { minutes: number; coordinates: [number, number][] }[]
+  rings?: { minutes: number; coordinates: [number, number][]; geometry?: SurfaceGeometry }[]
   /** 过街与路口等待校正的汇总（仅步行、且做了路线校正时存在）。 */
   delay?: DelayInfo
   /** 未计过街等待、未按围挡截断的外圈，[经度, 纬度]。 */
@@ -132,6 +141,65 @@ export interface IsochroneProperties {
   markings?: MarkingsResult
   /** 另一组网格样本交叉校核（辅助图层）。射线圈仍是主几何，评分不受它影响。 */
   gridcheck?: GridCheck
+}
+
+export type SurfaceGeometry =
+  | { type: 'Polygon'; coordinates: [number, number][][] }
+  | { type: 'MultiPolygon'; coordinates: [number, number][][][] }
+
+export interface ValidationCoverage {
+  required_regions: number
+  checked_regions: number
+  required_sectors: number
+  checked_sectors: number
+  complete: boolean
+  target_points?: number
+  planned_points?: number
+  planned_regions?: number
+  unplanned_regions?: number[]
+  unplanned_sectors?: number[]
+  plan_complete?: boolean
+  budget?: { cached_points: number; required_requests: number; available_requests: number; shortfall: number; sufficient: boolean; planned_requests?: number }
+}
+
+export interface FusionHole {
+  id: number
+  ring: [number, number][]
+  area_m2: number
+  supported: boolean
+  slow_points: number
+  surrounding_sectors: number[]
+  mesh_stable: boolean
+  support_stable: boolean
+  confirmed_clue_ids: number[]
+  status: 'supported' | 'conflict' | 'insufficient' | 'geographic'
+}
+
+export interface FusionInfo {
+  adoption?: { rollback_nodes: number; ready_for_validation: boolean; candidate_hash: string; targets_hash: string }
+  quality?: { ready: boolean; missing_observations: number; constraint_conflicts: number; protected_routes: number; computational_spacing_m: number; validation_disagreements?: number; path_constraints?: number; path_violations?: number; unsupported_inner_holes?: number; origin_conflicts?: number; hole_records?: FusionHole[]; hole_validation_complete?: boolean; micro_hole_regularization?: { filled_count: number; filled_area_m2: number }; validation_status?: 'verified' | 'estimated' | 'rejected'; local_hole_estimate_count?: number; localized_topology_only?: boolean; water_path_conflicts?: number; geographic_verification_pending?: boolean
+    sampling_pending?: boolean }
+
+  version: string
+  target_s: number
+  geometry: SurfaceGeometry
+  ray_geometry: SurfaceGeometry
+  unknown_geometry: SurfaceGeometry
+  area_km2: number
+  ray_area_km2: number
+  ray_statistics?: { score?: number | null; blind_ratio?: Record<string, number> | null; blind_count?: number | null }
+  unknown_km2: number
+  unknown_inside_ray_km2: number
+  added_area_km2: number
+  omitted_ray_area_km2: number
+  status: 'partial' | 'estimated'
+  basis: string
+  pending_points: { lat: number; lng: number; size_m: number; reason: string }[]
+  measured_points: { lat: number; lng: number; raw_s: number | null; time_s: number | null; distance_m: number | null; source: string }[]
+  time_field?: { vertices: [number, number, number | null][]; triangles: [number, number, number][] }
+  validation?: { requested: number; checked: number; corrections: number; disagreements?: number; unknown: number; basis: string; coverage?: ValidationCoverage; points: { lat: number; lng: number; predicted_reachable: boolean; route_s: number | null; verdict: 'unknown' | 'consistent' | 'corrected' | 'conflict' }[] } | null
+  completion?: { cache_routes_restored: number; route_checks: number; extra_points: number; pending_before_km2: number; pending_after_km2: number; route_verified_points: number; relocated_observations: number } | null
+  notes: string[]
 }
 
 /** 交叉校核里的一个测时点（叶子方格）。 */
@@ -317,11 +385,7 @@ export interface QuotaStats {
 
 export interface IsochroneFeature {
   type: 'Feature'
-  geometry: {
-    type: 'Polygon'
-    /** GeoJSON 惯例为 [经度, 纬度]，与百度 API 的 (lat, lng) 顺序相反。 */
-    coordinates: [number, number][][]
-  }
+  geometry: SurfaceGeometry
   properties: IsochroneProperties
 }
 
@@ -645,6 +709,8 @@ export interface Coverage {
 
 /** 一个网格点的判定结果。热力图与盲区标注共用它。 */
 export interface GridCell {
+  reach_source?: string
+  reach_observed_s?: number | null
   unknown_reasons?: Record<string, string>
   lat: number
   lng: number
@@ -672,6 +738,11 @@ export interface GridCell {
 
 /** 一个 50 米子格的判定。没实测的品类继承父格。 */
 export interface GridQuarter {
+  reach_source?: string
+  reach_observed_s?: number | null
+  reach_s?: number | null
+  reach_raw_s?: number | null
+  reach_m?: number | null
   q: 'NW' | 'NE' | 'SW' | 'SE'
   lat: number
   lng: number
@@ -681,7 +752,7 @@ export interface GridQuarter {
   unknown_reasons?: Record<string, string>
   /** 在这个子格上实测过的品类 */
   measured: string[]
-  /** 子格中心是否在射线圈内；false 的不测、不画、不计。较早的结果没有，视为在圈内。 */
+  /** 子格中心是否在当前主范围内；false 的不测、不画、不计。较早的结果没有，视为在圈内。 */
   in_circle?: boolean
 }
 
@@ -1016,11 +1087,16 @@ export interface MarkingsResult {
     blind_in_circle: number | null
     gray_regions: number | null
     ring: [number, number][] | null
+    geometry?: SurfaceGeometry | null
+    geometry_method?: 'ray' | 'fusion'
+    fusion?: FusionInfo | null
+    gridcheck?: GridCheck | null
+    properties?: Partial<IsochroneProperties>
     /**
      * 在地图上还原纯算法结果用的差异（较早保存的结果没有这些字段）：
      * 与叠加后不同的格子（完整的纯算法格）、设施点与灰色区域，以及围挡改了圈时的内圈与外圈。
      */
-    inner_rings?: { minutes: number; coordinates: [number, number][] }[] | null
+    inner_rings?: { minutes: number; coordinates: [number, number][]; geometry?: SurfaceGeometry }[] | null
     raw_ring?: [number, number][] | null
     cells_changed?: GridCell[]
     places?: Place[] | null

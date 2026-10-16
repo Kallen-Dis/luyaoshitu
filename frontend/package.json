@@ -12,6 +12,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "earcut": "3.2.4",
     "polygon-clipping": "^0.15.7",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"

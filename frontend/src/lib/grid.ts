@@ -25,7 +25,7 @@ export interface GridUnit {
 
 /**
  * 细分过的格展开成子格；子格沿用父格的耗时，判定用子格自己的（未实测的品类继承父格）。
- * 子格中心落在射线圈外的（in_circle === false）不画、不计，与 100 米格「格心在圈内才算」同一条规则。
+ * 子格中心落在当前主范围外的（in_circle === false）不画、不计，与 100 米格「格心在圈内才算」同一条规则。
  */
 export function gridUnits(blindspots?: Blindspots | null): GridUnit[] {
   const spacing = blindspots?.grid_spacing_m ?? 100
@@ -48,6 +48,11 @@ export function gridUnits(blindspots?: Blindspots | null): GridUnit[] {
           missing: q.missing,
           unknown: q.unknown,
           unknown_reasons: q.unknown_reasons,
+          reach_s: q.reach_s === undefined ? parent.reach_s : q.reach_s,
+          reach_source: q.reach_source ?? (q.reach_s === undefined ? 'inherited' : parent.reach_source),
+          reach_observed_s: q.reach_observed_s,
+          reach_raw_s: q.reach_raw_s === undefined ? parent.reach_raw_s : q.reach_raw_s,
+          reach_m: q.reach_m === undefined ? parent.reach_m : q.reach_m,
           sub: { q: q.q, measured: q.measured, size_m: spacing / 2 },
         },
         size_m: spacing / 2,

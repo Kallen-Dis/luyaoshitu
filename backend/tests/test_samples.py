@@ -39,8 +39,51 @@ def test_meta_survives_snapshot_without_report(tmp_path: Path):
     assert meta.facilities_in is None
 
 
+def test_caoyang_borderline_route_does_not_excavate_lanhuayuan():
+    from app.isochrone.fusion import field_time
+    from app.isochrone.geometry import point_in_polygon
+    from app.samples import load_sample
+
+    feature = load_sample("isochrone-caoyang-15min")
+    fusion = feature["properties"]["fusion"]
+    # 用户截图中的兰花园内部圈；几何、热力都必须修正，不能只隐藏内边线。
+    lat, lng = 31.24303829, 121.41414814
+    assert point_in_polygon(lat, lng, feature["geometry"])
+    assert field_time(fusion["time_field"], lat, lng) < 900
+    assert fusion["quality"]["holes"] == 0
+    observed = next(
+        p
+        for p in fusion["measured_points"]
+        if abs(p["lat"] - 31.243155) < 1e-6 and abs(p["lng"] - 121.413970) < 1e-6
+    )
+    assert observed["time_s"] == 902  # 留下真实记录，而非改数据使孔洞消失。
+
+
+def test_default_samples_preserve_published_fusion_geometry_and_statistics():
+    from app.isochrone.geometry import polygon_parts
+    from app.main import _load_sample_or_404
+    from app.samples import load_sample
+
+    for sample, method in (("caoyang", "fusion"), ("taopu", "fusion")):
+        sample_id = f"isochrone-{sample}-15min"
+        stored = load_sample(sample_id)
+        opened = _load_sample_or_404(sample_id)
+        props = opened["properties"]
+        assert props["geometry_method"] == method
+        assert opened["geometry"] == stored["geometry"]
+        assert props["area_km2"] == stored["properties"]["area_km2"]
+        assert props["coverage"]["categories"] == stored["properties"]["coverage"]["categories"]
+        assert props["report"]["total"] == stored["properties"]["report"]["total"]
+        assert all(len(face) == 1 for face in polygon_parts(opened["geometry"]))
+        assert ("fusion" in props) == (method == "fusion")
+        assert props["blindspots"]["scope_method"] == "fusion"
+        if sample == "taopu":
+            assert props["fusion"]["quality"]["validation_status"] == "estimated"
+            assert props["fusion"]["quality"]["path_violations"] == 0
+
+
 def test_snapshots_open_into_actionable_prescriptions():
-    """处方跟着灰色区域的成因走：桃浦两种成因都有，既要打通也要补设；曹杨全是路网阻隔，只打通。"""
+    """新范围改变分组时必须重算处方；不能沿用原射线结果中的打通建议。"""
     from app.report.score import build_report
     from app.samples import load_sample
 
@@ -74,5 +117,11 @@ def test_snapshots_open_into_actionable_prescriptions():
         cao["properties"].get("blindspots"),
     )
     cao_actions = {p["action"] for p in cao_report["prescriptions"]}
-    assert "connect" in cao_actions
+    assert cao_actions == {"maintain"}
     assert "site" not in cao_actions
+    assert cao["properties"]["blindspots"]["blind_count"] > 0
+    assert (
+        cao["properties"]["fusion"]["ray_statistics"]["blind_count"]
+        > cao["properties"]["blindspots"]["blind_count"]
+    )
+    assert "盲区" in cao_report["prescriptions"][0]["reason"]

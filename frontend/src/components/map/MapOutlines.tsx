@@ -13,6 +13,8 @@ export interface MapOutline {
   arrows?: boolean
   /** 给出颜色时，环内（奇偶规则）铺斜线 */
   hatch?: string
+  dots?: string
+  label?: string
 }
 
 const hatchPatterns = new Map<string, HTMLCanvasElement>()
@@ -38,6 +40,23 @@ function hatchTile(color: string): HTMLCanvasElement {
     c.stroke()
   }
   hatchPatterns.set(color, tile)
+  return tile
+}
+
+function dotsTile(color: string): HTMLCanvasElement {
+  const key = `dots-${color}`
+  const cached = hatchPatterns.get(key)
+  if (cached) return cached
+  const tile = document.createElement('canvas')
+  tile.width = tile.height = 10
+  const ctx = tile.getContext('2d')
+  if (ctx) {
+    ctx.fillStyle = color
+    ctx.beginPath()
+    ctx.arc(5, 5, 1.1, 0, Math.PI * 2)
+    ctx.fill()
+  }
+  hatchPatterns.set(key, tile)
   return tile
 }
 
@@ -71,8 +90,8 @@ export function MapOutlines({ mapRef, ready, active, outlines, opacity, arrowsOn
       if (!ctx) return
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
       ctx.clearRect(0, 0, width, height)
-      ctx.lineJoin = 'miter'
-      ctx.lineCap = 'butt'
+      ctx.lineJoin = 'round'
+      ctx.lineCap = 'round'
       ctx.miterLimit = 2
       const paths = outlines.map(outline => {
         const path = new Path2D()
@@ -86,12 +105,16 @@ export function MapOutlines({ mapRef, ready, active, outlines, opacity, arrowsOn
           if (outline.closed !== false) path.closePath()
           if (outline.arrows) arrows.push(...routeArrowPositions(pixels))
         }
-        return { ...outline, path, arrowPositions: arrows }
+        const labelPoint = outline.label ? (outline.rings[0] ?? [])
+          .map(([lng, lat]) => map.pointToPixel(new BMapGL.Point(lng, lat)))
+          .filter((p: { x: number; y: number }) => p.x > 70 && p.x < width - 70 && p.y > 110 && p.y < height - 80)
+          .sort((a: { y: number }, b: { y: number }) => a.y - b.y)[0] : null
+        return { ...outline, path, arrowPositions: arrows, labelPoint }
       })
       if (!arrowsOnly) {
-        for (const { path, hatch, alpha = 1 } of paths) {
-          if (!hatch) continue
-          const pattern = ctx.createPattern(hatchTile(hatch), 'repeat')
+        for (const { path, hatch, dots, alpha = 1 } of paths) {
+          if (!hatch && !dots) continue
+          const pattern = ctx.createPattern(dots ? dotsTile(dots) : hatchTile(hatch!), 'repeat')
           if (!pattern) continue
           ctx.globalAlpha = opacity * alpha * 0.75
           ctx.fillStyle = pattern
@@ -111,6 +134,23 @@ export function MapOutlines({ mapRef, ready, active, outlines, opacity, arrowsOn
           ctx.setLineDash(dash ?? [])
           ctx.lineWidth = weight
           ctx.stroke(path)
+        }
+        ctx.setLineDash([])
+        ctx.font = '12px sans-serif'
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'middle'
+        for (const { label, labelPoint, color } of paths) {
+          if (!label || !labelPoint) continue
+          const w = ctx.measureText(label).width + 16
+          ctx.globalAlpha = opacity
+          ctx.fillStyle = '#fffdf9'
+          ctx.strokeStyle = '#cdddcf'
+          ctx.lineWidth = 1
+          ctx.beginPath()
+          ctx.roundRect(labelPoint.x - w / 2, labelPoint.y - 12, w, 24, 12)
+          ctx.fill(); ctx.stroke()
+          ctx.fillStyle = color
+          ctx.fillText(label, labelPoint.x, labelPoint.y)
         }
       }
       ctx.setLineDash([])

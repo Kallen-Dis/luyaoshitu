@@ -43,9 +43,9 @@ python scripts/verify.py --skip-frontend  # 只改了后端时
 
 ## 文档
 
-- `docs/`、`reports/` 与 `video/` 只保存在本地，不纳入 Git；设计资料需要另行备份。
-- README 只放入口信息（简介、样例结果、快速开始、配置、索引）；算法与设计写进 `docs/design.md`，
-  API 调用策略与接口实测写进 `docs/api-optimization.md`。
+- `docs/` 中的四份正式设计文档纳入 Git，入口见 [README 文档索引](README.md#设计文档)。
+  其余设计草稿、`reports/` 与 `video/` 默认只保存在本地，需要另行备份。
+- README 只放简介、快速开始与文档入口；算法、配额策略和功能设计写进对应的正式文档。
 - 改了会影响数字的逻辑，同步更新 README 和 `docs/` 里引用这些数字的地方。
 - `reports/` 下的报告都由脚本生成（`benchmark_api.py`、`compare_straight_line.py`、`probe_facility_entries.py`、
   `crosscheck_poi.py`），不要手改，改脚本后重跑。

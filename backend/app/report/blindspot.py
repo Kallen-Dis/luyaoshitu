@@ -52,6 +52,7 @@ from ..isochrone.geometry import (
     disc_cells,
     first_entry_along,
     grid_points,
+    has_polygon,
     haversine_m,
     meters_per_deg_lng,
     point_in_polygon,
@@ -107,6 +108,8 @@ class BlindspotConfig:
     # 细分最多新增的批量算路点对（命中缓存不计），是硬上限：每批请求发出前按缓存缺口算成本，
     # 超出剩余额度的那批不发，涉及的子格这一品类照旧继承父格
     refine_max_pairs: int = 1500
+    # 融合扩大/挖孔后沿用射线网格原点与步长，避免格心平移导致重复测量。
+    grid_alignment: Any = None
 
 
 @dataclass
@@ -208,7 +211,7 @@ class Refinement:
                 "100 米判定后，对每个品类与四邻结论不同的边界格、"
                 "以及最近一家步行距离贴近阈值的临界格，切成 4 个 50 米子格分别实测"
                 "（子格作起点按 10 米细键缓存）；其余格与其余品类继承父格。"
-                "子格中心落在射线圈外的不测、不计。"
+                "子格中心落在当前主范围外的不测、不计。"
                 "占比与灰色区域按面积计，子格面积替代父格，不重复统计。"
                 "新增点对有硬上限：每批请求前按缓存缺口计成本，超出剩余额度的那批不发，"
                 "涉及的子格这一品类继承父格。"
@@ -638,13 +641,13 @@ def layout_cells(
     if cfg.layout == "polygon":
         return [
             CellResult(lat=lat, lng=lng, in_circle=True)
-            for lat, lng in grid_points(polygon, cfg.grid_spacing_m)
+            for lat, lng in grid_points(polygon, cfg.grid_spacing_m, cfg.grid_alignment)
         ]
     return [
         CellResult(
             lat=lat,
             lng=lng,
-            in_circle=point_in_polygon(lat, lng, polygon) if len(polygon) >= 3 else False,
+            in_circle=point_in_polygon(lat, lng, polygon) if has_polygon(polygon) else False,
         )
         for lat, lng in disc_cells(center, cfg.extent_m, cfg.grid_spacing_m)
     ]
@@ -752,7 +755,7 @@ def _quarters_of(
     out = []
     for label, sy, sx in QUARTERS:
         lat, lng = cell.lat + sy * dlat, cell.lng + sx * dlng
-        inside = point_in_polygon(lat, lng, polygon) if len(polygon) >= 3 else cell.in_circle
+        inside = point_in_polygon(lat, lng, polygon) if has_polygon(polygon) else cell.in_circle
         out.append(
             CellResult(
                 lat=lat,

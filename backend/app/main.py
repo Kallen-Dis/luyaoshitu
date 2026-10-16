@@ -14,6 +14,7 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from typing import Any
 from urllib.parse import quote
 
@@ -37,6 +38,8 @@ from .diagnostics import (
     traffic_summary,
 )
 from .isochrone.algorithm import IsochroneConfig, compute_isochrone
+from .isochrone.budget import FusionBudgetClient
+from .isochrone.fusion import publish_fusion, sync_heat_measurements
 from .isochrone.gridcheck import GridcheckConfig, cross_check, ray_samples_of
 from .isochrone.recheck import NoBaselineError, baselines, recheck_routes
 from .isochrone.refine import (
@@ -81,6 +84,17 @@ class MarkingOptions(BaseModel):
     mode: str = Field("auto", pattern="^(auto|all|none)$")
     include: list[int] = Field(default_factory=list, max_length=50)
     exclude: list[int] = Field(default_factory=list, max_length=50)
+
+
+class SearchSelectionIn(BaseModel):
+    name: str = Field(..., max_length=120)
+    city: str = Field("", max_length=80)
+    district: str = Field("", max_length=80)
+    address: str = Field("", max_length=300)
+    uid: str = Field("", max_length=120)
+    query: str = Field("", max_length=120)
+    lat: float = Field(..., ge=-90, le=90)
+    lng: float = Field(..., ge=-180, le=180)
 
 
 class IsochroneRequest(BaseModel):
@@ -128,6 +142,7 @@ class IsochroneRequest(BaseModel):
         max_length=60,
         description="显示名：搜索时输入的地址或小区名，写进结果；不填时界面显示「当前地点」",
     )
+    search_selection: SearchSelectionIn | None = None
     markings: MarkingOptions = Field(
         default_factory=lambda: MarkingOptions(),
         description="附近用户标注的使用方式",
@@ -303,7 +318,13 @@ def _quality_from_rays(props: dict) -> dict[str, int | None]:
 
 
 async def _resolve_center(client: BaiduMapClient, req: IsochroneRequest) -> tuple[float, float]:
-    """把请求坐标统一到 BD09，返回 (lat, lng)。geoconv 无日配额限制。"""
+    """把请求坐标统一到 BD09，候选选择必须与实际计算中心相同。"""
+    if req.search_selection and (
+        req.coord_sys != "bd09"
+        or abs(req.lat - req.search_selection.lat) > 1e-7
+        or abs(req.lng - req.search_selection.lng) > 1e-7
+    ):
+        raise HTTPException(422, "已选地点与体检坐标不一致，请重新选择地点")
     center = (req.lat, req.lng)
     if req.coord_sys == "bd09":
         return center
@@ -367,6 +388,20 @@ async def _analysis_steps(
     """
     closures = closures_from([c.model_dump() for c in req.closures])
     walking = mode.id == WALK.id
+    analysis_budget = None
+    if walking and req.coverage and req.blindspots and req.gridcheck:
+        settings = get_settings()
+        analysis_budget = FusionBudgetClient(
+            client, settings.analysis_max_pairs, settings.analysis_max_routes
+        )
+        # 在射线、设施与盲区阶段之前预留；重试也不能用掉融合验收的额度。
+        analysis_budget.pair_limit = max(
+            0, settings.analysis_max_pairs - settings.gridcheck_max_pairs
+        )
+        analysis_budget.route_limit = max(
+            0, settings.analysis_max_routes - settings.gridcheck_max_routes
+        )
+        client = analysis_budget
     log = DegradationLog(client)
     traffic_mark = (len(client.traffic_ages), len(client.traffic_stale))
     blind_cfg = BlindspotConfig(grid_spacing_m=req.grid_spacing_m, extent_m=req.grid_extent_m)
@@ -408,11 +443,17 @@ async def _analysis_steps(
     result = await compute_isochrone(client, center, cfg, refine_b) if network_changed else result_a
     payload = result.to_geojson()
     props = payload["properties"]
+    props["geometry_method"] = "ray"
     # 地图中心必须用转换后的 BD09 坐标，否则前端以原始坐标为中心会整体偏移
-    props["center"] = {"lat": round(center[0], 6), "lng": round(center[1], 6)}
+    # 保留计算精度；截断后重算可能使射线点越过缓存量化边界，重复消耗点对。
+    # 显示位数由前端控制，不能把展示舍入用于下一次计算。
+    props["center"] = {"lat": center[0], "lng": center[1]}
     props["input_coord_sys"] = req.coord_sys
     if req.name and req.name.strip():
         props["name"] = req.name.strip()
+    if req.search_selection:
+        props["search_selection"] = req.search_selection.model_dump()
+        props["name"] = req.search_selection.name[:60]
     # 只记本次请求里用户自己画的临时围挡；共享围挡在 markings 里单独列出
     props["closures"] = [c.as_dict() for c in closures]
     if not walking and refine.needs_routes:
@@ -457,7 +498,14 @@ async def _analysis_steps(
             report_b=props["report"] if changed else None,
             props_a=props_a if changed else None,
             props_b=props,
-            ring_a=feature_a["geometry"]["coordinates"][0] if network_changed else None,
+            ring_a=(
+                feature_a["geometry"]["coordinates"][0][0]
+                if feature_a["geometry"]["type"] == "MultiPolygon"
+                else feature_a["geometry"]["coordinates"][0]
+            )
+            if network_changed
+            else None,
+            geometry_a=feature_a["geometry"] if network_changed else None,
             blind_a=blind_a,
             blind_b=blind_b,
             coverage_a=coverage_a,
@@ -481,10 +529,13 @@ async def _analysis_steps(
         else coverage
     )
     facility_changed = coverage_b is not coverage
-    coverage_dict = coverage_b.as_dict(result.polygon)
+    if facility_changed and not network_changed:
+        feature_a = json.loads(json.dumps(payload))
+        props_a = feature_a["properties"]
+    coverage_dict = coverage_b.as_dict(payload["geometry"])
     coverage_dict["source"] = f"实时采集，检索半径 {radius} 米"
     if network_changed or facility_changed:
-        coverage_dict_a = coverage.as_dict(result_a.polygon)
+        coverage_dict_a = coverage.as_dict(result_a.to_geojson()["geometry"])
         coverage_dict_a["source"] = coverage_dict["source"]
     else:
         coverage_dict_a = coverage_dict
@@ -505,12 +556,15 @@ async def _analysis_steps(
                 "message": "正在逐格实测步行 1 公里能否到达菜场、药店、小学（计算量最大的一段）…",
             },
         )
+        # 先保留完整射线结果；融合被拒绝时仍有 50 米细分可用。
+        # 接受新范围后的重算会复用这些点对，而不是重新付费测同一点。
+        seed_cfg = blind_cfg
         blind_a = await identify_blindspots(
             client,
             center,
-            result_a.polygon,
+            result_a.to_geojson()["geometry"],
             coverage,
-            blind_cfg,
+            seed_cfg,
             refine=result_a.refine,
             closures=closures,
         )
@@ -530,9 +584,9 @@ async def _analysis_steps(
             blind_b = await identify_blindspots(
                 client,
                 center,
-                result.polygon,
+                payload["geometry"],
                 coverage_b,
-                blind_cfg,
+                seed_cfg,
                 refine=result.refine,
                 closures=merged,
             )
@@ -546,32 +600,112 @@ async def _analysis_steps(
         yield "blindspots", {"feature": payload}
 
         if req.gridcheck:
-            # 只是辅助图层：射线圈仍是主几何，评分与盲区占比都不变
             state.enter("gridcheck")
             yield (
                 "stage",
                 {
                     "stage": "gridcheck",
-                    "message": "正在用另一组网格样本交叉校核等时圈（超时格加测子点、找绕行线索）…",
+                    "message": "正在融合射线与网格测时、核验绕行，并统一生活圈与设施统计…",
                 },
             )
             settings = get_settings()
+            if analysis_budget is not None:
+                analysis_budget.pair_limit = analysis_budget.max_pairs
+                analysis_budget.route_limit = analysis_budget.max_routes
+            fusion_client = FusionBudgetClient(
+                client, settings.gridcheck_max_pairs, settings.gridcheck_max_routes
+            )
+            # 留出一部分新增点对供补回范围的设施统计；两份 A/B 结果共用总预算。
+            fusion_cfg = GridcheckConfig(
+                target_s=req.minutes * 60,
+                max_pairs=max(
+                    0, settings.gridcheck_max_pairs - min(80, settings.gridcheck_max_pairs // 4)
+                ),
+                max_routes=settings.gridcheck_max_routes,
+                fusion_mode=True,
+                domain=result.domain,
+            )
             checked = await cross_check(
-                client,
+                fusion_client,
                 center,
                 result.polygon,
                 props["blindspots"],
                 result.refine,
                 ray_samples_of(result),
                 result.area_m2 / 1e6,
-                GridcheckConfig(
-                    max_pairs=settings.gridcheck_max_pairs,
-                    max_routes=settings.gridcheck_max_routes,
-                ),
+                fusion_cfg,
             )
             if checked is not None:
+                if result.domain is None and props.get("area_estimate_only"):
+                    checked["fusion"]["quality"]["geographic_verification_pending"] = True
+                    checked["fusion"]["quality"]["geographic_service_status"] = "unavailable"
                 props["gridcheck"] = checked
-            state.finish("网格交叉校核")
+                checked_a = checked if facility_changed and not network_changed else None
+                if network_changed:
+                    checked_a = await cross_check(
+                        fusion_client,
+                        center,
+                        result_a.polygon,
+                        blind_dict_a,
+                        result_a.refine,
+                        ray_samples_of(result_a),
+                        result_a.area_m2 / 1e6,
+                        fusion_cfg,
+                    )
+
+                async def rebuild(candidate, *, cov, iso, barriers):
+                    cp = candidate["properties"]
+                    source = coverage_dict["source"]
+                    cv = cov.as_dict(candidate["geometry"])
+                    cv["source"] = source
+                    formal = await identify_blindspots(
+                        fusion_client,
+                        center,
+                        candidate["geometry"],
+                        cov,
+                        replace(blind_cfg, grid_alignment=iso.polygon),
+                        refine=iso.refine,
+                        closures=barriers,
+                    )
+                    cp["coverage"] = cv
+                    cp["blindspots"] = formal.as_dict()
+                    sync_heat_measurements(cp["blindspots"], cp.get("fusion"))
+                    cp["blindspots"]["scope_method"] = cp["geometry_method"]
+                    cp["report"] = build_report(cp, cv, cp["blindspots"])
+
+                async def rebuild_b(candidate):
+                    await rebuild(candidate, cov=coverage_b, iso=result, barriers=merged)
+
+                async def rebuild_a(candidate):
+                    await rebuild(candidate, cov=coverage, iso=result_a, barriers=closures)
+
+                fused_b = await publish_fusion(payload, checked, rebuild_b)
+                props = payload["properties"]
+                props_a = feature_a["properties"]
+                if checked_a is not None:
+                    props_a["coverage"] = coverage_dict_a
+                    props_a["blindspots"] = blind_dict_a
+                    props_a["report"] = build_report(props_a, coverage_dict_a, blind_dict_a)
+                    props_a["gridcheck"] = checked_a
+                    await publish_fusion(feature_a, checked_a, rebuild_a)
+                    props_a = feature_a["properties"]
+                if fused_b:
+                    coverage_dict = props["coverage"]
+                    blindspot_warnings(log, props["blindspots"])
+                    props["warnings"] = log.as_list()
+                if checked_a is not None:
+                    coverage_dict_a = props_a["coverage"]
+                    blind_dict_a = props_a["blindspots"]
+                elif not network_changed and not facility_changed:
+                    blind_dict_a = props["blindspots"]
+                    coverage_dict_a = coverage_dict
+                checked.pop("fusion", None)
+                if network_changed:
+                    (props_a.get("gridcheck") or {}).pop("fusion", None)
+            state.finish("融合生活圈")
+            props["fusion_budget"] = fusion_client.summary()
+            if analysis_budget is not None:
+                props["analysis_budget"] = analysis_budget.summary()
             yield "gridcheck", {"feature": payload}
     elif req.blindspots:
         props["blindspots_skipped"] = (
@@ -1229,3 +1363,17 @@ async def geocode(address: str = Query(..., min_length=2, max_length=120)) -> di
     except BaiduApiError as exc:
         raise _handle_baidu_error(exc, "geocode") from exc
     return {"address": address, "lat": lat, "lng": lng}
+
+
+@app.get("/api/places/suggestions", summary="地图搜索候选（用户选择后再体检）")
+async def place_suggestions(
+    query: str = Query(..., min_length=2, max_length=120),
+    city: str = Query("上海市", min_length=2, max_length=60),
+) -> dict:
+    if len(query.strip()) < 2 or len(city.strip()) < 2:
+        raise HTTPException(422, "请输入至少两个字的地点和城市，或将城市设为全国")
+    try:
+        candidates = await app.state.baidu.place_suggestions(query, city)
+    except BaiduApiError as exc:
+        raise _handle_baidu_error(exc, "place") from exc
+    return {"query": query.strip(), "city": city.strip(), "candidates": candidates}

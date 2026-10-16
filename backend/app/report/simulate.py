@@ -17,7 +17,7 @@ from typing import Any
 
 from ..baidu.client import BaiduMapClient
 from ..baidu.errors import QuotaExhaustedError
-from ..isochrone.geometry import first_entry_along, haversine_m, point_in_polygon
+from ..isochrone.geometry import first_entry_along, haversine_m, point_in_polygon, polygon_of
 from ..trip.context import closures_from_feature
 from .blindspot import REACH_GRID_M
 from .score import build_report
@@ -143,7 +143,7 @@ async def simulate_facility(
 
     before_report = build_report(props, coverage, raw_blind)
     after_coverage = copy.deepcopy(coverage)
-    polygon = [(y, x) for x, y in feature["geometry"]["coordinates"][0]]
+    polygon = polygon_of(feature) or []
     inside = point_in_polygon(lat, lng, polygon)
     if after_coverage is not None and not inside_closure:
         after_coverage.setdefault("places", []).append(

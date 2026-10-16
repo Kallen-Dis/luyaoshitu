@@ -51,6 +51,9 @@ class Settings:
     # 单次完整分析的总时长上限（秒）。批量算路 3 个在途 + 令牌桶限速下，等时圈 + 路线校正
     # + 覆盖 + 圈内网格盲区缓存为空时通常一两分钟；超时即终止，避免请求无限挂起。
     analysis_timeout_s: float = 240.0
+    # 步行融合分析的全流程上限（请求尝试，含重试）；提前为融合与最终核验留额。
+    analysis_max_pairs: int = 2000
+    analysis_max_routes: int = 120
 
     # 配置分块上限，客户端再取出行方式上限的较小值（步行/骑行 50、驾车 100）。
     matrix_batch_size: int = 100
@@ -130,6 +133,8 @@ def get_settings() -> Settings:
         retry_backoff=float(os.environ.get("BAIDU_RETRY_BACKOFF", "0.5")),
         matrix_batch_size=int(os.environ.get("BAIDU_MATRIX_BATCH_SIZE", "100")),
         analysis_timeout_s=float(os.environ.get("BAIDU_ANALYSIS_TIMEOUT", "240")),
+        analysis_max_pairs=max(0, int(os.environ.get("ANALYSIS_MAX_PAIRS", "2000"))),
+        analysis_max_routes=max(0, int(os.environ.get("ANALYSIS_MAX_ROUTES", "120"))),
         cache_ttl_s=float(os.environ.get("BAIDU_CACHE_TTL_DAYS", "30")) * 86400.0,
         traffic_ttl_s=float(os.environ.get("BAIDU_TRAFFIC_TTL_MIN", "10")) * 60.0,
         matrix_concurrency=int(os.environ.get("BAIDU_MATRIX_CONCURRENCY", "3")),

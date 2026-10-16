@@ -34,6 +34,7 @@ import type {
 
 /** 实时分析请求参数，与后端 IsochroneRequest 一一对应。 */
 export interface AnalysisParams {
+  search_selection?: SearchPlace
   lat: number
   lng: number
   minutes: number
@@ -130,6 +131,18 @@ export const geocode = (address: string) =>
   request<{ address: string; lat: number; lng: number }>(
     `/api/geocode?address=${encodeURIComponent(address)}`,
   )
+
+export interface SearchPlace {
+  query?: string
+  name: string; city: string; district: string; address: string
+  uid: string; lat: number; lng: number
+}
+
+export const searchPlaces = (query: string, city: string, signal: AbortSignal) =>
+  request<{ candidates: SearchPlace[] }>(
+    `/api/places/suggestions?query=${encodeURIComponent(query)}&city=${encodeURIComponent(city)}`,
+    { signal },
+  ).then(r => r.candidates)
 
 /** 模拟新建：候选方格到拟建点做一次路网测距（通常不超过 100 个点对），重算盲区与分数。 */
 export const simulateClosures = (feature: IsochroneFeature, closures: ClosureSpec[], signal?: AbortSignal) =>

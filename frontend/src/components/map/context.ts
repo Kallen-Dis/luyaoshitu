@@ -5,6 +5,8 @@ import type {
   GridCell,
   GridCheckClue,
   GridCheckGap,
+  FusionInfo,
+  FusionHole,
   MarkingType,
   Place,
   RecheckSuspect,
@@ -12,6 +14,9 @@ import type {
 
 /** 地图图层开关。15 分钟圈与临时围挡总是显示，不在这里。 */
 export interface LayerState {
+  rayBaseline: boolean
+  fusionAdded: boolean
+  fusionPending: boolean
   /** 5 / 10 分钟内圈 */
   innerRings: boolean
   /** 步行耗时热力 */
@@ -40,9 +45,12 @@ export interface LayerState {
  * 红色斜线是图上最醒目的符号，默认画着会抢走灰色区域（主结论）的视线，也容易被当成另一种盲区。
  */
 export const DEFAULT_LAYERS: LayerState = {
-  innerRings: true,
+  rayBaseline: false,
+  fusionAdded: false,
+  fusionPending: false,
+  innerRings: false,
   heat: false,
-  outsidePlaces: true,
+  outsidePlaces: false,
   blind: true,
   regions: true,
   markings: true,
@@ -54,12 +62,14 @@ export const DEFAULT_LAYERS: LayerState = {
 
 /** 用户在地图上点到的东西。弹出卡片按它给出能做的事。 */
 export type MapContext =
+  | { kind: 'fusion-hole'; hole: FusionHole; accepted?: boolean; localEstimate?: boolean }
   | { kind: 'cell'; cell: GridCell; missing: string[] }
   | { kind: 'region'; region: GrayRegion }
   | { kind: 'place'; place: Place }
   | { kind: 'suspect'; suspect: RecheckSuspect }
   | { kind: 'site'; site: ConstructionCandidate }
-  | { kind: 'gap'; gap: GridCheckGap; clues: GridCheckClue[]; targetS: number }
+  | { kind: 'gap'; gap: GridCheckGap; clues: GridCheckClue[]; targetS: number; fused?: boolean }
+  | { kind: 'fusion-pending'; fusion: FusionInfo; lat: number; lng: number }
   | { kind: 'clue'; clue: GridCheckClue }
   | { kind: 'point'; lat: number; lng: number }
 
@@ -112,6 +122,9 @@ export const SHORT_NAME: Record<string, string> = {
 export const CHECK_GAP_COLOR = '#9f1239'
 export const CHECK_CLUE_COLOR = '#92400e'
 export const CHECK_ESTIMATE_COLOR = '#4338ca'
+export const RAY_BASELINE_COLOR = '#647b91'
+export const FUSION_ADDED_COLOR = '#218c87'
+export const FUSION_PENDING_COLOR = '#bd892e'
 
 export const BLIND_COLORS: Record<string, string> = {
   all: '#6b7280',

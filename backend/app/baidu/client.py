@@ -116,7 +116,8 @@ class TokenBucket:
 
 
 class BaiduMapClient:
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(self, settings: Settings | None = None, *, osm_water_enabled: bool = True) -> None:
+        self.osm_water_enabled = osm_water_enabled
         self._s = settings or get_settings()
         # AK 延迟到真正发请求时才校验：没配 AK 时后端仍要能启动，
         # 让评审零配置也能打开预生成样例、离线模拟与导出。
@@ -262,12 +263,16 @@ class BaiduMapClient:
             self._check_exhausted(endpoint)
             if (observer := request_observer.get()) is not None:
                 observer(endpoint, params)
+            # 通过所有请求前预算检查后才计数；每次重试也单独计算。
+            # 之前在组装矩阵时计数，会把预算拦下的点对当成实发，又漏掉重试。
+            label = _endpoint_label(endpoint)
+            self.request_counts[label] = self.request_counts.get(label, 0) + 1
+            if label == "matrix":
+                self.matrix_pairs += len(params["origins"].split("|")) * len(
+                    params["destinations"].split("|")
+                )
             try:
                 resp = await self._client.get(BASE_URL + endpoint, params=payload)
-                # 每次实际发出的 HTTP 请求都计数（含失败后的重试），
-                # 这是配额消耗证据链里「请求数」一侧的原始数据。
-                label = _endpoint_label(endpoint)
-                self.request_counts[label] = self.request_counts.get(label, 0) + 1
                 body = resp.json()
                 status = int(body.get("status", -1))
                 if status == 0:
@@ -304,6 +309,60 @@ class BaiduMapClient:
         body = await self._request("/geocoding/v3/", {"address": address, "output": "json"})
         loc = body["result"]["location"]
         return float(loc["lat"]), float(loc["lng"])
+
+    async def place_suggestions(self, query: str, city: str) -> list[dict]:
+        """输入提示只返回带实际坐标的候选，不将模糊地理编码当作已选地点。"""
+        import math
+
+        query, city = query.strip(), city.strip()
+        path = self._cache._path("map_suggestions_v1", [city, query])
+        cached = self._cache.read(path, min(self._ttl(), 86400))
+        if cached is not None:
+            return cached
+        body = await self._request(
+            "/place/v2/suggestion",
+            {
+                "query": query,
+                "region": city,
+                "city_limit": "false" if city == "全国" else "true",
+                "output": "json",
+            },
+        )
+        out, seen = [], set()
+        for item in body.get("result", []):
+            try:
+                lat, lng = float(item["location"]["lat"]), float(item["location"]["lng"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            name = str(item.get("name") or "").strip()
+            key = (name, round(lat, 6), round(lng, 6))
+            if (
+                not name
+                or key in seen
+                or not (
+                    math.isfinite(lat)
+                    and math.isfinite(lng)
+                    and -90 <= lat <= 90
+                    and -180 <= lng <= 180
+                )
+            ):
+                continue
+            seen.add(key)
+            out.append(
+                {
+                    "name": name,
+                    "lat": lat,
+                    "lng": lng,
+                    "uid": str(item.get("uid") or ""),
+                    "city": str(item.get("city") or ""),
+                    "district": str(item.get("district") or ""),
+                    "address": str(item.get("address") or ""),
+                }
+            )
+            if len(out) == 8:
+                break
+        self._cache.write(path, out)
+        return out
 
     async def geoconv(
         self, coords: Sequence[tuple[float, float]], from_sys: str = "wgs84"
@@ -460,6 +519,34 @@ class BaiduMapClient:
             "walk", origins, destinations, dest_grid_m, origin_grid_m
         )
 
+    def _walking_route_cache_path(self, origin, destination, fine_m=None):
+        extra: list[Any] = []
+        if fine_m:
+            step = fine_m / METERS_PER_DEGREE
+            extra = ["f", f"{fine_m:g}", *(round(v / step) for v in (*origin, *destination))]
+        return self._cache.key_for_pair(
+            "route_walk", origin[0], origin[1], destination[0], destination[1], *extra
+        )
+
+    def walking_route_cached(self, origin, destination, fine_m=None) -> bool:
+        return (
+            self._cache.read(
+                self._walking_route_cache_path(origin, destination, fine_m), self._ttl()
+            )
+            is not None
+        )
+
+    def walking_route_positions_cached(self, origin, destination, fine_m=None) -> bool:
+        from ..isochrone.routequality import route_positions
+
+        entry = self._cache.read(
+            self._walking_route_cache_path(origin, destination, fine_m), self._ttl()
+        )
+        if entry is None:
+            return False
+        positions = route_positions(entry)
+        return positions["complete"] and positions["position_basis"] == "step_and_path"
+
     async def walking_route(
         self,
         origin: tuple[float, float],
@@ -481,13 +568,7 @@ class BaiduMapClient:
         返回 None 表示查询失败（含配额耗尽、服务未开通）。路线只是增强信息，
         失败时调用方退回批量算路的耗时并标注，不让整个分析失败。
         """
-        extra: list[Any] = []
-        if fine_m:
-            step = fine_m / METERS_PER_DEGREE
-            extra = ["f", f"{fine_m:g}", *(round(v / step) for v in (*origin, *destination))]
-        cache_path = self._cache.key_for_pair(
-            "route_walk", origin[0], origin[1], destination[0], destination[1], *extra
-        )
+        cache_path = self._walking_route_cache_path(origin, destination, fine_m)
         if not fresh:
             cached = self._cache.read(cache_path, self._ttl())
             if cached is not None:
@@ -507,6 +588,9 @@ class BaiduMapClient:
                     {
                         "origin": f"{origin[0]:.6f},{origin[1]:.6f}",
                         "destination": f"{destination[0]:.6f},{destination[1]:.6f}",
+                        "coord_type": "bd09ll",
+                        "ret_coordtype": "bd09ll",
+                        "steps_info": 1,
                     },
                 )
         except (BaiduApiError, httpx.HTTPError, ValueError) as exc:
@@ -526,6 +610,8 @@ class BaiduMapClient:
                     "duration_s": float(step.get("duration") or 0),
                     "turn_type": str(step.get("turn_type") or ""),
                     "instruction": _TAG_RE.sub("", str(step.get("instruction") or "")),
+                    "start_location": step.get("start_location"),
+                    "end_location": step.get("end_location"),
                     "path": [
                         [round(lat, 6), round(lng, 6)]
                         for lat, lng in decode_baidu_path(str(step.get("path") or ""))
@@ -536,6 +622,12 @@ class BaiduMapClient:
             "distance_m": float(route.get("distance") or 0),
             "duration_s": float(route.get("duration") or 0),
             "steps": steps,
+            "position_schema": 2,
+            "requested_origin": list(origin),
+            "requested_destination": list(destination),
+            "response_origin": (body.get("result") or {}).get("origin"),
+            "response_destination": (body.get("result") or {}).get("destination"),
+            "coord_type": "bd09ll",
             # 复测巡检要知道基线是哪天取的；旧缓存条目没有这个字段
             "fetched_at": datetime.now(_BEIJING).isoformat(timespec="seconds"),
         }
@@ -786,7 +878,6 @@ class BaiduMapClient:
         # 当天已确认配额耗尽：直接抛出，也不把没发出去的点对记进「实发」
         self._check_exhausted(mode.endpoint)
         n_pairs = len(origins) * len(destinations)
-        self.matrix_pairs += n_pairs
         params: dict[str, Any] = {
             "origins": "|".join(f"{o[0]:.6f},{o[1]:.6f}" for o in origins),
             "destinations": "|".join(f"{d[0]:.6f},{d[1]:.6f}" for d in destinations),
@@ -879,7 +970,6 @@ class BaiduMapClient:
             # 当天已确认配额耗尽时不发请求，也不把没发出去的点对记进「实发」；
             # 放在 try 里，实时路况仍能走下面的过期缓存兜底
             self._check_exhausted(mode.endpoint)
-            self.matrix_pairs += len(misses)
             async with self._matrix_slot():
                 body = await self._request(
                     mode.endpoint,

@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { loadBaiduMap } from '../baiduMap'
-import { buildHeatTile, heatColor } from '../lib/heatRaster'
+import { overviewViewportKey } from '../lib/mapViewport'
+import { buildHeatTile, buildFusionHeatTile, fusionHeatFaces, heatColor } from '../lib/heatRaster'
 import { blindCells } from '../lib/grid'
-import { clipBlindCell, clipRegionOutlines } from '../lib/grayDisplay'
+import { clipBlindSurface, clipRegionOutlines } from '../lib/grayDisplay'
+import { addedSurface, fillPieces, firstOuterRing, intersectSurface, outerPoints, surfacePolygons, surfaceRings } from '../lib/surface'
 import { gapPolygons } from '../lib/gridCheck'
 import { tripPath, tripColor } from '../lib/trip'
 import { hitTripRoute, itineraryLineStyle, itineraryPath, tripCameraRequest, tripSegmentColor, tripViewBounds, tripViewportMargins, type TripViewStamp } from '../lib/itinerary'
@@ -15,6 +17,9 @@ import {
   CHECK_CLUE_COLOR,
   CHECK_ESTIMATE_COLOR,
   CHECK_GAP_COLOR,
+  RAY_BASELINE_COLOR,
+  FUSION_ADDED_COLOR,
+  FUSION_PENDING_COLOR,
   PLACE_MARK,
   heatTargetS,
   type LayerState,
@@ -109,7 +114,7 @@ interface Props {
 /** 测距失败的方格用浅蓝，避免和「灰色区域」混淆。 */
 const UNKNOWN_COLOR = '#93c5fd'
 /** 灰色区域外框与编号的颜色。 */
-const REGION_COLOR = '#374151'
+const REGION_COLOR = '#657578'
 /** 复测线索的颜色：紫色表示「待确认」，与已确认围挡的橙褐色区分。 */
 const SUSPECT_COLOR = '#7c3aed'
 const SITE_COLOR = '#b45309'
@@ -393,11 +398,11 @@ export function MapView({
   const dimPlaces = dimmed && draft?.type !== 'facility_missing'
   const grayOutlines = useMemo(() => {
     if (!layers.regions || !isochrone?.properties.blindspots || blindCategory !== 'all' || simulation) return []
-    const circle = isochrone.geometry.coordinates[0] ?? []
+    const circle = isochrone.geometry
     return (isochrone.properties.report?.gray_regions?.regions ?? []).flatMap(region => {
       const rings = clipRegionOutlines(region.rings, circle)
       return rings.length
-        ? [{ region, rings, weight: region.id ? 2 : 1.5, anchor: region.id ? region.anchor : undefined }]
+        ? [{ region, rings, weight: region.id ? 1.4 : 1, anchor: region.id ? region.anchor : undefined }]
         : []
     })
   }, [layers.regions, isochrone, blindCategory, simulation])
@@ -405,18 +410,27 @@ export function MapView({
   const check = isochrone?.properties.gridcheck ?? null
   const gapShapes = useMemo(() => {
     if (!check || !layers.checkGaps || simulation) return []
-    const circle = isochrone?.geometry.coordinates[0] ?? []
+    const circle = firstOuterRing(isochrone?.properties.fusion?.ray_geometry ?? isochrone?.geometry)
     return check.gaps
-      .map(gap => ({ gap, polygons: gapPolygons(gap, circle) }))
+      .map(gap => ({ gap, polygons: gapPolygons(gap, circle, isochrone?.properties.fusion ? isochrone.geometry : undefined) }))
       .filter(shape => shape.polygons.length > 0)
   }, [check, layers.checkGaps, simulation, isochrone])
+  const methodShapes = useMemo(() => {
+    const fusion = isochrone?.properties.fusion
+    if (!fusion || !isochrone) return { added: [], pending: [] }
+    return {
+      added: layers.fusionAdded ? addedSurface(isochrone.geometry, fusion.ray_geometry) : [],
+      pending: layers.fusionPending ? intersectSurface(fusion.unknown_geometry, fusion.ray_geometry) : [],
+    }
+  }, [isochrone, layers.fusionAdded, layers.fusionPending])
   // 点开缺口或线索卡片时，才把对应的示意路线画出来
+  const focusedContext = popover?.ctx
   const focusClues = useMemo<GridCheckClue[]>(() => {
-    const ctx = popover?.ctx
+    const ctx = focusedContext
     if (ctx?.kind === 'clue') return [ctx.clue]
     if (ctx?.kind === 'gap') return ctx.clues
     return []
-  }, [popover])
+  }, [focusedContext])
   const mapOutlines = useMemo<MapOutline[]>(() => {
     const outlines: MapOutline[] = []
     const circle = (ring: [number, number][], weight: number, color: string, alpha = 1, dash?: number[]) => {
@@ -424,24 +438,29 @@ export function MapView({
       outlines.push({ rings: [ring], weight, color, alpha, dash, haloWidth: 1.5 })
     }
     if (isochrone) {
-      if (isochrone.properties.delay?.applied && isochrone.properties.raw_ring) {
+      if (!isochrone.properties.fusion && isochrone.properties.delay?.applied && isochrone.properties.raw_ring) {
         circle(isochrone.properties.raw_ring, 1.2, '#1f7a42', 0.7, [5, 4])
       }
-      if (altRing) circle(altRing, 1.6, '#475569', 0.85, [1.5, 4])
-      circle(isochrone.geometry.coordinates[0] ?? [], 1.75, '#1f7a42')
+      if (altRing && !isochrone.properties.fusion) circle(altRing, 1.6, '#475569', 0.85, [1.5, 4])
+      outlines.push({ rings: surfaceRings(isochrone.geometry), weight: 2, color: '#1f7a42', haloWidth: 1.5 })
+      if (layers.rayBaseline && isochrone.properties.fusion) {
+        outlines.push({ rings: surfaceRings(isochrone.properties.fusion.ray_geometry), weight: 1.4, color: RAY_BASELINE_COLOR, dash: [6, 4], haloWidth: 1 })
+      }
       if (layers.innerRings) {
         for (const inner of isochrone.properties.rings ?? []) {
-          circle(inner.coordinates, inner.minutes <= 5 ? 1.2 : 1.4, '#1f7a42', 0.95)
+          outlines.push({ rings: surfaceRings(inner.geometry ?? inner.coordinates), weight: 1.2, color: '#6a9982', alpha: 0.85, dash: inner.minutes <= 5 ? [3, 5] : [6, 5], haloWidth: 1, label: `${inner.minutes} 分钟参考` })
         }
       }
     }
-    if (compare) circle(compare.geometry.coordinates[0] ?? [], 1.75, '#b0801f', 0.95, [7, 4])
+    if (compare) outlines.push({ rings: surfaceRings(compare.geometry), weight: 1.75, color: '#b0801f', alpha: 0.95, dash: [7, 4], haloWidth: 1.5 })
+    outlines.push(...methodShapes.added.map(face => ({ rings: face, weight: 1, color: FUSION_ADDED_COLOR, alpha: 0.85, dash: [3, 3], haloWidth: 1 })))
+    outlines.push(...methodShapes.pending.map(face => ({ rings: face, weight: 0.8, color: FUSION_PENDING_COLOR, alpha: 0.7, dash: [2, 4], haloWidth: 1, dots: FUSION_PENDING_COLOR })))
     outlines.push(...grayOutlines.map(outline => ({ ...outline, color: REGION_COLOR, haloWidth: 1 })))
     if (check && !simulation) {
       for (const { polygons } of gapShapes) {
         outlines.push({ rings: polygons.flat(), weight: 1.1, color: CHECK_GAP_COLOR, alpha: 0.9, dash: [3, 3], haloWidth: 1, hatch: CHECK_GAP_COLOR })
       }
-      if (layers.checkEstimate && check.estimate_rings.length) {
+      if (!isochrone?.properties.fusion && layers.checkEstimate && check.estimate_rings.length) {
         outlines.push({ rings: check.estimate_rings, weight: 1.5, color: CHECK_ESTIMATE_COLOR, alpha: 0.9, dash: [7, 3, 1.5, 3], haloWidth: 1.5 })
       }
       if (layers.detourClues) {
@@ -456,7 +475,7 @@ export function MapView({
       }
     }
     return outlines
-  }, [isochrone, layers.innerRings, altRing, compare, grayOutlines, check, simulation, gapShapes, layers.checkEstimate, layers.detourClues, focusClues])
+  }, [isochrone, layers.innerRings, layers.rayBaseline, altRing, compare, grayOutlines, check, simulation, gapShapes, layers.checkEstimate, layers.detourClues, focusClues, methodShapes])
   const guideOutlines = useMemo<MapOutline[]>(() => {
     if (!guide?.item.route) return []
     const route = guide.item.route
@@ -494,25 +513,49 @@ export function MapView({
       map.addOverlay(overlay)
       overlaysRef.current.push(overlay)
     }
+    const addFaces = (faces: ReturnType<typeof surfacePolygons>, style: any, z = 0, onClick?: () => void) => {
+      for (const face of faces) {
+        for (const ring of fillPieces(face)) {
+          const area = new BMapGL.Polygon(ring.map(([lng, lat]) => new BMapGL.Point(lng, lat)), { ...style, strokeWeight: 0, strokeOpacity: 0 })
+          area.setZIndex?.(z)
+          if (onClick) area.addEventListener('click', onClick)
+          add(area)
+        }
+        if (vectorHeat && style.strokeWeight > 0) {
+          for (const ring of face) {
+            const outline = new BMapGL.Polyline([...ring, ring[0]].map(([lng, lat]) => new BMapGL.Point(lng, lat)), style)
+            outline.setZIndex?.(z)
+            add(outline)
+          }
+        }
+      }
+    }
     const fade = dimmed ? DIM : 1
+    for (const hole of isochrone?.properties.fusion?.quality?.hole_records ?? []) {
+      if (!hole.supported || !hole.ring?.length) continue
+      addFaces([[hole.ring]], { fillColor: '#ffffff', fillOpacity: 0.001, enableClicking: true }, 3, () => {
+        if (drawingRef.current || pickEnabledRef.current) return
+        suppressPickRef.current = true
+        const [lng, lat] = hole.ring[0]
+        openPopover({ kind: 'fusion-hole', hole, accepted: isochrone?.properties.fusion?.quality?.hole_validation_complete, localEstimate: !hole.supported && !!isochrone?.properties.fusion?.quality?.local_hole_estimate_count }, { lat, lng })
+      })
+    }
 
     const blindspots = isochrone?.properties.blindspots
     const spacing = blindspots?.grid_spacing_m ?? 150
-    const circle = isochrone?.geometry.coordinates[0] ?? []
+    const circle = isochrone?.geometry ?? []
 
     // 测距失败与受围挡阻断的网格单独标出来：热力层里它们没有值，不能让人误读成「很近」
-    if (blindspots && layers.heat) {
+    const timeField = isochrone?.properties.fusion?.time_field
+    if (blindspots && layers.heat && !timeField) {
       for (const cell of blindspots.cells) {
         if (cell.reach_s !== null) continue
-        const corners = cellCorners(cell, spacing).map(([lng, lat]) => new BMapGL.Point(lng, lat))
-        add(
-          new BMapGL.Polygon(corners, {
+        addFaces(clipBlindSurface(cellCorners(cell, spacing), circle), {
             strokeWeight: 0,
             fillColor: cell.closure_blocked ? '#7c2d12' : UNKNOWN_COLOR,
             fillOpacity: (cell.closure_blocked ? 0.35 : 0.5) * fade,
             enableClicking: false,
-          }),
-        )
+          })
       }
     }
 
@@ -520,17 +563,17 @@ export function MapView({
     // 平面视角仍用下面的画布色场（格子之间平滑过渡，更好看）
     if (blindspots && layers.heat && vectorHeat) {
       const targetS = heatTargetS(isochrone?.properties.minutes)
-      for (const cell of blindspots.cells) {
+      if (timeField) for (const face of fusionHeatFaces(timeField, targetS)) {
+        addFaces([[face.ring]], { strokeWeight: 0, fillColor: heatColor(face.value, targetS), fillOpacity: 0.42 * fade, enableClicking: false }, 1)
+      }
+      else for (const cell of blindspots.cells) {
         if (cell.reach_s === null) continue
-        const corners = cellCorners(cell, spacing).map(([lng, lat]) => new BMapGL.Point(lng, lat))
-        const tile = new BMapGL.Polygon(corners, {
+        addFaces(clipBlindSurface(cellCorners(cell, spacing), circle), {
           strokeWeight: 0,
           fillColor: heatColor(cell.reach_s, targetS),
           fillOpacity: 0.42 * fade,
           enableClicking: false,
-        })
-        tile.setZIndex?.(1)
-        add(tile)
+        }, 1)
       }
     }
 
@@ -545,19 +588,16 @@ export function MapView({
       for (const { cell, missing, size_m } of wide) {
         const inside = cell.in_circle ?? true
         // 50 米细分过的格按子格分别画，没细分的照旧画 100 米格
-        const parts = clipBlindCell(cellCorners(cell, size_m), circle)
+        const parts = clipBlindSurface(cellCorners(cell, size_m), circle)
         for (const part of parts) {
-          const points = part.map(([lng, lat]) => new BMapGL.Point(lng, lat))
-          const area = new BMapGL.Polygon(points, {
+          const detail: GridCell = { ...cell, missing }
+          addFaces([part], {
             strokeColor: color,
             strokeWeight: gray ? 0 : inside ? 1 : 0.5,
             strokeOpacity: (gray ? 0 : inside ? 0.45 : 0.25) * fade,
             fillColor: color,
             fillOpacity: (gray ? grayFill : inside ? 0.22 : 0.1) * fade,
-          })
-          area.setZIndex?.(2)
-          const detail: GridCell = { ...cell, missing }
-          area.addEventListener('click', () => {
+          }, 2, () => {
             // 画草图、放临时围挡、选对比点时，这一下是在点地图，交给地图点击处理，不弹卡片
             if (drawingRef.current || pickEnabledRef.current) return
             suppressPickRef.current = true
@@ -565,7 +605,6 @@ export function MapView({
             // 方格创建时就把自己绑上，卡片跟这一格走。
             openPopover({ kind: 'cell', cell: detail, missing }, cell)
           })
-          add(area)
         }
       }
     }
@@ -623,23 +662,19 @@ export function MapView({
     if (check && !simulation) {
       for (const { gap, polygons } of gapShapes) {
         for (const polygon of polygons) {
-          const points = polygon[0].map(([lng, lat]) => new BMapGL.Point(lng, lat))
-          const piece = new BMapGL.Polygon(points, {
+          addFaces([polygon], {
             strokeColor: CHECK_GAP_COLOR,
             strokeWeight: vectorHeat ? 1.2 : 0,
             strokeOpacity: vectorHeat ? 0.9 * fade : 0,
             strokeStyle: 'dashed',
             fillColor: CHECK_GAP_COLOR,
             fillOpacity: (vectorHeat ? 0.28 : 0.08) * fade,
-          })
-          piece.setZIndex?.(7)
-          piece.addEventListener('click', () => {
+          }, 7, () => {
             if (drawingRef.current || pickEnabledRef.current) return
             suppressPickRef.current = true
             const clues = gap.clues.flatMap(id => check.clues.filter(c => c.id === id))
-            openPopover({ kind: 'gap', gap, clues, targetS: check.target_s }, gap.anchor)
+            openPopover({ kind: 'gap', gap, clues, targetS: check.target_s, fused: Boolean(isochrone?.properties.fusion) }, gap.anchor)
           })
-          add(piece)
         }
       }
       if (layers.detourClues) {
@@ -666,7 +701,7 @@ export function MapView({
           }
         }
       }
-      if (vectorHeat && layers.checkEstimate) {
+      if (vectorHeat && !isochrone?.properties.fusion && layers.checkEstimate) {
         for (const ring of check.estimate_rings) {
           const line = new BMapGL.Polyline(
             [...ring, ring[0]].map(([lng, lat]) => new BMapGL.Point(lng, lat)),
@@ -678,27 +713,42 @@ export function MapView({
       }
     }
 
+    if (isochrone?.properties.fusion) {
+      addFaces(methodShapes.added, { fillColor: FUSION_ADDED_COLOR, fillOpacity: 0.12 * fade, strokeWeight: 1, strokeColor: FUSION_ADDED_COLOR, strokeOpacity: 0.6, enableClicking: false }, 6)
+      for (const face of methodShapes.pending) {
+        const ring = face[0]
+        const at = { lng: ring.reduce((s, p) => s + p[0], 0) / ring.length, lat: ring.reduce((s, p) => s + p[1], 0) / ring.length }
+        addFaces([face], { fillColor: FUSION_PENDING_COLOR, fillOpacity: (vectorHeat ? 0.18 : 0.05) * fade, strokeWeight: 0.8, strokeColor: FUSION_PENDING_COLOR, strokeOpacity: 0.6 }, 7, () => {
+          if (drawingRef.current || pickEnabledRef.current) return
+          suppressPickRef.current = true
+          openPopover({ kind: 'fusion-pending', fusion: isochrone.properties.fusion!, ...at }, at)
+        })
+      }
+      if (vectorHeat && layers.rayBaseline) {
+        for (const ring of surfaceRings(isochrone.properties.fusion.ray_geometry)) {
+          add(new BMapGL.Polyline(ring.map(([lng, lat]) => new BMapGL.Point(lng, lat)), { strokeColor: RAY_BASELINE_COLOR, strokeWeight: 1.4, strokeOpacity: 0.9, strokeStyle: 'dashed', enableClicking: false }))
+        }
+      }
+    }
+
     // 保留等时圈填充；平面轮廓统一交给独立画布，3D / 卫星使用地图地面覆盖物。
     const viewPoints: any[] = []
     if (isochrone) {
-      const ring = isochrone.geometry.coordinates[0] ?? []
-      const points = ring.map(([lng, lat]) => new BMapGL.Point(lng, lat))
+      const points = outerPoints(isochrone.geometry).map(([lng, lat]) => new BMapGL.Point(lng, lat))
       // 热力打开时圈和内圈都不填绿：绿底叠在色阶上会把黄、橙、红调成发灰的橄榄色，只留轮廓线
       const heatShown = Boolean(layers.heat && blindspots)
-      const outer = new BMapGL.Polygon(points, {
+      addFaces(surfacePolygons(isochrone.geometry), {
         strokeColor: '#1f7a42',
         strokeWeight: vectorHeat ? 1.5 : 0,
         strokeOpacity: vectorHeat ? 1 : 0,
         fillColor: '#2f9e5a',
         fillOpacity: heatShown ? 0 : 0.06,
         enableClicking: false,
-      })
-      outer.setZIndex?.(4)
-      add(outer)
+      }, 4)
       viewPoints.push(...points)
 
       // 未计过街等待的圈画成虚线：两圈之间那一带，就是红绿灯与过街设施吃掉的可达范围
-      const rawRing = isochrone.properties.delay?.applied ? isochrone.properties.raw_ring : null
+      const rawRing = !isochrone.properties.fusion && isochrone.properties.delay?.applied ? isochrone.properties.raw_ring : null
       if (vectorHeat && rawRing && rawRing.length > 2) {
         const raw = new BMapGL.Polyline(
           rawRing.map(([lng, lat]) => new BMapGL.Point(lng, lat)),
@@ -709,7 +759,7 @@ export function MapView({
       }
 
       // 另一种看法的圈画成石板灰点线：两圈之差就是共享围挡带来的变化
-      if (vectorHeat && altRing && altRing.length > 2) {
+      if (vectorHeat && !isochrone.properties.fusion && altRing && altRing.length > 2) {
         const alt = new BMapGL.Polyline(
           altRing.map(([lng, lat]) => new BMapGL.Point(lng, lat)),
           { strokeColor: '#475569', strokeWeight: 1.6, strokeOpacity: 0.85, strokeStyle: 'dotted' },
@@ -729,24 +779,27 @@ export function MapView({
         )
       }
 
-      if (layers.innerRings) {
+      if (vectorHeat && layers.innerRings) {
         for (const inner of isochrone.properties.rings ?? []) {
-          const innerPoints = inner.coordinates.map(([lng, lat]) => new BMapGL.Point(lng, lat))
-          const layer = new BMapGL.Polygon(innerPoints, {
-            strokeColor: '#1f7a42',
-            strokeWeight: vectorHeat ? (inner.minutes <= 5 ? 1 : 1.25) : 0,
-            strokeOpacity: vectorHeat ? 0.95 : 0,
-            fillColor: '#2f9e5a',
-            fillOpacity: heatShown ? 0 : (inner.minutes <= 5 ? 0.28 : 0.16) * fade,
-            enableClicking: false,
-          })
-          layer.setZIndex?.(inner.minutes <= 5 ? 8 : 6)
-          add(layer)
+          for (const ring of surfaceRings(inner.geometry ?? inner.coordinates)) {
+            const line = new BMapGL.Polyline(ring.map(([lng, lat]) => new BMapGL.Point(lng, lat)), {
+              strokeColor: '#6a9982', strokeWeight: 1.2, strokeOpacity: 0.85 * fade,
+              strokeStyle: 'dashed', enableClicking: false,
+            })
+            line.setZIndex?.(8)
+            add(line)
+          }
+          const at = outerPoints(inner.geometry ?? inner.coordinates).reduce<[number, number] | null>((highest, point) => !highest || point[1] > highest[1] ? point : highest, null)
+          if (at) {
+            const label = new BMapGL.Label(`${inner.minutes} 分钟参考`, { position: new BMapGL.Point(...at), offset: new BMapGL.Size(-42, -12) })
+            label.setStyle({ background: '#fffdf9', color: '#527a65', border: '1px solid #cdddcf', borderRadius: '12px', padding: '3px 8px', fontSize: '12px', lineHeight: '18px', pointerEvents: 'none' })
+            label.setZIndex?.(10)
+            add(label)
+          }
         }
       }
 
-      // 设施标放在方格和等时圈之上。桃浦圈内设施为 0，点都在圈外，
-      // 若压在盲区方格下面，打开样例就像一张空图。
+      // 设施标放在方格和等时圈之上。默认只画圈内，圈外候选可由图层开关查看。
       for (const place of isochrone.properties.coverage?.places ?? []) {
         if (place.fresh_status === 'excluded') continue
         if (!layers.outsidePlaces && !place.in_circle) continue
@@ -771,10 +824,8 @@ export function MapView({
 
     // 两地对比：B 圈用橙色与主圈区分，并标注 B 的中心名称
     if (compare) {
-      const ring = compare.geometry.coordinates[0] ?? []
-      const points = ring.map(([lng, lat]) => new BMapGL.Point(lng, lat))
-      add(
-        new BMapGL.Polygon(points, {
+      const points = outerPoints(compare.geometry).map(([lng, lat]) => new BMapGL.Point(lng, lat))
+      addFaces(surfacePolygons(compare.geometry), {
           strokeColor: '#b0801f',
           strokeWeight: vectorHeat ? 1.5 : 0,
           strokeOpacity: vectorHeat ? 0.95 : 0,
@@ -782,8 +833,7 @@ export function MapView({
           fillColor: '#b0801f',
           fillOpacity: 0.08,
           enableClicking: false,
-        }),
-      )
+        })
       viewPoints.push(...points)
       const bCenter = compare.properties.center
       if (bCenter) {
@@ -940,13 +990,15 @@ export function MapView({
     }
 
     // 视野只在换了结果时贴合：切图层、切品类、切看法、画标注时保持用户当前的缩放与平移
-    const key = fitKey ?? isochrone
-    const viewChanged = viewKeyRef.current[0] !== key || viewKeyRef.current[1] !== compare
+    const key = typeof fitKey === 'string' || typeof fitKey === 'number' ? fitKey : overviewViewportKey(isochrone)
+    const compareKey = overviewViewportKey(compare)
+    const viewChanged = viewKeyRef.current[0] !== key || viewKeyRef.current[1] !== compareKey
     if (viewChanged) {
-      viewKeyRef.current = [key, compare]
+      viewKeyRef.current = [key, compareKey]
       if (viewPoints.length > 0) {
         // 视野贴合圈范围，比固定缩放级别更实用：不同社区的可达范围差异很大
-        map.setViewport(viewPoints)
+        map.setViewport(viewPoints, { enableAnimation: false, margins: [48, 42, 48, 42] })
+        lastCenterRef.current = map.getCenter()
       } else {
         map.setCenter(new BMapGL.Point(center.lng, center.lat))
       }
@@ -1006,6 +1058,7 @@ export function MapView({
     openPopover,
     vectorHeat,
     grayOutlines,
+    methodShapes,
     guideActive,
     check,
     gapShapes,
@@ -1361,14 +1414,16 @@ export function MapView({
     const blindspots = isochrone?.properties.blindspots
     const tile =
       layers.heat && blindspots && !guideActive && !tripOpen
-        ? buildHeatTile(
+        ? isochrone?.properties.fusion?.time_field
+          ? buildFusionHeatTile(isochrone.properties.fusion.time_field, heatTargetS(isochrone.properties.minutes), 0.5)
+          : buildHeatTile(
             blindspots.cells,
             blindspots.grid_spacing_m,
             heatTargetS(isochrone?.properties.minutes),
             0.5,
           )
         : null
-    const ring = isochrone?.geometry.coordinates[0] ?? []
+    const rings = surfaceRings(isochrone?.geometry)
     const gridCenter = isochrone?.properties.center
     const discRadiusM =
       blindspots?.layout === 'disc'
@@ -1389,7 +1444,7 @@ export function MapView({
       ctx.clearRect(0, 0, width, height)
       // 倾斜、旋转后整张图不再是正放的矩形，画布色场会错位：这时热力由矢量方格画，画布留空
       if (vectorHeat || guideActive || tripOpen) return
-      if (tile && (ring.length > 2 || (discRadiusM > 0 && gridCenter))) {
+      if (tile && (rings.length > 0 || (discRadiusM > 0 && gridCenter))) {
         ctx.save()
         ctx.beginPath()
         if (discRadiusM > 0 && gridCenter) {
@@ -1398,14 +1453,16 @@ export function MapView({
           const edge = map.pointToPixel(new BMapGL.Point(n.lng, n.lat))
           ctx.arc(c.x, c.y, Math.hypot(edge.x - c.x, edge.y - c.y), 0, Math.PI * 2)
         } else {
+          for (const ring of rings) {
           ring.forEach(([lng, lat], i) => {
             const p = map.pointToPixel(new BMapGL.Point(lng, lat))
             if (i === 0) ctx.moveTo(p.x, p.y)
             else ctx.lineTo(p.x, p.y)
           })
           ctx.closePath()
+          }
         }
-        ctx.clip()
+        ctx.clip('evenodd')
         const nw = map.pointToPixel(new BMapGL.Point(tile.west, tile.north))
         const se = map.pointToPixel(new BMapGL.Point(tile.east, tile.south))
         ctx.imageSmoothingEnabled = true
@@ -1667,7 +1724,8 @@ export function MapView({
             regions: labeledRegions,
             markings: markings.length,
             clues: suspects.length + constructionSites.length + recheckRays.length,
-            check: check ? { gaps: check.gaps.length, clues: check.clues.length } : null,
+            check: check ? { gaps: check.gaps.length, clues: check.clues.length, version: check.version, rejection: isochrone?.properties.fusion_fallback?.split(/[；，]/)[0] } : null,
+            fusion: isochrone?.properties.fusion ? { added: isochrone.properties.fusion.added_area_km2 > 0, pending: isochrone.properties.fusion.unknown_inside_ray_km2 > 0 } : null,
           }}
           blindCategory={blindCategory}
           blindCategories={blindCategories}
@@ -1679,7 +1737,13 @@ export function MapView({
           busy={busy}
         />
       )}
-      {!draft && ready && <MapSceneBar scene={scene} immersive={guideActive} />}
+      {!draft && ready && <MapSceneBar scene={scene} immersive={guideActive} onFit={isochrone ? () => {
+        const map = mapRef.current
+        const BMapGL = window.BMapGL
+        if (!map || !BMapGL) return
+        map.setViewport(outerPoints(isochrone.geometry).map(([lng, lat]) => new BMapGL.Point(lng, lat)), { enableAnimation: false, margins: [48, 42, 48, 42] })
+        lastCenterRef.current = map.getCenter()
+      } : undefined} />}
       {!guideActive && !tripOpen && <button
         type="button"
         className="legend-toggle floating"
@@ -1688,6 +1752,25 @@ export function MapView({
       >
         图例
       </button>}
+      {!draft && !guideActive && !tripOpen && !showLegend && <div className="map-estimate-notes">
+      {isochrone?.properties.fusion && isochrone.properties.fusion.unknown_inside_ray_km2 > 0 && <button
+        type="button"
+        className="map-estimate-note floating"
+        aria-pressed={layers.fusionPending}
+        onClick={() => onLayers({ ...layers, fusionPending: !layers.fusionPending })}
+        title="部分区域因缺测、接口冲突或边界插值存疑暂不能判断。点击在地图上查看，不代表这些地方走不到。"
+      >
+        <span>融合估计</span>
+        <strong>{layers.fusionPending ? '隐藏待核实' : '查看待核实'}</strong>
+      </button>}
+      {isochrone?.properties.coverage && !layers.outsidePlaces && !(isochrone.properties.coverage.places ?? []).some(place => place.in_circle && place.fresh_status !== 'pending' && place.fresh_status !== 'excluded') && <button
+        type="button"
+        className="map-estimate-note floating"
+        onClick={() => onLayers({ ...layers, outsidePlaces: true })}
+      >
+        <span>圈内暂无设施</span><strong>查看圈外设施</strong>
+      </button>}
+      </div>}
       {!guideActive && !tripOpen && showLegend && (
         <MapLegend
           isochrone={isochrone}

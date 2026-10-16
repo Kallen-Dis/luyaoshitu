@@ -14,7 +14,8 @@ export interface LayerAvailability {
   /** 复测疑似点与工地候选数 */
   clues: number
   /** 网格交叉校核：确认缺口片数与显示的绕行线索段数；没有校核结果为 null */
-  check: { gaps: number; clues: number } | null
+  check: { gaps: number; clues: number; version?: number; rejection?: string } | null
+  fusion?: { added: boolean; pending: boolean } | null
 }
 
 interface Props {
@@ -80,7 +81,7 @@ export function MapViewBar({
     {
       title: '基础',
       rows: [
-        ...(available.innerRings ? [{ key: 'innerRings' as const, label: '5 / 10 分钟内圈' }] : []),
+        ...(available.innerRings ? [{ key: 'innerRings' as const, label: '5 / 10 分钟参考内圈', note: '浅绿虚线，不叠加填充' }] : []),
         {
           key: 'heat',
           label: '步行耗时热力',
@@ -112,7 +113,15 @@ export function MapViewBar({
         },
       ],
     },
-    ...(available.check
+    ...(available.fusion && available.check
+      ? [{ title: '方法对照', rows: [
+          { key: 'rayBaseline' as const, label: '原射线法范围', note: '同一次分析的原始估计，细虚线' },
+          { key: 'checkGaps' as const, label: '原圈内超时证据', disabled: available.check.gaps === 0, note: available.check.gaps ? `${available.check.gaps} 片，红色斜线` : '没有确认的超时片' },
+          { key: 'fusionAdded' as const, label: '融合后补回的范围', disabled: !available.fusion.added, note: available.fusion.added ? '原射线圈外新增的估计可达部分' : '没有补回范围' },
+          { key: 'detourClues' as const, label: '绕行线索', disabled: available.check.clues === 0, note: '位置仅为线索，点开查看核验证据' },
+          ...(available.fusion.pending ? [{ key: 'fusionPending' as const, label: '待核实区域', note: '浅琥珀点纹，点击查看原因' }] : []),
+        ] }]
+      : available.check
       ? [
           {
             title: '网格交叉校核',
@@ -123,7 +132,7 @@ export function MapViewBar({
                 disabled: available.check.gaps === 0,
                 note: available.check.gaps > 0 ? `确认 ${available.check.gaps} 片，斜线` : '没有确认的缺口',
               },
-              { key: 'checkEstimate' as const, label: '校核估计范围', note: '射线点加网格点重新估的边界，点划线' },
+              { key: 'checkEstimate' as const, label: (available.check.version ?? 1) >= 2 ? '融合候选范围（未采用）' : '校核估计范围', note: (available.check.version ?? 1) >= 2 ? (available.check.rejection ? `未采用：${available.check.rejection}` : '仅作方法对照，不参与面积与评分，点划线') : '射线点加网格点重新估的边界，点划线' },
               {
                 key: 'detourClues' as const,
                 label: '绕行线索',
@@ -149,6 +158,7 @@ export function MapViewBar({
     },
   ]
   const shown = groups.flatMap((g) => g.rows).filter((r) => !r.disabled && layers[r.key]).length
+  const comparing = layers.rayBaseline
 
   const algorithmActive = resultView === 'algorithm'
   const pick = (view: ResultView) => {
@@ -201,10 +211,11 @@ export function MapViewBar({
         </button>
       </div>
       {viewSwitch.kind === 'instant' && algorithmActive && (
-        <p className="view-caption floating">地图显示纯算法结果；侧栏仍是含标注的报告</p>
+        <p className="view-caption floating">当前查看纯算法结果</p>
       )}
       {open && (
         <div id={panelId} className="layer-panel floating" role="group" aria-label="图层">
+          {available.fusion && <div className="layer-method-head"><p><i aria-hidden="true" />主范围：校正后的步行范围</p><button type="button" aria-pressed={comparing} onClick={() => onLayers({ ...layers, rayBaseline: !comparing })}>{comparing ? '收起边界对照' : '查看方法对照'}</button></div>}
           {groups.map((g) => (
             <section key={g.title}>
               <h4>{g.title}</h4>

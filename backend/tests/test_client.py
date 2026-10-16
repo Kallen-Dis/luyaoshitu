@@ -4,6 +4,7 @@ import asyncio
 import os
 import time
 
+import httpx
 import pytest
 
 from app.baidu.client import BaiduMapClient
@@ -140,6 +141,48 @@ def test_walking_route_failure_is_recorded_not_raised(tmp_path, monkeypatch):
     monkeypatch.setattr(client, "_request", fake_request)
     assert asyncio.run(client.walking_route((31.24, 121.41), (31.25, 121.42))) is None
     assert len(client.route_failures) == 1
+
+
+def test_walking_route_preserves_coordinate_sources_and_never_upgrades_legacy_cache(
+    tmp_path, monkeypatch
+):
+    client = _client(tmp_path)
+    origin, destination = (31.24, 121.41), (31.25, 121.42)
+    start, end = {"lat": 31.24001, "lng": 121.41}, {"lat": 31.25, "lng": 121.42001}
+    calls = []
+
+    async def respond(endpoint, params, **kwargs):
+        calls.append(params)
+        return {
+            "result": {
+                "origin": {"lat": origin[0], "lng": origin[1]},
+                "destination": end,
+                "routes": [
+                    {
+                        "distance": 1500,
+                        "duration": 1300,
+                        "steps": [
+                            {
+                                "start_location": start,
+                                "end_location": end,
+                                "path": "121.41,31.24001;121.42001,31.25",
+                            }
+                        ],
+                    }
+                ],
+            }
+        }
+
+    monkeypatch.setattr(client, "_request", respond)
+    data = asyncio.run(client.walking_route(origin, destination, fine_m=10))
+    assert data["position_schema"] == 2 and data["requested_origin"] == list(origin)
+    assert data["steps"][0]["start_location"] == start
+    assert data["response_destination"] == end and data["coord_type"] == "bd09ll"
+    assert calls[0]["steps_info"] == 1 and calls[0]["ret_coordtype"] == "bd09ll"
+    legacy = {"steps": [], "duration_s": 1300}
+    client._cache.write(client._walking_route_cache_path(origin, destination, 10), legacy)
+    cached = asyncio.run(client.walking_route(origin, destination, fine_m=10))
+    assert "position_schema" not in cached and len(calls) == 1
 
 
 def test_client_starts_without_ak_but_refuses_requests(tmp_path):
@@ -377,7 +420,12 @@ def test_matrix_grid_requests_only_uncached_origins(tmp_path, monkeypatch):
     """盲区判定是「多起点 × 1 终点」：测过的起点不该跟着没测过的一起重发。"""
     client = _client(tmp_path)
     calls: list[int] = []
-    monkeypatch.setattr(client, "_request", _echo_matrix(calls))
+
+    async def transport(request):
+        body = await _echo_matrix(calls)(request.url.path, dict(request.url.params))
+        return httpx.Response(200, json={"status": 0, **body})
+
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(transport))
     dest = [(31.30, 121.50)]
     origins = [(31.24 + i * 0.001, 121.41) for i in range(4)]
 
@@ -387,6 +435,7 @@ def test_matrix_grid_requests_only_uncached_origins(tmp_path, monkeypatch):
     assert calls == [2, 2]  # 第二次只发了没测过的两个起点
     assert client.matrix_pairs == 4
     assert all(row[0] is not None for row in table)
+    asyncio.run(client._client.aclose())
 
 
 def test_fine_origin_key_keeps_nearby_origins_apart(tmp_path, monkeypatch):
@@ -430,7 +479,12 @@ def test_fine_keys_leave_existing_cache_keys_unchanged(tmp_path):
 def test_matrix_grid_groups_origins_by_their_missing_destinations(tmp_path, monkeypatch):
     client = _client(tmp_path)
     calls: list[int] = []
-    monkeypatch.setattr(client, "_request", _echo_matrix(calls))
+
+    async def transport(request):
+        body = await _echo_matrix(calls)(request.url.path, dict(request.url.params))
+        return httpx.Response(200, json={"status": 0, **body})
+
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(transport))
     o = [(31.24, 121.41), (31.25, 121.41)]
     d = [(31.30, 121.50), (31.31, 121.50)]
 
@@ -442,6 +496,7 @@ def test_matrix_grid_groups_origins_by_their_missing_destinations(tmp_path, monk
     assert sorted(calls) == [1, 2]
     assert client.matrix_pairs == 1 + 3
     assert all(cell is not None for row in table for cell in row)
+    asyncio.run(client._client.aclose())
 
 
 def test_matrix_grid_raises_quota_but_keeps_what_other_blocks_measured(tmp_path, monkeypatch):

@@ -1,4 +1,5 @@
 import { freshEligible, freshLabel } from '../../lib/fresh'
+import { HoleEvidence } from '../HoleEvidence'
 import { FreshFeedback } from '../trip/FreshFeedback'
 import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from 'react'
 import { TYPE_META, formatDistance, metersBetween, type LatLng } from '../../lib/markings'
@@ -123,8 +124,9 @@ function cellContent(
     )
   }
   if (cell.closure_blocked) notes.push('从中心过来的路线被围挡挡住')
-  else if (cell.reach_s != null) notes.push(`自中心步行约 ${Math.round(cell.reach_s / 60)} 分钟`)
+  else if (cell.reach_s != null) notes.push(`自中心步行约 ${Math.round(cell.reach_s / 60)} 分钟${cell.reach_source === 'fusion_interpolated' || cell.reach_source === 'ray_interp' ? '（融合估计）' : cell.reach_source === 'own_route' ? '（路线测时）' : cell.reach_source === 'inherited' ? '（沿用父格估计）' : ''}`)
   if (cell.in_circle === false) notes.push('在 15 分钟圈外')
+  if (cell.reach_observed_s != null) notes.push(`该点路网采样：${(cell.reach_observed_s / 60).toFixed(1)} 分钟；主圈采用周边样本共同校正的估计`)
 
   const body = (
     <>
@@ -233,7 +235,7 @@ function regionContent(region: GrayRegion, canMark: boolean): Content {
 
 function placeContent(place: Place, canMark: boolean, feedbackDisabled = false): Content {
   const mark = PLACE_MARK[place.category] ?? { glyph: '·', color: '#4b4e45' }
-  const where = place.in_circle ? '在 15 分钟圈内' : '在附近，走不进 15 分钟圈'
+  const where = place.in_circle ? '在当前估计生活圈内' : '在当前估计生活圈外，实际步行以路线为准'
   if (place.source === 'user') {
     return {
       badge: mark,
@@ -387,7 +389,7 @@ function clueContent(clue: GridCheckClue): Content {
   }
 }
 
-function gapContent(gap: GridCheckGap, clues: GridCheckClue[], targetS: number): Content {
+function gapContent(gap: GridCheckGap, clues: GridCheckClue[], targetS: number, fused = false): Content {
   const w = gap.worst
   const parts = gap.leaves.length
   const body = (
@@ -398,7 +400,7 @@ function gapContent(gap: GridCheckGap, clues: GridCheckClue[], targetS: number):
         {w.route_s != null && fact('它自己的步行路线', `${minutesText(w.route_s)} · ${w.route_m ?? '—'} 米`)}
       </ul>
       <p className="map-pop-note">
-        {gapReason(w, targetS)}。{DELAY_SOURCE_TEXT[w.delay_source]}。{routeCheckText(gap)}
+        {gapReason(w, targetS)}。{DELAY_SOURCE_TEXT[w.delay_source]}。{routeCheckText(gap, targetS)}
         {gap.partial_cells > 0 ? `其中 ${gap.partial_cells} 个网格只有一部分走不到，按子点分别保留，没有整格删掉。` : ''}
       </p>
       {clues.length > 0 && (
@@ -411,12 +413,12 @@ function gapContent(gap: GridCheckGap, clues: GridCheckClue[], targetS: number):
     </>
   )
   return {
-    badge: { glyph: '缺', color: CHECK_GAP_COLOR },
-    title: `射线圈里的缺口 ${gap.id}`,
-    sub: `约 ${Math.round(gap.area_m2)} 平方米 · ${parts} 个测时点（50 / 25 米子点）`,
+    badge: { glyph: fused ? '超' : '缺', color: CHECK_GAP_COLOR },
+    title: `${fused ? '原圈内超时证据' : '射线圈里的缺口'} ${gap.id}`,
+    sub: `${fused ? '原采样格' : ''}约 ${Math.round(gap.area_m2)} 平方米 · ${parts} 个测时点`,
     body,
     actions: [],
-    foot: '网格交叉校核：射线圈仍是主结果，这片不改动面积与评分',
+    foot: fused ? '地图只标融合圈排除的超时证据部分；格内边界由融合耗时场估计，原采样数据保留作对照' : '网格交叉校核：射线圈仍是主结果，这片不改动面积与评分',
   }
 }
 
@@ -436,6 +438,7 @@ function pointContent(lat: number, lng: number): Content {
 
 function build(ctx: MapContext, props: Props): Content {
   switch (ctx.kind) {
+    case 'fusion-hole': return { title: `内部排除区 ${ctx.hole.id + 1}`, body: <HoleEvidence hole={ctx.hole} accepted={ctx.accepted} localEstimate={ctx.localEstimate} />, actions: [] }
     case 'cell':
       return cellContent(ctx.cell, ctx.missing, props.places, props.limitM, props.canMark)
     case 'region':
@@ -467,7 +470,16 @@ function build(ctx: MapContext, props: Props): Content {
       }
     }
     case 'gap':
-      return gapContent(ctx.gap, ctx.clues, ctx.targetS)
+      return gapContent(ctx.gap, ctx.clues, ctx.targetS, ctx.fused)
+    case 'fusion-pending':
+      return {
+        badge: { glyph: '待', color: '#bd892e' },
+        title: '这片仍待核实',
+        sub: '暂不能确定是否在步行时间范围内',
+        body: <><p className="map-pop-note">测量结果可能冲突、路线终点偏离，或这里存在绕行线索。我们保留这片的不确定性，避免直接判成可达或走不到。</p><ul className="map-pop-facts">{fact('原射线范围内待核实', `约 ${Math.round(ctx.fusion.unknown_inside_ray_km2 * 1e6).toLocaleString()} 平方米`)}{fact('补测核验', `${ctx.fusion.validation?.checked ?? 0} 个点`)}{ctx.fusion.validation?.corrections ? fact('发现并修正的改判', `${ctx.fusion.validation.corrections} 个点`) : null}</ul></>,
+        actions: [],
+        foot: '待核实不等于超时，也不等于缺少设施；圈外未测位置同样不能仅凭底色判断',
+      }
     case 'clue':
       return clueContent(ctx.clue)
     case 'point':

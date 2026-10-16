@@ -1,6 +1,28 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { HEAT_COLORS, heatColor, heatField, heatGradientCss, rampColor } from '../src/lib/heatRaster.ts'
+import { HEAT_COLORS, heatColor, heatField, heatGradientCss, rampColor, fusionHeatField, fusionHeatFaces } from '../src/lib/heatRaster.ts'
+
+test('fusion heat uses the exact linear time model and leaves missing triangles empty', () => {
+  const mesh = { vertices: [[0, 0, 0], [0.001, 0, 900], [0, 0.001, 900], [0.001, 0.001, null]], triangles: [[0, 1, 2]] }
+  const field = fusionHeatField(mesh)
+  let known = 0, empty = 0
+  field.values.forEach((value, i) => {
+    const lng = field.west + (i % field.width + 0.5) / field.width * (field.east - field.west)
+    const lat = field.north - (Math.floor(i / field.width) + 0.5) / field.height * (field.north - field.south)
+    if (lng + lat <= 0.001 + 1e-12) {
+      assert.ok(Math.abs(value - 900 * (lng + lat) / 0.001) < 1e-5); known++
+    } else { assert.ok(Number.isNaN(value)); empty++ }
+  })
+  assert.ok(known && empty)
+})
+
+test('tilted heat clips the same threshold and never spans an unknown triangle', () => {
+  const mesh = { vertices: [[0, 0, 0], [1, 0, 900], [0, 1, 900], [1, 1, null]], triangles: [[0, 1, 2], [1, 2, 3]] }
+  const faces = fusionHeatFaces(mesh, 450)
+  assert.equal(faces.length, 1)
+  assert.ok(faces[0].ring.every(([x, y]) => x + y <= 0.5 + 1e-12))
+  assert.ok(faces[0].value <= 450)
+})
 
 const hex = (rgb) => `#${rgb.map((v) => v.toString(16).padStart(2, '0')).join('')}`
 

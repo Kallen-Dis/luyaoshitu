@@ -1,5 +1,5 @@
 import type { IsochroneFeature } from '../types'
-import { gridCensus } from './grid'
+import { gridCensus } from './grid.ts'
 
 /**
  * 「纯算法 / 含标注」两种看法。
@@ -27,7 +27,7 @@ export function viewSwitch(feature: IsochroneFeature | null): ViewSwitch {
   if (m.mode === 'none') return m.nearby_count > 0 ? { kind: 'rerun', to: 'auto' } : { kind: 'none' }
   // 没有叠加任何会改变输入的标注：两种看法完全一样
   if (!m.baseline) return { kind: 'none' }
-  if (m.baseline.cells_changed === undefined) return { kind: 'rerun', to: 'none' }
+  if (m.baseline.cells_changed === undefined || !m.baseline.properties) return { kind: 'rerun', to: 'none' }
   return { kind: 'instant' }
 }
 
@@ -36,6 +36,11 @@ export function algorithmView(feature: IsochroneFeature): IsochroneFeature {
   const p = feature.properties
   const base = p.markings?.baseline
   if (!base || base.cells_changed === undefined) return feature
+  if (base.properties) return {
+    ...feature,
+    geometry: base.geometry ?? (base.ring ? { type: 'Polygon', coordinates: [base.ring] } : feature.geometry),
+    properties: { ...p, ...base.properties },
+  }
 
   const blindspots = p.blindspots
     ? (() => {
@@ -53,9 +58,12 @@ export function algorithmView(feature: IsochroneFeature): IsochroneFeature {
 
   return {
     ...feature,
-    geometry: base.ring ? { ...feature.geometry, coordinates: [base.ring] } : feature.geometry,
+    geometry: base.geometry ?? (base.ring ? { type: 'Polygon', coordinates: [base.ring] } : feature.geometry),
     properties: {
       ...p,
+      geometry_method: base.geometry_method ?? p.geometry_method,
+      fusion: base.fusion ?? undefined,
+      gridcheck: base.gridcheck ?? undefined,
       rings: base.ring && base.inner_rings ? base.inner_rings : p.rings,
       raw_ring: base.ring && base.raw_ring ? base.raw_ring : p.raw_ring,
       blindspots,

@@ -1,4 +1,5 @@
 import polygonClipping, { type Ring } from 'polygon-clipping'
+import { intersectSurface, surfacePolygons, type SurfaceInput } from './surface.ts'
 
 type Points = readonly (readonly [number, number])[]
 
@@ -13,9 +14,14 @@ export function clipBlindCell(corners: Points, circle: Points): Ring[] {
 }
 
 /** 区域轮廓包含外环、孔洞及独立片段；按奇偶规则组合后再裁剪。 */
-export function clipRegionOutlines(rings: readonly Points[], circle: Points): Ring[] {
+export function clipRegionOutlines(rings: readonly Points[], circle: SurfaceInput): Ring[] {
   const polygons = rings.filter(ring => ring.length >= 3).map(ring => [copyRing(ring)])
-  if (!polygons.length || circle.length < 3) return []
+  const boundary = surfacePolygons(circle)
+  if (!polygons.length || !boundary.length) return []
   const region = polygonClipping.xor(polygons[0], ...polygons.slice(1))
-  return polygonClipping.intersection(region, [copyRing(circle)]).flatMap(polygon => polygon)
+  return polygonClipping.intersection(region, boundary).flatMap(polygon => polygon)
+}
+
+export function clipBlindSurface(corners: Points, circle: SurfaceInput) {
+  return intersectSurface(corners, circle)
 }

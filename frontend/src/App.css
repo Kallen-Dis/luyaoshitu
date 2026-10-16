@@ -1492,10 +1492,10 @@ button.primary:disabled {
   color: var(--muted);
 }
 
-/* 5 / 10 分钟内圈：和地图上一致，绿色细实线、浅绿底 */
+/* 5 / 10 分钟参考内圈：浅绿虚线，不叠加填充 */
 .legend-swatch.ring-inner {
-  background: rgb(47 158 90 / 22%);
-  border: 1.2px solid #1f7a42;
+  background: transparent;
+  border: 1.2px dashed #6a9982;
   border-radius: 50%;
 }
 
@@ -1529,7 +1529,7 @@ button.primary:disabled {
 
 .map-search form {
   display: flex;
-  overflow: hidden;
+  overflow: visible;
   background: var(--bg);
   border: 1px solid var(--text);
   border-radius: 12px;
@@ -1562,6 +1562,23 @@ button.primary:disabled {
 .map-search input:focus {
   outline: none;
 }
+
+.place-search-inputs { display: flex; flex: 1; min-width: 0; }
+.map-search .search-city { display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-bottom: 1px solid var(--border); }
+.search-city span { font-size: 11px; color: var(--muted); }
+.map-search .search-city input { flex: 1; padding: 6px 8px; font-size: 14px; border: 1px solid var(--border); border-radius: 8px; }
+.map-search form > button:last-child { border-radius: 0 11px 11px 0; }
+.place-candidates { position: absolute; top: calc(100% + 6px); left: 0; width: max(100%, min(380px, calc(100vw - 28px))); max-width: calc(100vw - 28px); border: 1px solid var(--border); border-radius: 14px; background: var(--bg); box-shadow: 0 10px 30px rgb(25 60 43 / 14%); overflow: hidden; }
+.layout:not(.rail) .place-candidates { max-width: calc(100vw - 448px); }
+@media (max-width:850px) { .layout:not(.rail) .place-candidates { max-width: calc(100vw - 28px); } }
+.place-search-hint { padding: 10px 14px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--border); }
+.place-candidates ul { margin: 0; padding: 4px; list-style: none; max-height: min(360px, 50vh); overflow: auto; }
+.map-search .place-candidates button { display: flex; flex-direction: column; width: 100%; align-items: flex-start; gap: 5px; padding: 12px 10px; border: 0; border-radius: 9px; text-align: left; white-space: normal; }
+.place-candidates [aria-selected="true"] button, .place-candidates button:hover { background: rgb(31 122 74 / 9%); }
+.place-candidates strong { font-size: 15px; font-weight: 650; }
+.place-candidates span, .place-candidates p { color: var(--muted); font-size: 13px; line-height: 1.5; }
+.place-candidates p { margin: 10px 14px 14px; }
+.place-selected { position: absolute; top: calc(100% + 4px); left: 0; right: 0; padding: 6px 10px; border-radius: 8px; background: var(--bg); color: var(--muted); font-size: 12px; pointer-events: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .map-search button {
   border: none;

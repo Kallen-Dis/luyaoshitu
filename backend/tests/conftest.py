@@ -27,7 +27,8 @@ def trip_provider(tmp_path):
             markings_dir=tmp_path / "budget",
             max_qps=100000,
             max_retries=0,
-        )
+        ),
+        osm_water_enabled=False,
     )
     client.test_hits = []
     client.test_answer = None

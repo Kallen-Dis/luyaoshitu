@@ -8,8 +8,30 @@
 from __future__ import annotations
 
 import math
+from typing import Any, TypeAlias
 
 METERS_PER_DEG_LAT = 111_320.0
+
+PolygonLike: TypeAlias = list[tuple[float, float]] | dict[str, Any]
+
+
+def polygon_parts(polygon: PolygonLike) -> list[list[list[tuple[float, float]]]]:
+    """内部单环或 GeoJSON 面 -> 多个面，每面为外环和孔洞，统一用 (lat, lng)。"""
+    if not isinstance(polygon, dict):
+        return [[polygon]] if len(polygon) >= 3 else []
+    coordinates = polygon.get("coordinates") or []
+    kind = polygon.get("type")
+    faces = [coordinates] if kind == "Polygon" else coordinates if kind == "MultiPolygon" else []
+    out = []
+    for face in faces:
+        rings = [[(float(p[1]), float(p[0])) for p in ring if len(p) >= 2] for ring in face]
+        if rings and len(rings[0]) >= 3:
+            out.append(rings)
+    return out
+
+
+def has_polygon(polygon: PolygonLike) -> bool:
+    return bool(polygon_parts(polygon))
 
 
 def meters_per_deg_lng(lat: float) -> float:
@@ -41,12 +63,17 @@ def haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     return math.hypot(dlat, dlng)
 
 
-def polygon_area_m2(points: list[tuple[float, float]]) -> float:
+def polygon_area_m2(points: PolygonLike) -> float:
     """多边形面积（平方米），用鞋带公式。points 为 (lat, lng) 序列。
 
     面积是等时圈最直观的量化指标：同样 15 分钟，路网通畅的社区圈得大，
     被铁路、河道、高架切割的社区圈得小。
     """
+    if isinstance(points, dict):
+        return sum(
+            max(0.0, polygon_area_m2(rings[0]) - sum(polygon_area_m2(h) for h in rings[1:]))
+            for rings in polygon_parts(points)
+        )
     if len(points) < 3:
         return 0.0
     lat0 = sum(p[0] for p in points) / len(points)
@@ -60,12 +87,18 @@ def polygon_area_m2(points: list[tuple[float, float]]) -> float:
     return abs(total) / 2.0
 
 
-def point_in_polygon(lat: float, lng: float, polygon: list[tuple[float, float]]) -> bool:
+def point_in_polygon(lat: float, lng: float, polygon: PolygonLike) -> bool:
     """射线交叉法判断点是否落在多边形内。polygon 为 (lat, lng) 序列。
 
     直接在经纬度上做判断：等时圈是由同一中心按方位角生成的星形多边形，
     经度未按纬度缩放只会让整个图形横向等比拉伸，不改变点的内外关系。
     """
+    if isinstance(polygon, dict):
+        return any(
+            point_in_polygon(lat, lng, rings[0])
+            and not any(point_in_polygon(lat, lng, hole) for hole in rings[1:])
+            for rings in polygon_parts(polygon)
+        )
     inside = False
     n = len(polygon)
     if n < 3:
@@ -81,25 +114,35 @@ def point_in_polygon(lat: float, lng: float, polygon: list[tuple[float, float]])
     return inside
 
 
-def grid_points(polygon: list[tuple[float, float]], spacing_m: float) -> list[tuple[float, float]]:
+def grid_points(
+    polygon: PolygonLike, spacing_m: float, alignment: PolygonLike | None = None
+) -> list[tuple[float, float]]:
     """在多边形外接矩形内按固定间距布点，只保留落在多边形内的点。
 
     网格是盲区识别与热力图的共同载体：间距越小分辨率越高，但网格数按平方增长，
     而每个网格都要对各品类设施测距，配额消耗也随之平方增长。
     """
-    if len(polygon) < 3 or spacing_m <= 0:
+    parts = polygon_parts(polygon)
+    if not parts or spacing_m <= 0:
         return []
 
-    lats = [p[0] for p in polygon]
-    lngs = [p[1] for p in polygon]
-    lat0 = sum(lats) / len(lats)
+    points = [p for rings in parts for p in rings[0]]
+    lats = [p[0] for p in points]
+    lngs = [p[1] for p in points]
+    reference = [p for rings in polygon_parts(alignment or polygon) for p in rings[0]]
+    lat0 = sum(p[0] for p in reference) / len(reference)
     d_lat = spacing_m / METERS_PER_DEG_LAT
     d_lng = spacing_m / meters_per_deg_lng(lat0)
 
+    origin_lat = min(p[0] for p in reference)
+    origin_lng = min(p[1] for p in reference)
+    first_y = math.floor((min(lats) - origin_lat) / d_lat + 1e-9)
+    first_x = math.floor((min(lngs) - origin_lng) / d_lng + 1e-9)
+
     out: list[tuple[float, float]] = []
-    lat = min(lats)
+    lat = origin_lat + first_y * d_lat
     while lat <= max(lats):
-        lng = min(lngs)
+        lng = origin_lng + first_x * d_lng
         while lng <= max(lngs):
             if point_in_polygon(lat, lng, polygon):
                 out.append((lat, lng))
@@ -306,13 +349,16 @@ def disc_cells(
     return out
 
 
-def polygon_of(feature: dict | None) -> list[tuple[float, float]] | None:
-    """GeoJSON Feature 的外环转成 (lat, lng) 序列。"""
+def polygon_of(feature: dict | None) -> PolygonLike | None:
+    """旧单环返回内部序列；有孔洞/多片时保留完整几何，不能取第一条外环。"""
     if not feature:
         return None
-    coords = (feature.get("geometry") or {}).get("coordinates") or []
+    geometry = feature.get("geometry") or {}
+    coords = geometry.get("coordinates") or []
     if not coords or not coords[0]:
         return None
+    if geometry.get("type") == "MultiPolygon" or len(coords) > 1:
+        return geometry if has_polygon(geometry) else None
     return [(float(p[1]), float(p[0])) for p in coords[0] if len(p) >= 2]
 
 

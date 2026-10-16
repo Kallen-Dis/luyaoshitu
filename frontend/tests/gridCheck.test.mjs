@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import polygonClipping from 'polygon-clipping'
 import { areaDelta, gapPolygons, gapReason, leafCorners, minutesText, routeCheckText } from '../src/lib/gridCheck.ts'
 
 const area = ring => Math.abs(ring.reduce((sum, point, index) => {
@@ -42,7 +43,8 @@ test('every gap stored in the samples lies inside the ray circle and draws as a 
     assert.ok(check, `${name} has a cross-check`)
     const spacing = feature.properties.blindspots.grid_spacing_m
     for (const gap of check.gaps) {
-      const pieces = gapPolygons(gap, feature.geometry.coordinates[0])
+      const ray = feature.properties.fusion?.ray_geometry ?? feature.geometry
+      const pieces = gapPolygons(gap, ray.coordinates[0])
       assert.ok(pieces.length > 0, `${name} ${gap.id} draws`)
       for (const leaf of gap.leaves) {
         assert.ok(leaf.blocked || leaf.raw_s > 900 || leaf.delay_source === 'own_route')
@@ -59,4 +61,20 @@ test('a gap card says whether a route confirmed it', () => {
   assert.match(routeCheckText({ route_confirmed: 3 }), /3 个点单独取过步行路线/)
   assert.match(routeCheckText({ route_confirmed: 0 }), /只有批量算路的结论/)
   assert.equal(routeCheckText({}), '')
+})
+
+test('fusion comparison never paints red evidence over the green main circle', () => {
+  let checked = 0
+  for (const name of ['caoyang', 'taopu']) {
+    const feature = JSON.parse(readFileSync(new URL(`../../data/samples/isochrone-${name}-15min.geojson`, import.meta.url), 'utf8'))
+    if (!feature.properties.fusion) continue
+    checked++
+    const ray = feature.properties.fusion.ray_geometry.coordinates[0]
+    for (const gap of feature.properties.gridcheck.gaps) {
+      const shown = gapPolygons(gap, ray, feature.geometry)
+      const overlap = polygonClipping.intersection(shown, feature.geometry.coordinates)
+      assert.ok(overlap.reduce((s, face) => s + area(face[0]), 0) < 1e-12, `${name}: red evidence stays outside the main circle`)
+    }
+  }
+  assert.ok(checked > 0)
 })

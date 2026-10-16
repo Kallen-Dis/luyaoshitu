@@ -39,7 +39,7 @@ export function MapLegend({
 }: Props) {
   const p = isochrone?.properties
   const blindspots = p?.blindspots
-  const rawShown = Boolean(p?.delay?.applied && p?.raw_ring)
+  const rawShown = Boolean(!p?.fusion && p?.delay?.applied && p?.raw_ring)
   const inner = layers.innerRings ? (p?.rings ?? []) : []
   const shownBlind = blindspots ? blindArea(blindCells(blindspots, blindCategory, simulation)) : 0
   // 分母按面积：细分出的小格中心在圈外的不计，可能比方格数略少（曹杨 144 格、按面积 141 格）
@@ -63,7 +63,7 @@ export function MapLegend({
       <div className="legend-row">
         <span className="legend-swatch ring-outer" />
         <span>
-          {p?.minutes ?? 15} 分钟步行圈{rawShown ? '（含过街等待）' : ''}
+          {p?.minutes ?? 15} 分钟步行圈 · {p?.simulated ? '离线模拟' : p?.fusion ? '射线与网格融合估计' : '射线法估计'}{rawShown ? '（含过街等待）' : ''}
         </span>
       </div>
       {rawShown && (
@@ -75,10 +75,10 @@ export function MapLegend({
       {inner.length > 0 && (
         <div className="legend-row">
           <span className="legend-swatch ring-inner" />
-          <span>{inner.map((r) => r.minutes).join(' / ')} 分钟内圈</span>
+          <span>浅绿虚线：{inner.map((r) => r.minutes).join(' / ')} 分钟参考内圈{p?.fusion ? '，与主圈采用同一耗时场' : ''}</span>
         </div>
       )}
-      {hasAltRing && (
+      {hasAltRing && !p?.fusion && (
         <div className="legend-row">
           <span className="legend-swatch mk-baseline" />
           <span>
@@ -86,6 +86,9 @@ export function MapLegend({
           </span>
         </div>
       )}
+      {p?.fusion && layers.rayBaseline && <div className="legend-row"><span className="legend-swatch fusion-ray" /><span>蓝灰虚线：原射线法范围，仅用于方法对照</span></div>}
+      {p?.fusion && layers.fusionAdded && p.fusion.added_area_km2 > 0 && <div className="legend-row"><span className="legend-swatch fusion-added" /><span>淡青色：融合后补回的估计范围，约 {Math.round(p.fusion.added_area_km2 * 1e6).toLocaleString()} m²</span></div>}
+      {p?.fusion && layers.fusionPending && p.fusion.unknown_inside_ray_km2 > 0 && <div className="legend-row"><span className="legend-swatch fusion-pending" /><span>{vectorHeat ? '浅琥珀填充' : '琥珀点纹'}：原圈内待核实区域，暂不判定能否到达</span></div>}
 
       {layers.heat && blindspots && (
         <>
@@ -117,7 +120,7 @@ export function MapLegend({
           )}
           {vectorHeat && (
             <div className="legend-row">
-              <span>3D / 卫星视角下按方格着色，不做格间平滑</span>
+              <span>{p?.fusion ? '3D / 卫星视角按融合耗时裁片着色' : '3D / 卫星视角下按方格着色，不做格间平滑'}</span>
             </div>
           )}
         </>
@@ -149,10 +152,10 @@ export function MapLegend({
       {check && !simulation && layers.checkGaps && check.gaps.length > 0 && (
         <div className="legend-row">
           <span className="legend-swatch check-gap" />
-          <span>斜线：射线圈里确认走不到的缺口 {check.gaps.length} 片（网格交叉校核，点开看证据）</span>
+          <span>{vectorHeat ? '浅红填充' : '红色斜线'}：{p?.fusion ? '融合圈排除的' : '原射线范围内的'}超时采样证据 {check.gaps.length} 片，点开查看（不是设施盲区）</span>
         </div>
       )}
-      {check && !simulation && layers.checkEstimate && (
+      {check && !p?.fusion && !simulation && layers.checkEstimate && (
         <div className="legend-row">
           <span className="legend-swatch check-estimate" />
           <span>点划线：把射线点和网格点放在一起重新估的 15 分钟边界，{check.estimate_area_km2.toFixed(2)} km²，只作对照，评分仍按实线圈</span>

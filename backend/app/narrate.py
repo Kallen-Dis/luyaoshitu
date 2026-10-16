@@ -46,7 +46,9 @@ def build_facts(feature: dict[str, Any]) -> dict[str, Any]:
         "出行方式": p.get("mode_label") or "步行",
         "时间阈值_分钟": int(minutes) if minutes.is_integer() else minutes,
         "离线模拟": bool(p.get("simulated")),
+        "融合待核实面积_km2": (p.get("fusion") or {}).get("unknown_inside_ray_km2"),
         "等时圈": {
+            "方法": p.get("geometry_method", "ray"),
             "面积_km2": p.get("area_km2"),
             "直线画圆面积_km2": r.get("ideal_area_km2"),
             "真实面积占直线圆_百分比": (
@@ -164,13 +166,21 @@ def template_text(facts: dict[str, Any]) -> str:
     head += f"。体检总分 {score.get('总分')}（{score.get('等级')}）。"
     if facts.get("离线模拟"):
         head += "这是离线模拟数据，不代表真实路网，只用于演示。"
+    if iso.get("方法") == "fusion":
+        head += "范围由射线与网格采样融合估计。"
+        if facts.get("融合待核实面积_km2"):
+            head += (
+                f"原圈另有 {facts['融合待核实面积_km2']} km² 待核实，未纳入当前统计；"
+                "盲区减少不能解释为服务改善。"
+            )
     delay = facts.get("过街与路口等待")
     if delay:
         raw_area = delay.get("不计等待时面积_km2")
         new_area = delay.get("计入等待后面积_km2")
         head += (
             f"计入过街与路口等待（每公里约 {delay.get('每公里等待_秒')} 秒）后，"
-            f"圈面积由 {raw_area} 缩到 {new_area} km²。"
+            f"{'原射线参考范围' if iso.get('方法') == 'fusion' else '圈'}面积由 "
+            f"{raw_area} 缩到 {new_area} km²。"
         )
 
     problems = []
@@ -221,7 +231,8 @@ def template_text(facts: dict[str, Any]) -> str:
     )
 
     tail = (
-        "【数据边界】等时圈与盲区都按百度真实路网实测；过街等待来自路线模型的统计延误，"
+        "【数据边界】等时圈来自百度路网采样与模型估计，设施盲区按格测距；"
+        "过街等待来自路线模型的统计延误，"
         "不是实时信号灯；打通与补设的效果是估算，选址需经路网核验与现场踏勘。"
     )
     fresh = facts.get("买菜证据分级")

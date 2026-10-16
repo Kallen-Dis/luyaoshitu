@@ -13,7 +13,6 @@ import {
   fetchMarkings,
   fetchSample,
   fetchSamples,
-  geocode,
   recheck,
   retractMarking,
   simulate,
@@ -41,7 +40,10 @@ import { algorithmView, viewSwitch, type ResultView } from './lib/resultView'
 import { NarrativeCard } from './components/NarrativeCard'
 import { ReportCard } from './components/ReportCard'
 import { SignatureCard } from './components/SignatureCard'
+import { firstOuterRing } from './lib/surface'
 import { PageIntro } from './components/PageIntro'
+import { PlaceSearch } from './components/PlaceSearch'
+import type { SearchPlace } from './api'
 import { rememberPageIntro, shouldOfferPageIntro } from './lib/pageIntro'
 import { AdminReview } from './components/markings/AdminReview'
 import { applyMapClick, emptyDraft, useDraftHistory } from './components/markings/draft'
@@ -138,24 +140,30 @@ function Verdict({ feature }: { feature: IsochroneFeature }) {
         hour12: false,
       })
     : null
-  const sourceLine = [source, generatedAt, `${props.mode_label ?? '步行'} ${minutes} 分钟`]
+  const sourceLine = [source, generatedAt, `${props.mode_label ?? '步行'} ${minutes} 分钟`,
+    props.fusion?.quality?.validation_status === 'estimated' ? '融合估计 · 抽样待完善' : null,
+    props.fusion?.quality?.geographic_verification_pending ? '水域待核验' : null,
+    props.fusion?.quality?.water_path_conflicts ? '跨水路线待核验' : null,
+    props.fusion?.quality?.local_hole_estimate_count ? '局部排除边界待核验' : null]
     .filter(Boolean)
     .join(' · ')
   const missing =
     report.blinds.length > 0 && nearbyTotal > 0
-      ? `从这个落点步行 ${minutes} 分钟走不到${report.blinds.join('、')}。周围 ${((props.coverage?.radius_m ?? 0) / 1000).toFixed(1)} 公里内有 ${nearbyTotal} 处${nearest ? `，最近的「${nearest.name}」直线 ${Math.round(nearest.meters)} 米，仍在圈外` : ''}。`
+      ? `当前 ${minutes} 分钟估计范围内未计入${report.blinds.join('、')}。周围 ${((props.coverage?.radius_m ?? 0) / 1000).toFixed(1)} 公里内检索到 ${nearbyTotal} 处${nearest ? `，最近的「${nearest.name}」直线 ${Math.round(nearest.meters)} 米` : ''}；实际步行以路线为准。`
       : report.blinds.length > 0
-        ? `从这个落点步行 ${minutes} 分钟走不到${report.blinds.join('、')}。`
+        ? `当前 ${minutes} 分钟估计范围内未计入${report.blinds.join('、')}。`
         : `圈内 ${inCount ?? 0} 处民生设施，六个品类都找得到。`
   const census = gridCensus(props.blindspots)
   const delay = props.delay
   const extentKm = ((props.blindspots?.extent_m ?? 1500) / 1000).toFixed(1)
   const spacingM = Math.round(props.blindspots?.grid_spacing_m ?? 100)
   const lines = [
-    `图上是「${shortName(props.name ?? '当前地点')}」地名落点的 ${minutes} 分钟步行范围，${reach}，面积 ${props.area_km2.toFixed(2)} km²。`,
+    props.fusion
+      ? `图上是「${shortName(props.name ?? '当前地点')}」的 ${minutes} 分钟融合步行估计范围，面积 ${props.area_km2.toFixed(2)} km²。原射线方向参考：${reach}。`
+      : `图上是「${shortName(props.name ?? '当前地点')}」地名落点的 ${minutes} 分钟步行范围，${reach}，面积 ${props.area_km2.toFixed(2)} km²。`,
     ...(delay?.applied
       ? [
-          `已按步行路线补回过街与路口等待（每公里约 ${Math.round(delay.delay_per_km_s ?? 0)} 秒），圈面积由 ${delay.raw_area_km2.toFixed(2)} 缩到 ${delay.area_km2.toFixed(2)} km²。`,
+          `已按步行路线补回过街与路口等待（每公里约 ${Math.round(delay.delay_per_km_s ?? 0)} 秒），${props.fusion ? '原射线参考圈' : '圈'}面积由 ${delay.raw_area_km2.toFixed(2)} 缩到 ${delay.area_km2.toFixed(2)} km²。`,
         ]
       : []),
     missing,
@@ -172,13 +180,14 @@ function Verdict({ feature }: { feature: IsochroneFeature }) {
         {sourceLine}
       </p>
       <div className="verdict-score">
-        <span className={`grade-${report.grade}`}>{report.total.toFixed(0)}</span>
+        <span className={`grade-${report.grade}`}>{report.total.toFixed(1)}</span>
         <em>/ 100</em>
         <b className={`grade-seal grade-${report.grade}`}>{report.grade}</b>
       </div>
       <p className="verdict-gloss">
         分数把路网能走多远、圈有没有被切开、绕行、圈内设施，和地图上的方格合在一起。
       </p>
+      {props.fusion && props.fusion.unknown_inside_ray_km2 > 0 && <p className="hint">融合范围内的参考评分。原圈另有约 {(props.fusion.unknown_inside_ray_km2 * 1e6).toFixed(0)} m² 待核实；这些居民点未计入当前统计，范围缩小不表示服务改善。</p>}
       <ol>
         {lines.map((line) => (
           <li key={line}>{line}</li>
@@ -202,9 +211,19 @@ export default function App() {
   const [activeSampleId, setActiveSampleId] = useState<string | null>(null)
   const [center, setCenter] = useState({ lat: 31.247979, lng: 121.416775 })
   const [isochrone, setIsochrone] = useState<IsochroneFeature | null>(null)
+  const [viewEntry, setViewEntry] = useState<Scoped<ResultView> | null>(null)
+  const switcher = viewSwitch(isochrone)
+  const switchKind = switcher.kind
+  const resultView: ResultView = switchKind === 'instant'
+    ? (scoped(viewEntry, isochrone) ?? 'markings')
+    : switcher.kind === 'rerun' && switcher.to === 'auto' ? 'algorithm' : 'markings'
+  const mapFeature = useMemo(() => isochrone && switchKind === 'instant' && resultView === 'algorithm'
+    ? algorithmView(isochrone) : isochrone, [isochrone, switchKind, resultView])
   const [minutes, setMinutes] = useState(15)
   const [directions, setDirections] = useState(36)
   const [address, setAddress] = useState('')
+  const [selectedPlace, setSelectedPlace] = useState<SearchPlace | null>(null)
+  function changeAddress(value: string) { setAddress(value); setSelectedPlace(null); setNotice(null); setError(null) }
   const [busy, setBusy] = useState(false)
   const [stageText, setStageText] = useState<string | null>(null)
   const [stageId, setStageId] = useState<string | null>(null)
@@ -261,14 +280,14 @@ export default function App() {
   const [sitePlanBusy, setSitePlanBusy] = useState<string | null>(null)
   const [crosscheckEntry, setCrosscheckEntry] = useState<Scoped<CrosscheckResult> | null>(null)
   const [crosscheckBusy, setCrosscheckBusy] = useState(false)
-  const recheckResult = scoped(recheckEntry, isochrone)
-  const constructionResult = scoped(constructionEntry, isochrone)
+  const recheckResult = scoped(recheckEntry, mapFeature)
+  const constructionResult = scoped(constructionEntry, mapFeature)
   const dismissed = scoped(dismissedEntry, isochrone) ?? NO_KEYS
-  const sitePlanResult = scoped(sitePlanEntry, isochrone)
-  const crosscheckResult = scoped(crosscheckEntry, isochrone)
+  const sitePlanResult = scoped(sitePlanEntry, mapFeature)
+  const crosscheckResult = scoped(crosscheckEntry, mapFeature)
   const dismiss = (key: string) => setDismissedEntry({ owner: isochrone, value: [...dismissed, key] })
   const currentRef = useRef(isochrone)
-  currentRef.current = isochrone
+  currentRef.current = mapFeature
 
   // ---------- 共享标注 ----------
   // 附近标注按「查询中心 + 版本号」拉取；每次新建、修改、投票、审核后版本号加一，列表与地图随之刷新
@@ -295,7 +314,6 @@ export default function App() {
     rightInset: number
   } | null>(null)
   // 地图看哪种结果：「含标注」是页面上的结果，「纯算法」由差异还原。换了结果就回到「含标注」
-  const [viewEntry, setViewEntry] = useState<Scoped<ResultView> | null>(null)
   const draftHistory = useDraftHistory(emptyDraft('closure'))
   const [toast, setToast] = useState<ToastSpec | null>(null)
   // 分析时怎么用附近的标注：auto = 已核实 + 自己的 + 采纳的；none = 纯算法
@@ -384,6 +402,7 @@ export default function App() {
       markingOverride?: 'auto' | 'none',
       /** 显示名：搜索的地址；同一中心点重算时沿用当前结果的名字 */
       name?: string,
+      searchSelection?: SearchPlace,
     ) => {
       const useMarkings = markingOverride ?? markingMode
       closePlanning()
@@ -423,6 +442,7 @@ export default function App() {
             closures: [],
             markings: { mode: useMarkings, include: adopted, exclude: [] },
             ...(name ? { name } : {}),
+            ...(searchSelection ? { search_selection: searchSelection } : {}),
           },
           {
             onStage: (stage, message) => {
@@ -478,9 +498,14 @@ export default function App() {
     }
     setError(null)
     try {
-      const hit = await geocode(query)
-      if (comparePicking) await runCompare(hit.lat, hit.lng)
-      else await run(hit.lat, hit.lng, 'bd09', undefined, query)
+      const hit = selectedPlace
+      if (!hit || hit.name !== query) {
+        setNotice('请先从下方候选中选择具体地点，再点击体检。可修改搜索城市或填写“全国”。')
+        searchInputRef.current?.focus()
+        return
+      }
+      if (comparePicking) await runCompare(hit.lat, hit.lng, hit)
+      else await run(hit.lat, hit.lng, 'bd09', undefined, hit.name.slice(0, 60), hit)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
       setBusy(false)
@@ -488,16 +513,7 @@ export default function App() {
   }
 
   async function onSearch() {
-    if (!address.trim()) return
-    setBusy(true)
-    setError(null)
-    try {
-      const hit = await geocode(address.trim())
-      await run(hit.lat, hit.lng, 'bd09', undefined, address.trim())
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-      setBusy(false)
-    }
+    await onMapSearch()
   }
 
   /** 进入对比：下一步用搜索、样例或点地图指定地点 B，可以是新地址。 */
@@ -517,7 +533,7 @@ export default function App() {
   }
 
   const runCompare = useCallback(
-    async (lat: number, lng: number) => {
+    async (lat: number, lng: number, searchSelection?: SearchPlace) => {
       setBusy(true)
       setError(null)
       setComparePicking(false)
@@ -546,6 +562,7 @@ export default function App() {
             // 对比地点只来自地图点选或地址搜索，均为 BD09
             coord_sys: 'bd09',
             crossing_delay: crossingDelay,
+            ...(searchSelection ? { name: searchSelection.name.slice(0, 60), search_selection: searchSelection } : {}),
           },
           {
             onStage: (stage, message) => {
@@ -585,7 +602,8 @@ export default function App() {
   }
 
   function simulateAt(category: string, lat: number, lng: number) {
-    if (!isochrone) return
+    if (!mapFeature) return
+    const owner = mapFeature
     closeTrip()
     setComposer(null); setCompareFeature(null); setCompareId(null); setComparePicking(false)
     setPlanningMode('facility'); setClosurePlacing(false)
@@ -601,11 +619,11 @@ export default function App() {
       category,
       lat,
       lng,
-      feature: isochrone,
-      verify: !isochrone.properties.simulated,
+      feature: owner,
+      verify: !owner.properties.simulated,
     }, controller.signal)
       .then((result) => {
-        if (controller.signal.aborted || request !== planningRequest.current) return
+        if (controller.signal.aborted || request !== planningRequest.current || currentRef.current !== owner) return
         setSimulation(result)
       })
       .catch((err: Error) => { if (!controller.signal.aborted && request === planningRequest.current) setError(err.message) })
@@ -615,7 +633,7 @@ export default function App() {
   useEffect(() => {
     planningRequest.current += 1
     planningController.current?.abort()
-  }, [isochrone])
+  }, [mapFeature])
 
   function closePlanning() {
     planningRequest.current += 1
@@ -687,7 +705,7 @@ export default function App() {
     if (!isochrone || closureBusy) return
     setClosureBusy('recheck')
     setError(null)
-    const owner = isochrone
+    const owner = mapFeature!
     try {
       const result = await recheck(owner)
       setRecheckEntry({ owner, value: result })
@@ -707,7 +725,7 @@ export default function App() {
   /** 工地 POI 候选：2 次地点检索，按是否压在步行路线上排序。 */
   async function runConstruction() {
     if (closureBusy) return
-    const owner = isochrone
+    const owner = mapFeature
     const c = owner?.properties.center ?? center
     setClosureBusy('poi')
     setError(null)
@@ -739,7 +757,7 @@ export default function App() {
     if (!isochrone || sitePlanBusy) return
     setSitePlanBusy(category)
     setError(null)
-    const owner = isochrone
+    const owner = mapFeature!
     sitePlan({ feature: owner, category })
       .then((result) => {
         setSitePlanEntry({ owner, value: result })
@@ -767,7 +785,7 @@ export default function App() {
     if (!isochrone || crosscheckBusy) return
     setCrosscheckBusy(true)
     setError(null)
-    const owner = isochrone
+    const owner = mapFeature!
     crosscheckFeature(owner)
       .then((result) => {
         setCrosscheckEntry({ owner, value: result })
@@ -810,7 +828,7 @@ export default function App() {
   const keyCategories = (config?.categories ?? [])
     .filter((c) => c.key_facility)
     .map((c) => c.name)
-  const props = isochrone?.properties
+  const props = mapFeature?.properties
   const report = props?.report
   const coverage = props?.coverage
   // 复测要有路线基线：新版步行结果每个方向都存了路线，旧快照、离线模拟、非步行没有
@@ -980,44 +998,29 @@ export default function App() {
     isochrone && !props?.simulated && markingMode === 'auto'
       ? nearbyMarkings.filter((m) => (m.status === 'verified' || m.mine) && !appliedIds.has(m.id))
       : NO_MARKINGS
-  // 「纯算法 / 含标注」：能即时切换时地图用还原出来的纯算法结果，侧栏报告始终是页面上的结果
-  const switcher = viewSwitch(isochrone)
-  const switchKind = switcher.kind
-  const resultView: ResultView =
-    switchKind === 'instant'
-      ? (scoped(viewEntry, isochrone) ?? 'markings')
-      : switcher.kind === 'rerun' && switcher.to === 'auto'
-        ? 'algorithm'
-        : 'markings'
-  const mapFeature = useMemo(
-    () =>
-      isochrone && switchKind === 'instant' && resultView === 'algorithm'
-        ? algorithmView(isochrone)
-        : isochrone,
-    [isochrone, switchKind, resultView],
-  )
-  const trip = scoped(tripEntry, isochrone)
-  const tripMap = trip ? scoped(tripMapEntry, isochrone) : null
+  // 当前视图同时驱动地图、报告与后续规划；旧历史仍保留原来的方法标签。
+  const trip = scoped(tripEntry, mapFeature)
+  const tripMap = trip ? scoped(tripMapEntry, mapFeature) : null
   const guide = useMemo(() => {
-    const value = trip && !composer ? scoped(guideEntry, isochrone) : null
-    if (!value || !isochrone) return null
+    const value = trip && !composer ? scoped(guideEntry, mapFeature) : null
+    if (!value || !mapFeature) return null
     // 开发热更新时，已经打开的旧引导状态也要能恢复，不丢掉原路线。
     return value.remaining && value.routingFeature && value.mode ? value : {
-      ...value, remaining: [value.item], routingFeature: isochrone,
+      ...value, remaining: [value.item], routingFeature: mapFeature,
       mode: 'preview' as const, focus: 'origin' as const, focusKey: value.focusKey + 1,
     }
-  }, [trip, composer, guideEntry, isochrone])
-  const updateGuide = useCallback((value: TripGuideData) => setGuideEntry({ owner: isochrone, value }), [isochrone])
+  }, [trip, composer, guideEntry, mapFeature])
+  const updateGuide = useCallback((value: TripGuideData) => setGuideEntry({ owner: mapFeature, value }), [mapFeature])
   function openGuide(item: TripItem, scope?: 'journey' | 'segment') {
     if (guideUnavailableReason(item, tripMap?.preview)) return
     if (!isochrone) return
     const index = tripMap?.itinerary ? tripMap.items.findIndex(leg => leg.entry_id === item.entry_id) : -1
     const selection = index >= 0 ? guideItinerary(tripMap!.items, item, scope ?? 'journey') : { item, remaining: [item], context: undefined }
     if (guideUnavailableReason(selection.item, tripMap?.preview)) return
-    updateGuide({ ...selection, routingFeature: isochrone, mode: 'preview', stepIndex: 0, focus: 'origin', focusKey: 0, location: null })
+    updateGuide({ ...selection, routingFeature: mapFeature!, mode: 'preview', stepIndex: 0, focus: 'origin', focusKey: 0, location: null })
   }
   const updateTripMap = useCallback((value: TripMapData) => {
-    setTripMapEntry({ owner: isochrone, value })
+    setTripMapEntry({ owner: mapFeature, value })
     if (value.preview) return // 验收假数据不得进入真实共享标注。
     setTripPlacesEntry(previous => {
       const known = scoped(previous, isochrone) ?? []
@@ -1029,7 +1032,7 @@ export default function App() {
         fresh_status: item.fresh_status, fresh_evidence: item.fresh_evidence,
       })] }
     })
-  }, [isochrone])
+  }, [mapFeature, isochrone])
   const markingPlaces = useMemo(() => {
     const places = [...(isochrone?.properties.coverage?.places ?? [])]
     for (const place of scoped(tripPlacesEntry, isochrone) ?? []) {
@@ -1047,8 +1050,13 @@ export default function App() {
     sidebarScrollRef.current = sidebarRef.current?.scrollTop ?? sidebarScrollRef.current
     setRailOpen(false)
     const start = origin ?? (target && trip ? trip.origin : { ...isochrone.properties.center, kind: 'center' as const })
-    setTripEntry({ owner: isochrone, value: { key: Date.now(), origin: start, category, targetId: target?.id } })
+    setTripEntry({ owner: mapFeature, value: { key: Date.now(), origin: start, category, targetId: target?.id } })
     setReveal({ ...start, key: Date.now(), rightInset: 400 })
+  }
+  function changeResultView(view: ResultView) {
+    closePlanning()
+    closeTrip()
+    setViewEntry({ owner: isochrone, value: view })
   }
   function changeTripOrigin(origin: TripOrigin) {
     if (!trip || !mapFeature?.properties.center) return
@@ -1056,7 +1064,7 @@ export default function App() {
       setNotice('起点超出设施检索范围，请先在那里体检一次。'); return
     }
     setTripPicking(false)
-    setTripEntry({ owner: isochrone, value: { ...trip, origin } })
+    setTripEntry({ owner: mapFeature, value: { ...trip, origin } })
     setReveal({ ...origin, key: Date.now(), rightInset: 400 })
   }
   // 围挡改了圈时，另一种看法的外圈画成点线对比
@@ -1064,7 +1072,7 @@ export default function App() {
   const altRing =
     baselineRing && isochrone
       ? resultView === 'algorithm' && switchKind === 'instant'
-        ? (isochrone.geometry.coordinates[0] ?? null)
+        ? firstOuterRing(isochrone.geometry)
         : baselineRing
       : null
   const composerPicking = composer?.step === 'place'
@@ -1137,7 +1145,7 @@ export default function App() {
               收起报告
             </button>
           </div>
-          {isochrone && <Verdict feature={isochrone} />}
+          {mapFeature && <Verdict feature={mapFeature} />}
 
           <details className="card">
             <summary>历史与导出</summary>
@@ -1153,7 +1161,7 @@ export default function App() {
                     onClick={() => loadHistory(h.id)}
                   >
                     <span className="history-score">
-                      {h.score != null ? `${Math.round(h.score)} 分` : '—'}
+                      {h.score != null ? `${h.score.toFixed(1)} 分` : '—'}
                     </span>
                     <span className="history-meta">
                       {h.minutes} 分钟 · {h.area_km2 != null ? `${h.area_km2.toFixed(2)} km²` : ''} ·{' '}
@@ -1275,7 +1283,7 @@ export default function App() {
                   id="address"
                   value={address}
                   placeholder="如：上海市普陀区桃浦镇"
-                  onChange={(e) => setAddress(e.target.value)}
+                  onChange={(e) => changeAddress(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && onSearch()}
                 />
                 <button onClick={onSearch} disabled={busy}>
@@ -1370,7 +1378,7 @@ export default function App() {
 
           {compareFeature && isochrone?.properties.report && (
             <CompareCard
-              a={isochrone}
+              a={mapFeature!}
               b={compareFeature}
               onClose={() => {
                 setCompareFeature(null)
@@ -1411,15 +1419,16 @@ export default function App() {
                   switchKind === 'instant'
                     ? {
                         view: resultView,
-                        onChange: (view) => setViewEntry({ owner: isochrone, value: view }),
+                        onChange: changeResultView,
                       }
                     : undefined
                 }
               />
             )}
-          {isochrone && report && <NarrativeCard feature={isochrone} />}
+          {mapFeature && report && <NarrativeCard feature={mapFeature} />}
           {report && (
             <ReportCard
+              onCompareMethods={() => setLayers(current => ({ ...current, rayBaseline: !current.rayBaseline }))}
               report={report}
               coverage={coverage}
               meta={props}
@@ -1459,8 +1468,8 @@ export default function App() {
             </div>
           )}
 
-          {isochrone && (
-            <ExportCard feature={isochrone} sampleId={activeSampleId} />
+          {mapFeature && (
+            <ExportCard feature={mapFeature} sampleId={mapFeature === isochrone ? activeSampleId : null} />
           )}
 
           {props && report && <SignatureCard meta={props} report={report} />}
@@ -1476,21 +1485,14 @@ export default function App() {
               }}
             >
               {comparePicking && <span className="search-tag">对比地点</span>}
-              <input
-                ref={searchInputRef}
-                value={address}
-                aria-label={comparePicking ? '对比地点的地址或小区名' : '地址或小区名'}
-                placeholder={
-                  comparePicking
-                    ? '输入要对比的小区或地址'
-                    : '输入地址或小区名，或从样例打开'
-                }
-                onChange={(e) => setAddress(e.target.value)}
-              />
+              <PlaceSearch value={address} selected={selectedPlace} inputRef={searchInputRef}
+                disabled={busy} onChange={changeAddress} onChoose={place => {
+                  setSelectedPlace({ ...place, query: address }); setAddress(place.name); setSamplesOpen(false); setNotice(null); setError(null)
+                }} />
               <button
                 type="submit"
                 disabled={busy}
-                title="按地址实时计算：新地点会消耗百度配额，算过的地点走缓存"
+                title="按已选地点实时计算：新地点会消耗百度配额，算过的地点走缓存"
               >
                 {busy ? '计算中…' : comparePicking ? '对比' : '体检'}
               </button>
@@ -1531,7 +1533,7 @@ export default function App() {
                       }}
                     >
                       {shortName(s.name)}
-                      {s.total != null ? ` · ${Math.round(s.total)} 分` : ''}
+                      {s.total != null ? ` · ${s.total.toFixed(1)} 分` : ''}
                     </button>
                   </li>
                 ))}
@@ -1806,20 +1808,20 @@ export default function App() {
               {closurePreview && <div className="planning-comparison"><b>假设评分 {closurePreview.properties.planning_baseline?.report?.total ?? '—'} → {closurePreview.properties.report?.total ?? '—'}</b><p>可达面积 {closurePreview.properties.planning_baseline?.area_km2.toFixed(3) ?? '—'} → {closurePreview.properties.area_km2.toFixed(3)} km²</p><p>前后均按当前规则重算；正式报告与出行继续使用原始结果。</p><p>圈缩小可能移除原有缺失网格，评分升高不代表封路有益。</p></div>}
             </PlanningDrawer>
           )}
-          {trip && isochrone && <TripDrawer key={trip.key} feature={isochrone} origin={trip.origin}
+          {trip && mapFeature && <TripDrawer key={trip.key} feature={mapFeature} origin={trip.origin}
             initialCategory={trip.category} targetId={trip.targetId} selected={tripSelection} selectionKey={tripSelectionKey} picking={tripPicking}
             onSelect={selectTrip} onMapData={updateTripMap} onClose={closeTrip}
             hidden={Boolean(composer || guide || selectedMarkingId)} onGuide={openGuide}
             onAddMissing={category => openComposer({ type: 'facility_extra', source: 'user', category }, true)}
             onOriginChange={changeTripOrigin} onCancelPick={() => setTripPicking(false)}
-            onPickOrigin={() => setTripPicking(true)} onResetOrigin={() => changeTripOrigin({ ...isochrone.properties.center!, kind: 'center' })} />}
+            onPickOrigin={() => setTripPicking(true)} onResetOrigin={() => changeTripOrigin({ ...mapFeature.properties.center!, kind: 'center' })} />}
           {guide && <TripGuide value={guide} onChange={updateGuide} onClose={closeGuide} />}
           {trip && tripPicking && !composer && !guide && <div className="trip-modebar floating" role="status"><span className="trip-pick-icon"><Icon name="pin" size={17} /></span><span>点击地图，设置新起点</span><button type="button" aria-label="取消选择起点" onClick={() => setTripPicking(false)}>取消</button></div>}
           {config?.browser_ak ? (
             <MapView
               ak={config.browser_ak}
               center={center}
-              isochrone={trip ? isochrone : planningMode === 'closure' && closurePreview ? closurePreview : mapFeature}
+              isochrone={planningMode === 'closure' && closurePreview ? closurePreview : mapFeature}
               fitKey={isochrone}
               trip={composer ? null : tripMap}
               tripOpen={Boolean(trip && !composer)}
@@ -1847,7 +1849,7 @@ export default function App() {
               }
               viewSwitch={switcher}
               resultView={resultView}
-              onResultView={(view) => setViewEntry({ owner: isochrone, value: view })}
+              onResultView={changeResultView}
               onRerun={rerunWithMarkings}
               busy={busy}
               altRing={altRing}

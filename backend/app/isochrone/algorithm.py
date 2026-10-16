@@ -58,6 +58,7 @@ class RaySample:
     delay_s: float = 0.0
     # 同方向路线在此之前穿过了用户标注的施工围挡
     blocked: bool = False
+    position_suspect: bool = False
 
     @property
     def reachable(self) -> bool:
@@ -120,6 +121,8 @@ class Isochrone:
     # 未做过街校正与围挡截断时的外圈，供前端画虚线对比
     raw_polygon: list[tuple[float, float]] = field(default_factory=list)
     refine: RefineResult | None = None
+    domain: object = None
+    domain_status: dict = field(default_factory=dict)
 
     @property
     def compactness(self) -> float:
@@ -201,6 +204,14 @@ class Isochrone:
                 "closure_truncated": sum(1 for r in self.rays if r.truncated_by_closure),
                 "zero_radius": sum(1 for r in self.rays if r.boundary_m <= 0),
                 "route_failed": sum(1 for r in self.rays if r.route == "failed"),
+                "water_excluded_samples": sum(
+                    self.domain is not None and not self.domain.allowed(s.lat, s.lng)
+                    for r in self.rays
+                    for s in r.samples
+                ),
+                "position_suspect_rays": sum(
+                    any(s.position_suspect for s in r.samples) for r in self.rays
+                ),
             },
             # 内圈与外圈来自同一次批量算路，只是阈值不同
             "rings": [
@@ -211,11 +222,34 @@ class Isochrone:
         if self.refine is not None:
             props["delay"] = self.refine.as_dict()
             props["raw_ring"] = _closed_ring(self.raw_polygon)
-        return {
-            "type": "Feature",
-            "geometry": {"type": "Polygon", "coordinates": [ring]},
-            "properties": props,
-        }
+        geometry = {"type": "Polygon", "coordinates": [ring]}
+        props["geographic_domain"] = self.domain_status
+        if props["quality"]["position_suspect_rays"]:
+            props["area_estimate_only"] = True
+            props["geographic_warning"] = (
+                "部分方向的路线末点明显偏离请求位置，不能证明原采样位置可达。"
+                + (
+                    "已按已知水域边界限制范围。"
+                    if self.domain
+                    else "缺少水域边界，当前范围可能包含水面，请勿按精确可步行面积解释。"
+                )
+            )
+        if self.domain is not None:
+            geometry = self.domain.clip(geometry)
+            area = self.domain.area(geometry)
+            props["area_m2"] = round(area, 1)
+            props["area_km2"] = round(area / 1e6, 4)
+            props["rings"] = [
+                {
+                    "minutes": minutes,
+                    "coordinates": _closed_ring(poly),
+                    "geometry": self.domain.clip(
+                        {"type": "Polygon", "coordinates": [_closed_ring(poly)]}
+                    ),
+                }
+                for minutes, poly in self.nested
+            ]
+        return {"type": "Feature", "geometry": geometry, "properties": props}
 
 
 def _solve_boundary(samples: list[RaySample], target_s: float) -> tuple[float, bool, bool]:
@@ -307,6 +341,16 @@ async def _refine_rays(
         return await client.walking_route(center, (target.lat, target.lng))
 
     routes = await asyncio.gather(*(fetch(t) for t in targets))
+    from .geometry import haversine_m
+    from .routequality import route_positions
+
+    for ray, target, route in zip(rays, targets, routes, strict=True):
+        if target is None or route is None:
+            continue
+        end = route_positions(route)["end"]
+        if end and haversine_m(target.lat, target.lng, *end) > 50:
+            for sample in ray:
+                sample.position_suspect = True
     profiles = [
         build_profile(route, base, options.closures) if route is not None else None
         for route in routes
@@ -345,6 +389,26 @@ async def compute_isochrone(
     cfg = config or IsochroneConfig()
     lat0, lng0 = center
     radii = cfg.sampling_radii
+    from .domain import load_domain
+
+    domain, domain_status = (
+        load_domain(center, max(radii) + 1000)
+        if cfg.mode.id == WALK.id
+        else (None, {"status": "not_applicable"})
+    )
+    if (
+        cfg.mode.id == WALK.id
+        and domain_status.get("status") == "missing"
+        and getattr(client, "osm_water_enabled", False)
+    ):
+        import os
+
+        if os.environ.get("OSM_WATER_AUTO", "1") != "0":
+            from .osmwater import resolve_osm_domain
+
+            domain, domain_status = await resolve_osm_domain(center, max(radii) + 1000)
+    if domain is not None and not domain.allowed(*center):
+        raise ValueError("起点位于已知水域或数据覆盖范围外，请在陆地或已确认步行桥面上选择起点")
 
     bearings = [360.0 * d / cfg.directions for d in range(cfg.directions)]
     rays: list[list[RaySample]] = []
@@ -358,7 +422,15 @@ async def compute_isochrone(
         rays.append(ray)
 
     failures_before = len(getattr(client, "matrix_failures", []))
-    matrix = await client.route_matrix(cfg.mode_id, (lat0, lng0), flat)
+    eligible = [i for i, point in enumerate(flat) if domain is None or domain.allowed(*point)]
+    measured = (
+        await client.route_matrix(cfg.mode_id, (lat0, lng0), [flat[i] for i in eligible])
+        if eligible
+        else []
+    )
+    matrix = [None] * len(flat)
+    for i, entry in zip(eligible, measured, strict=True):
+        matrix[i] = entry
     failed_blocks = getattr(client, "matrix_failures", [])[failures_before:]
     if failed_blocks:
         # 整批请求失败（限流重试耗尽、网络中断）时这些点「没测到」，不是「走不到」。
@@ -368,6 +440,8 @@ async def compute_isochrone(
     failed = 0
     for i, entry in enumerate(matrix):
         sample = rays[i // len(radii)][i % len(radii)]
+        if domain is not None and not domain.allowed(sample.lat, sample.lng):
+            continue  # 已知水面没有发请求，不能记成接口失败。
         if entry is None:
             failed += 1
             continue
@@ -450,6 +524,8 @@ async def compute_isochrone(
         nested=nested,
         raw_polygon=raw_polygon,
         refine=refine_result,
+        domain=domain,
+        domain_status=domain_status,
     )
 
 

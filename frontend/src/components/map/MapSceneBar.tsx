@@ -7,12 +7,13 @@ const UNSUPPORTED = '当前浏览器或地图版本不支持'
  * 地图右下角：视角（3D、旋转、回正）、卫星底图与全屏。
  * 只改看法，不改结果，也不花配额。旋转与回正只在有倾斜或旋转时出现，平时只占三格。
  */
-export function MapSceneBar({ scene, immersive = false }: { scene: MapScene; immersive?: boolean }) {
+export function MapSceneBar({ scene, immersive = false, onFit }: { scene: MapScene; immersive?: boolean; onFit?: () => void }) {
   const { support, angled } = scene
   const turned = Math.abs(scene.heading) > 0.5
 
   return (
     <div className={immersive ? 'map-scene guide-scene' : 'map-scene'}>
+      {!immersive && onFit && <div className="scene-group floating"><button type="button" onClick={onFit} title="查看完整生活圈" aria-label="查看完整生活圈"><Icon name="expand" size={15} />全圈</button></div>}
       <div className="scene-group floating" role="group" aria-label="地图视角">
         <button
           type="button"

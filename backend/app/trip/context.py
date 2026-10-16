@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 
-from ..isochrone.geometry import haversine_m, point_in_polygon
+from ..isochrone.geometry import haversine_m, point_in_polygon, polygon_of
 from ..markings import apply
 from ..poi.fresh import annotate_coverage, fields
 
@@ -26,7 +26,7 @@ def overlay(feature: dict, marking_plan: apply.MarkingPlan) -> None:
                 place.pop("fresh_status", None)
                 place.pop("fresh_evidence", None)
                 place.pop("marking_id", None)
-    polygon = [(lat, lng) for lng, lat in feature["geometry"]["coordinates"][0]]
+    polygon = polygon_of(feature) or []
     handled: list[dict] = []
     for marking in sorted(marking_plan.applied, key=apply.facility_priority):
         if marking["type"] not in ("facility_extra", "facility_missing"):

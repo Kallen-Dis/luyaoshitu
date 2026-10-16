@@ -290,7 +290,7 @@ def test_searched_address_becomes_the_result_name(monkeypatch):
 
 
 def test_pipeline_with_an_extra_pharmacy_reports_both_scores(monkeypatch):
-    # 菜场和小学就在中心，只缺药店：补录一处药房后，所有方格都不再是盲区
+    # 补录中心药房后，1 公里内的格改善；15 分钟圈可延伸到 1 公里以外，不能全部清空。
     far = offset_point(LAT0, LNG0, 90, 2400)
     client = FakePipelineClient(
         {
@@ -321,9 +321,16 @@ def test_pipeline_with_an_extra_pharmacy_reports_both_scores(monkeypatch):
     changed = base["cells_changed"]
     assert changed and all("医药" in c["missing"] for c in changed)
     b_cells = {(round(c["lat"], 5), round(c["lng"], 5)): c for c in props["blindspots"]["cells"]}
-    assert all(
-        "医药" not in b_cells[(round(c["lat"], 5), round(c["lng"], 5))]["missing"] for c in changed
-    )
+    # 假客户端没有完整道路几何；严格路径验收拒绝融合后，A/B 均保留射线范围。
+    # 补录设施的统计改善仍需成立，不能与是否采用融合算法绑定。
+    assert props["geometry_method"] == "ray"
+    assert base["geometry_method"] == "ray"
+    assert props["fusion_fallback"]
+    for c in changed:
+        after = b_cells[(round(c["lat"], 5), round(c["lng"], 5))]
+        distance = after["nearest_m"].get("医药")
+        if distance is not None and "医药" not in after["unknown"]:
+            assert ("医药" in after["missing"]) == (distance > 1000)
     # 前端的还原方式：B 的网格里换回变了的 A 格，再按面积数（细分过的格只数圈内子格）
     a_cells = {**b_cells, **{(round(c["lat"], 5), round(c["lng"], 5)): c for c in changed}}
 

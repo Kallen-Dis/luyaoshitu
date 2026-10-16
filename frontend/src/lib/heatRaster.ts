@@ -53,6 +53,82 @@ export interface HeatTile {
   east: number
 }
 
+export interface FusionTimeField {
+  vertices: [number, number, number | null][]
+  triangles: [number, number, number][]
+}
+
+/** 与后端融合边界同一线性耗时场；不越过被排除的三角形、不外推未知。 */
+export function fusionHeatField(field: FusionTimeField, maxPixels = 400) {
+  const points = field.triangles.flatMap(tri => tri.map(i => field.vertices[i]))
+  if (!points.length) return null
+  const west = Math.min(...points.map(p => p[0])), east = Math.max(...points.map(p => p[0]))
+  const south = Math.min(...points.map(p => p[1])), north = Math.max(...points.map(p => p[1]))
+  if (east <= west || north <= south) return null
+  const cosine = Math.cos((north + south) / 2 * Math.PI / 180)
+  const widthM = (east - west) * 111320 * cosine, heightM = (north - south) * 111320
+  const pixelM = Math.max(10, widthM / maxPixels, heightM / maxPixels)
+  const width = Math.ceil(widthM / pixelM), height = Math.ceil(heightM / pixelM)
+  const values = new Float64Array(width * height).fill(Number.NaN)
+  for (const ids of field.triangles) {
+    const [a, b, c] = ids.map(i => field.vertices[i])
+    if (a[2] === null || b[2] === null || c[2] === null) continue
+    const denom = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1])
+    if (Math.abs(denom) < 1e-20) continue
+    const minX = Math.max(0, Math.floor((Math.min(a[0], b[0], c[0]) - west) / (east - west) * width))
+    const maxX = Math.min(width - 1, Math.ceil((Math.max(a[0], b[0], c[0]) - west) / (east - west) * width))
+    const minY = Math.max(0, Math.floor((north - Math.max(a[1], b[1], c[1])) / (north - south) * height))
+    const maxY = Math.min(height - 1, Math.ceil((north - Math.min(a[1], b[1], c[1])) / (north - south) * height))
+    for (let y = minY; y <= maxY; y++) for (let x = minX; x <= maxX; x++) {
+      const lng = west + (x + 0.5) / width * (east - west), lat = north - (y + 0.5) / height * (north - south)
+      const u = ((b[1] - c[1]) * (lng - c[0]) + (c[0] - b[0]) * (lat - c[1])) / denom
+      const v = ((c[1] - a[1]) * (lng - c[0]) + (a[0] - c[0]) * (lat - c[1])) / denom
+      const w = 1 - u - v
+      if (Math.min(u, v, w) >= -1e-8) values[y * width + x] = u * a[2] + v * b[2] + w * c[2]
+    }
+  }
+  return { values, width, height, south, west, north, east }
+}
+
+export function buildFusionHeatTile(field: FusionTimeField, targetS: number, alpha = 0.5): HeatTile | null {
+  const raster = fusionHeatField(field)
+  if (!raster || targetS <= 0) return null
+  const image = document.createElement('canvas')
+  image.width = raster.width; image.height = raster.height
+  const ctx = image.getContext('2d')
+  if (!ctx) return null
+  const pixels = ctx.createImageData(image.width, image.height)
+  raster.values.forEach((value, i) => {
+    if (!Number.isFinite(value) || value > targetS) return
+    const [r, g, b] = rampColor(value / targetS)
+    pixels.data.set([r, g, b, Math.round(alpha * 255)], i * 4)
+  })
+  ctx.putImageData(pixels, 0, 0)
+  return { image, south: raster.south, west: raster.west, north: raster.north, east: raster.east }
+}
+
+/** 倾斜视角用同一耗时场的阈值裁片，颜色取片内平均；保留未知与孔洞。 */
+export function fusionHeatFaces(field: FusionTimeField, targetS: number) {
+  const out: { ring: [number, number][]; value: number }[] = []
+  for (const tri of field.triangles) {
+    const points = tri.map(i => field.vertices[i])
+    if (points.some(p => p[2] === null)) continue
+    const clipped: [number, number, number][] = []
+    let before = points[2]
+    for (const after of points) {
+      const a = before[2]!, b = after[2]!
+      if ((a <= targetS) !== (b <= targetS)) {
+        const ratio = (targetS - a) / (b - a)
+        clipped.push([before[0] + ratio * (after[0] - before[0]), before[1] + ratio * (after[1] - before[1]), targetS])
+      }
+      if (b <= targetS) clipped.push([after[0], after[1], b])
+      before = after
+    }
+    if (clipped.length >= 3) out.push({ ring: clipped.map(p => [p[0], p[1]] as [number, number]), value: clipped.reduce((s, p) => s + p[2], 0) / clipped.length })
+  }
+  return out
+}
+
 /** 耗时 → 颜色。t 是「耗时 ÷ 阈值」。 */
 export function rampColor(t: number): [number, number, number] {
   const x = Math.max(0, Math.min(HEAT_MAX, t))

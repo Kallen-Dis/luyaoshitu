@@ -27,6 +27,7 @@ import json
 import math
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -35,6 +36,9 @@ sys.path.insert(0, str(ROOT / "backend"))
 from app.baidu.client import BaiduMapClient  # noqa: E402
 from app.baidu.errors import BaiduApiError  # noqa: E402
 from app.isochrone.algorithm import IsochroneConfig, compute_isochrone  # noqa: E402
+from app.isochrone.budget import FusionBudgetClient  # noqa: E402
+from app.isochrone.fusion import apply_fusion, sync_heat_measurements  # noqa: E402
+from app.isochrone.geometry import polygon_of  # noqa: E402
 from app.isochrone.gridcheck import GridcheckConfig, cross_check, ray_samples_of  # noqa: E402
 from app.isochrone.refine import RefineOptions, closures_from  # noqa: E402
 from app.poi.collect import collect_coverage  # noqa: E402
@@ -75,7 +79,11 @@ def _diff(before: tuple, after: tuple) -> dict:
     pairs0, req0, t0 = before
     pairs1, req1, t1 = after
     requests = {k: v - req0.get(k, 0) for k, v in req1.items() if v - req0.get(k, 0)}
-    return {"matrix_pairs": pairs1 - pairs0, "requests": requests, "elapsed_s": round(t1 - t0, 1)}
+    return {
+        "matrix_pairs": pairs1 - pairs0,
+        "requests": requests,
+        "elapsed_s": round(t1 - t0, 1),
+    }
 
 
 STAGE_NAMES = {
@@ -188,6 +196,8 @@ async def main() -> None:
         except BaiduApiError as exc:
             raise SystemExit(f"计算失败：{exc}") from exc
         close_stage("isochrone")
+        payload = iso.to_geojson()
+        payload["properties"]["geometry_method"] = "ray"
 
         coverage = None
         blind = None
@@ -213,8 +223,11 @@ async def main() -> None:
                     close_stage("blindspots")
                     if not args.no_gridcheck:
                         s = client._s
+                        fusion_client = FusionBudgetClient(
+                            client, s.gridcheck_max_pairs, s.gridcheck_max_routes
+                        )
                         gridcheck = await cross_check(
-                            client,
+                            fusion_client,
                             center,
                             iso.polygon,
                             blind.as_dict(),
@@ -222,10 +235,25 @@ async def main() -> None:
                             ray_samples_of(iso),
                             iso.area_m2 / 1e6,
                             GridcheckConfig(
-                                max_pairs=s.gridcheck_max_pairs, max_routes=s.gridcheck_max_routes
+                                max_pairs=max(0, s.gridcheck_max_pairs - 80),
+                                max_routes=s.gridcheck_max_routes,
+                                target_s=args.minutes * 60,
+                                fusion_mode=True,
                             ),
                         )
                         close_stage("gridcheck")
+                        if gridcheck and apply_fusion(payload, gridcheck):
+                            blind = await identify_blindspots(
+                                fusion_client,
+                                center,
+                                polygon_of(payload),
+                                coverage,
+                                replace(blind_cfg, grid_alignment=iso.polygon),
+                                refine=iso.refine,
+                                closures=closures,
+                            )
+                            close_stage("fusion_statistics")
+                            payload["properties"]["fusion_budget"] = fusion_client.summary()
             except BaiduApiError as exc:
                 raise SystemExit(f"设施采集失败：{exc}") from exc
 
@@ -249,7 +277,9 @@ async def main() -> None:
             f"请求：{reqs}  用时 {stage['elapsed_s']} 秒"
         )
     print(f"\n{args.minutes:.0f} 分钟{mode.label}等时圈：")
-    print(f"  面积       {iso.area_m2/1e6:.3f} 平方公里")
+    print(f"  主范围面积 {payload['properties']['area_km2']:.3f} 平方公里")
+    if payload["properties"].get("fusion_fallback"):
+        print(f"  校正检查   {payload['properties']['fusion_fallback']}")
     print(f"  平均半径   {iso.mean_radius_m:.0f} 米")
     print(f"  最短方向   {iso.min_radius_m:.0f} 米")
     print(f"  最远方向   {iso.max_radius_m:.0f} 米")
@@ -283,7 +313,7 @@ async def main() -> None:
     print(render_ascii(iso))
 
     if coverage is not None:
-        inside = coverage.as_dict(iso.polygon)
+        inside = coverage.as_dict(payload["geometry"])
         print("\n圈内民生设施（括号内为检索半径内的总数）：")
         for name, count in inside["categories"].items():
             nearby = inside["nearby_categories"][name]
@@ -336,7 +366,6 @@ async def main() -> None:
     slug = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in slug).strip("-").lower()
     out = OUT_DIR / f"isochrone-{slug}-{args.minutes:.0f}min.geojson"
 
-    payload = iso.to_geojson()
     props = payload["properties"]
     props["center"] = {"lat": center[0], "lng": center[1]}
     props["name"] = display_name
@@ -345,16 +374,20 @@ async def main() -> None:
 
     # 快照带设施名称与坐标供地图打点，不含电话与街道地址
     if coverage is not None:
-        cov = coverage.as_dict(iso.polygon)
+        cov = coverage.as_dict(polygon_of(payload))
         cov["source"] = f"预生成快照，检索半径 {cov['radius_m']} 米"
         props["coverage"] = cov
     if blind is not None:
         props["blindspots"] = blind.as_dict()
+        if props.get("fusion"):
+            props["blindspots"]["scope_method"] = "fusion"
+            sync_heat_measurements(props["blindspots"], props["fusion"])
     if gridcheck is not None:
+        gridcheck.pop("fusion", None)
         props["gridcheck"] = gridcheck
         print(
             f"\n网格交叉校核：射线圈 {gridcheck['ray_area_km2']} km²，"
-            f"校核估计 {gridcheck['estimate_area_km2']} km²；"
+            f"融合估计 {gridcheck['estimate_area_km2']} km²；"
             f"确认缺口 {len(gridcheck['gaps'])} 片 {gridcheck['gap_area_km2']} km²，"
             f"绕行线索 {gridcheck['clue_summary']['shown']} 段；"
             f"新增点对 {gridcheck['usage']['matrix_pairs']}、路线 {gridcheck['usage']['routes']}"
@@ -374,7 +407,7 @@ async def main() -> None:
     }
 
     # 配额在中途用完时，盲区会有一批「未知」格子。不能拿它覆盖一份完整的快照
-    if client.quota_events and not args.allow_partial:
+    if (client.quota_events or (gridcheck and not props.get("fusion"))) and not args.allow_partial:
         out = out.with_name(out.stem + ".partial.geojson")
         services = "、".join(e["service"] for e in client.quota_events)
         print(f"\n注意：{services}配额中途用完，结果不完整，另存为 {out.name}，原快照未改动")

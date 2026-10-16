@@ -41,10 +41,28 @@ def export_name(payload: dict[str, Any], ext: str) -> str:
     return f"路遥识途_{safe}_体检报告.{ext}"
 
 
-def _gridcheck_section(check: dict[str, Any] | None) -> list[str]:
+def _gridcheck_section(check: dict[str, Any] | None, fusion: dict | None = None) -> list[str]:
     """网格交叉校核：射线圈仍是主结果，这里只列核对出的缺口、绕行线索与校核估计面积。"""
     if not check:
         return []
+    if fusion:
+        validation = fusion.get("validation") or {}
+        return [
+            "",
+            "## 融合生活圈与方法对照",
+            "",
+            f"- 融合主范围 {fusion['area_km2']} km²；原射线参考 {fusion['ray_area_km2']} km²。",
+            f"- 补回估计范围 {fusion['added_area_km2']} km²；原圈暂不纳入 "
+            f"{fusion['omitted_ray_area_km2']} km²，"
+            f"其中待核实 {fusion['unknown_inside_ray_km2']} km²。",
+            "- 面积、设施、盲区、评分按融合主范围统计；方向与路径指标仍取射线和路线采样。",
+            f"- 原圈内红色超时采样证据 {len(check.get('gaps') or [])} 片；"
+            f"绕行线索 {(check.get('clue_summary') or {}).get('shown', 0)} 段。",
+            f"- 留出点核验 {validation.get('checked', 0)} 个，判定分歧 "
+            f"{validation.get('disagreements', 0)} 个；未参与拟合，不代表实地准确率。",
+            "- 射线提供基础耗时，网格与可信路线局部校正；缺测保留记录，绿色为模型估计。",
+            *[f"- {note}" for note in fusion.get("notes", [])],
+        ]
     lines = [
         "",
         "## 网格交叉校核",
@@ -227,7 +245,16 @@ def build_markdown(payload: dict[str, Any]) -> str:
             "接口不能绕开围挡重新规划，受阻按保守口径处理，需现场复核。"
         )
 
-    lines += _gridcheck_section(props.get("gridcheck"))
+    lines += _gridcheck_section(props.get("gridcheck"), props.get("fusion"))
+    if props.get("fusion_fallback"):
+        review = props.get("fusion_review", {}).get("validation") or {}
+        lines += [
+            "",
+            "## 生活圈校正检查",
+            f"- {props['fusion_fallback']}。面积、评分与设施统计继续使用原范围。",
+            f"- 留出核验 {review.get('checked', 0)} 个点，"
+            f"分歧 {review.get('disagreements', 0)} 个；核验点不参与拟合。",
+        ]
 
     if blindspots:
         lines += [

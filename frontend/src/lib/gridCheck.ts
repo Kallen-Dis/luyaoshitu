@@ -1,5 +1,5 @@
 import polygonClipping, { type MultiPolygon, type Polygon, type Ring } from 'polygon-clipping'
-import type { GridCheck, GridCheckClue, GridCheckGap, GridCheckLeaf } from '../types'
+import type { GridCheck, GridCheckClue, GridCheckGap, GridCheckLeaf, SurfaceGeometry } from '../types'
 
 type Points = readonly (readonly [number, number])[]
 
@@ -21,11 +21,12 @@ export function leafCorners(leaf: Pick<GridCheckLeaf, 'lat' | 'lng' | 'size_m'>)
  * 一片缺口的显示几何：各叶子方格合并，再裁到射线圈里（缺口说的是「射线圈包进来、实际走不到」的那部分）。
  * 返回若干多边形（外环 + 孔洞）。只裁剪显示几何，不改动结果里的数据。
  */
-export function gapPolygons(gap: Pick<GridCheckGap, 'leaves'>, circle: Points): Polygon[] {
+export function gapPolygons(gap: Pick<GridCheckGap, 'leaves'>, circle: Points, fused?: SurfaceGeometry): Polygon[] {
   if (circle.length < 3 || gap.leaves.length === 0) return []
   const squares: Polygon[] = gap.leaves.map(leaf => [leafCorners(leaf) as Ring])
   const merged: MultiPolygon = polygonClipping.union(squares[0], ...squares.slice(1))
-  return polygonClipping.intersection(merged, [circle.map(([x, y]) => [x, y]) as Ring])
+  const clipped = polygonClipping.intersection(merged, [circle.map(([x, y]) => [x, y]) as Ring])
+  return fused ? polygonClipping.difference(clipped, fused.type === 'Polygon' ? [fused.coordinates] : fused.coordinates) : clipped
 }
 
 /** 秒 → 「约 21 分钟」。 */
@@ -43,15 +44,15 @@ export const DELAY_SOURCE_TEXT: Record<GridCheckLeaf['delay_source'], string> = 
 /** 一片缺口为什么算「确认」：不计等待就已超时，或用自己的路线补上等待后超时。 */
 export function gapReason(leaf: GridCheckLeaf, targetS: number): string {
   if (leaf.blocked) return '从中心过来的路线穿过施工围挡'
-  if (leaf.raw_s !== null && leaf.raw_s > targetS) return '不计过街等待就已超过 15 分钟'
-  return '用这个点自己的步行路线补上过街等待后超过 15 分钟'
+  if (leaf.raw_s !== null && leaf.raw_s > targetS) return `不计过街等待就已超过 ${targetS / 60} 分钟`
+  return `用这个点自己的步行路线补上过街等待后超过 ${targetS / 60} 分钟`
 }
 
 /** 这片缺口有没有用路线核验过：路线规划与批量算路是两个接口，结论相反的点已记为存疑、不在片里。 */
-export function routeCheckText(gap: Pick<GridCheckGap, 'route_confirmed'>): string {
+export function routeCheckText(gap: Pick<GridCheckGap, 'route_confirmed'>, targetS = 900): string {
   if (gap.route_confirmed === undefined) return ''
   if (gap.route_confirmed > 0) {
-    return `这片有 ${gap.route_confirmed} 个点单独取过步行路线，路线自己的耗时同样超过 15 分钟。`
+    return `这片有 ${gap.route_confirmed} 个点单独取过步行路线，路线自己的耗时同样超过 ${targetS / 60} 分钟。`
   }
   return '这片只有批量算路的结论，路线预算用完、没有取路线核验。'
 }

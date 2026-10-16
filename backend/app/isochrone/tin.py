@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import math
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
 INF = math.inf
@@ -343,3 +343,262 @@ def classify_rings(rings: list[list[tuple[float, float]]]) -> list[bool]:
         depth = sum(1 for m, other in enumerate(rings) if m != k and inside_ring(x, y, other))
         holes.append(depth % 2 == 1)
     return holes
+
+
+@dataclass
+class MeshContour:
+    """直接裁三角形得到的面；未知保持单独几何，不伪装成超时证据。"""
+
+    rings: list[list[tuple[float, float]]]
+    unknown_rings: list[list[tuple[float, float]]]
+    area_m2: float
+    unknown_m2: float
+    triangles: int
+    barrier_triangles: int
+    fragments: list[list[tuple[float, float]]]
+    unknown_fragments: list[list[tuple[float, float]]]
+    valid_triangles: list[tuple[int, int, int]]
+    field_vertices: list[Vertex]
+
+
+def _clip_time(tri: tuple[Vertex, Vertex, Vertex], target: float) -> list[tuple[float, float]]:
+    out = []
+    previous = tri[-1]
+    for current in tri:
+        before = float(previous.t) <= target  # 调用方先排除未知及无穷值
+        after = float(current.t) <= target
+        if before != after:
+            ratio = (target - float(previous.t)) / (float(current.t) - float(previous.t))
+            out.append(
+                (
+                    previous.x + ratio * (current.x - previous.x),
+                    previous.y + ratio * (current.y - previous.y),
+                )
+            )
+        if after:
+            out.append((current.x, current.y))
+        previous = current
+    return out
+
+
+def merge_fragments(fragments: list[list[tuple[float, float]]]) -> list[list[tuple[float, float]]]:
+    """无重叠三角片共享边抵消，再追踪外环/孔洞。仅量化到微米防浮点分叉。"""
+    # 同一交点从共享边两侧计算，可能恰落在取整分界两侧，相差 1 微米。
+    # 合并量化误差范围内的代表点；不把真实的米级缺口强行连接起来。
+    canonical = {}
+    micro = defaultdict(list)
+    for p in sorted({(round(x, 6), round(y, 6)) for f in fragments for x, y in f}):
+        cell = (math.floor(p[0] / 2e-6), math.floor(p[1] / 2e-6))
+        close = [
+            q
+            for dx in (-1, 0, 1)
+            for dy in (-1, 0, 1)
+            for q in micro.get((cell[0] + dx, cell[1] + dy), ())
+            if math.dist(p, q) <= 1.5e-6
+        ]
+        canonical[p] = min(close) if close else p
+        if not close:
+            micro[cell].append(p)
+    points_by_bucket = defaultdict(set)
+    for point in canonical.values():
+        points_by_bucket[(math.floor(point[0] / 50), math.floor(point[1] / 50))].add(point)
+
+    def split_edge(a, b):
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        length2 = dx * dx + dy * dy
+        if length2 < 1e-12:
+            return []
+        stops = {a: 0.0, b: 1.0}
+        for bx in range(math.floor(min(a[0], b[0]) / 50), math.floor(max(a[0], b[0]) / 50) + 1):
+            for by in range(math.floor(min(a[1], b[1]) / 50), math.floor(max(a[1], b[1]) / 50) + 1):
+                for p in points_by_bucket.get((bx, by), ()):
+                    fraction = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / length2
+                    if not 0 < fraction < 1:
+                        continue
+                    error = abs((p[0] - a[0]) * dy - (p[1] - a[1]) * dx) / math.sqrt(length2)
+                    if error <= 2e-6:
+                        stops[p] = fraction
+        points = sorted(stops, key=lambda p: stops[p])
+        return list(zip(points, points[1:], strict=False))
+
+    # 每个裁片贡献闭合有向环。微米级薄片会让分边后出现同向重复边，
+    # set 丢掉一次贡献会破坏入度/出度平衡。保留重数、逐次抵消反向边，
+    # 不扩大吸附容差，也不在相隔数米的断点之间补线。
+    edges: Counter = Counter()
+    for fragment in fragments:
+        points = [canonical[(round(x, 6), round(y, 6))] for x, y in fragment]
+        if len(points) < 3 or abs(ring_area(points)) < 1e-6:
+            continue
+        if ring_area(points) < 0:
+            points.reverse()
+        for a, b in zip(points, [*points[1:], points[0]], strict=True):
+            if a == b:
+                continue
+            for u, v in split_edge(a, b):
+                reverse = (v, u)
+                if edges[reverse]:
+                    edges[reverse] -= 1
+                    if not edges[reverse]:
+                        del edges[reverse]
+                else:
+                    edges[(u, v)] += 1
+
+    outgoing: dict[tuple[float, float], set[tuple[float, float]]] = defaultdict(set)
+    for a, b in edges:
+        outgoing[a].add(b)
+    rings = []
+    while edges:
+        start, current = min(edges)
+        edges[(start, current)] -= 1
+        if not edges[(start, current)]:
+            del edges[(start, current)]
+            outgoing[start].remove(current)
+        ring = [start]
+        previous = start
+        while current != start:
+            ring.append(current)
+            candidates = outgoing[current]
+            if not candidates:
+                raise ValueError("三角网边界不闭合，不能输出融合圈")
+            dx, dy = current[0] - previous[0], current[1] - previous[1]
+
+            def turn(point, current=current, dx=dx, dy=dy):
+                ux, uy = point[0] - current[0], point[1] - current[1]
+                return (math.atan2(dx * uy - dy * ux, dx * ux + dy * uy) % (2 * math.pi), point)
+
+            nxt = min(candidates, key=turn)
+            edges[(current, nxt)] -= 1
+            if not edges[(current, nxt)]:
+                del edges[(current, nxt)]
+                outgoing[current].remove(nxt)
+            previous, current = current, nxt
+        if len(ring) >= 3 and abs(ring_area(ring)) >= 1e-6:
+            rings.append(ring)
+    return sorted(rings, key=lambda ring: -abs(ring_area(ring)))
+
+
+def _nearest_sectors(tri):
+    """强跳变片按最近观测点分侧，不借第三点把不连续边重新连通。位置只是模型估计。"""
+    for owner in tri:
+        polygon = [(v.x, v.y) for v in tri]
+        for other in tri:
+            if other is owner:
+                continue
+            nx, ny = 2 * (other.x - owner.x), 2 * (other.y - owner.y)
+            bound = other.x**2 + other.y**2 - owner.x**2 - owner.y**2
+            out = []
+            previous = polygon[-1]
+            pv = bound - nx * previous[0] - ny * previous[1]
+            for current in polygon:
+                cv = bound - nx * current[0] - ny * current[1]
+                if (pv >= 0) != (cv >= 0):
+                    fraction = pv / (pv - cv)
+                    out.append(
+                        (
+                            previous[0] + fraction * (current[0] - previous[0]),
+                            previous[1] + fraction * (current[1] - previous[1]),
+                        )
+                    )
+                if cv >= 0:
+                    out.append(current)
+                previous, pv = current, cv
+            polygon = out
+            if not polygon:
+                break
+        if len(polygon) >= 3 and abs(ring_area(polygon)) > 1e-6:
+            yield owner, polygon
+
+
+def clip_mesh(mesh: MeshContour, target: float) -> MeshContour:
+    """从同一个耗时场提取内圈，不重复剖分，也不改变强跳变的分侧。"""
+    fragments = []
+    for indices in mesh.valid_triangles:
+        fragment = _clip_time(tuple(mesh.field_vertices[i] for i in indices), target)
+        if len(fragment) >= 3 and abs(ring_area(fragment)) > 1e-6:
+            fragments.append(fragment)
+    return MeshContour(
+        rings=merge_fragments(fragments),
+        unknown_rings=mesh.unknown_rings,
+        area_m2=sum(abs(ring_area(p)) for p in fragments),
+        unknown_m2=mesh.unknown_m2,
+        triangles=mesh.triangles,
+        barrier_triangles=mesh.barrier_triangles,
+        fragments=fragments,
+        unknown_fragments=mesh.unknown_fragments,
+        valid_triangles=mesh.valid_triangles,
+        field_vertices=mesh.field_vertices,
+    )
+
+
+def contour_mesh(
+    vertices: list[Vertex],
+    target: float,
+    kappa: float = 2.0,
+    eps_m: float = 30.0,
+    max_edge_m: float = 300.0,
+    *,
+    guard_target: float | None = None,
+    resolve_barriers: bool = False,
+) -> MeshContour:
+    """按线性耗时裁片；融合模式的强跳变分侧估计，长边与未知顶点单列未知。
+
+    距离跳变是两点之间绕行的线索，不否定中心到两点各自的测时。
+    只有顶点分处主阈值两侧时，强跳变才阻止边界插值，不能借第三顶点绕过。
+    内圈传入同一 guard_target，和主圈、热力共用有效三角片，避免口径不同。
+    resolve_barriers 时按最近观测点分侧，不跨强跳变混合；clip_mesh 复用该耗时场。
+    边界位置是采样间的估计，不把几何分辨率称作实测精度。
+    """
+    guard_target = target if guard_target is None else guard_target
+    triangles = delaunay([(v.x, v.y) for v in vertices])
+    reachable = []
+    unknown = []
+    barriers = 0
+    valid = []
+    field_vertices = list(vertices)
+    for a, b, c in triangles:
+        tri = (vertices[a], vertices[b], vertices[c])
+        long = any(
+            math.hypot(u.x - v.x, u.y - v.y) > max_edge_m
+            for u, v in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0]))
+        )
+        invalid = any(v.t is None or not math.isfinite(v.t) for v in tri)
+        crosses_threshold = not invalid and min(v.t for v in tri) <= guard_target < max(
+            v.t for v in tri
+        )
+        broken = crosses_threshold and any(
+            discontinuous(u, v, kappa, eps_m)
+            for u, v in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0]))
+        )
+        if broken:
+            barriers += 1
+        if long or invalid or (broken and not resolve_barriers):
+            unknown.append([(v.x, v.y) for v in tri])
+            continue
+        if broken:
+            for owner, sector in _nearest_sectors(tri):
+                indices = []
+                for x, y in sector:
+                    indices.append(len(field_vertices))
+                    field_vertices.append(Vertex(x, y, owner.t, owner.d))
+                valid.extend(
+                    (indices[0], indices[i], indices[i + 1]) for i in range(1, len(indices) - 1)
+                )
+                if owner.t <= target:
+                    reachable.append(sector)
+            continue
+        valid.append((a, b, c))
+        fragment = _clip_time(tri, target)
+        if len(fragment) >= 3 and abs(ring_area(fragment)) >= 1e-6:
+            reachable.append(fragment)
+    return MeshContour(
+        rings=merge_fragments(reachable),
+        unknown_rings=merge_fragments(unknown),
+        area_m2=sum(abs(ring_area(p)) for p in reachable),
+        unknown_m2=sum(abs(ring_area(p)) for p in unknown),
+        triangles=len(triangles),
+        barrier_triangles=barriers,
+        fragments=reachable,
+        unknown_fragments=unknown,
+        valid_triangles=valid,
+        field_vertices=field_vertices,
+    )

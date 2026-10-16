@@ -24,8 +24,12 @@ ai_15_nIsJ99EN3y.pdf
 # 用户提交的共享标注与照片（用户数据，不入库；部署时单独备份）
 data/user/
 
-# 本地设计文档、实测报告与视频工程（保留文件，不提交）
-/docs/
+# 正式设计文档允许提交；其余本地草稿、实测报告与视频工程不提交
+/docs/*
+!/docs/algorithm-design.md
+!/docs/shared-markings.md
+!/docs/resident-travel.md
+!/docs/report-design.md
 /reports/
 /video/
 /vedio/

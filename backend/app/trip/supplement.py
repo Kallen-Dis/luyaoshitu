@@ -1,6 +1,6 @@
 """给旧快照补查新增召回词；只查分析中心，居民起点不进入地点磁盘缓存。"""
 
-from ..isochrone.geometry import haversine_m, point_in_polygon
+from ..isochrone.geometry import haversine_m, point_in_polygon, polygon_of
 from ..poi.catalog import by_name
 from ..poi.collect import DEDUP_GRID_M, clean, normalize_name
 from ..poi.fresh import annotate_coverage, fields
@@ -31,7 +31,7 @@ async def supplement(
     existing = {m.get("keyword") for m in metadata}
     warnings = []
     added = 0
-    polygon = [(lat, lng) for lng, lat in feature["geometry"]["coordinates"][0]]
+    polygon = polygon_of(feature) or []
     excluded = [
         m.get("spec") or {}
         for m in (props.get("markings") or {}).get("applied", [])

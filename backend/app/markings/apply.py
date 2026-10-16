@@ -415,6 +415,7 @@ def output(
     props_a: dict[str, Any] | None,
     props_b: dict[str, Any],
     ring_a: list[list[float]] | None,
+    geometry_a: dict[str, Any] | None = None,
     blind_a: dict[str, Any] | None = None,
     blind_b: dict[str, Any] | None = None,
     coverage_a: dict[str, Any] | None = None,
@@ -452,6 +453,38 @@ def output(
             "gray_regions": grays_a,
             # 只有围挡改变了等时圈时才带上纯算法的圈，前端画成对比虚线
             "ring": ring_a,
+            "geometry": geometry_a,
+            "geometry_method": props_a.get("geometry_method", "ray"),
+            "fusion": props_a.get("fusion"),
+            "gridcheck": props_a.get("gridcheck"),
+            "properties": {
+                **{
+                    key: props_a[key]
+                    for key in (
+                        "area_m2",
+                        "area_km2",
+                        "mean_radius_m",
+                        "min_radius_m",
+                        "max_radius_m",
+                        "compactness",
+                        "mean_detour",
+                        "max_detour",
+                        "rays",
+                        "quality",
+                        "rings",
+                        "delay",
+                        "raw_ring",
+                        "geometry_method",
+                        "algorithm_version",
+                        "fusion",
+                        "gridcheck",
+                    )
+                    if key in props_a
+                },
+                "report": report_a,
+                "blindspots": blind_a,
+                "coverage": coverage_a,
+            },
             "inner_rings": props_a.get("rings") if ring_a else None,
             "raw_ring": props_a.get("raw_ring") if ring_a else None,
             "cells_changed": changed_cells(blind_a, blind_b),

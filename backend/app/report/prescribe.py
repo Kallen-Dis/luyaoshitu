@@ -459,6 +459,18 @@ def prescribe(
         out += _legacy_prescriptions(coverage, blindspots, blinds, failed_set)
         limit = 4
 
+    pending_area = (properties.get("fusion") or {}).get("unknown_inside_ray_km2", 0)
+    if pending_area:
+        out.insert(
+            0,
+            _item(
+                "network",
+                "先核实原圈内待核实范围，保留这些居民的服务问题",
+                f"原射线范围有约 {pending_area:.3f} km² 暂未计入融合统计。"
+                "请优先核实出入口、绕行与采样冲突；盲区占比下降不代表这些居民的出行条件改善。",
+            ),
+        )
+
     # 全部正常时也给一条可执行的维持建议，避免报告在「优/良」时变成空白
     if not out:
         blind = total([c for c in (blindspots or {}).get("cells") or [] if c.get("missing")])

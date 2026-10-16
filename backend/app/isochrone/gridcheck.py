@@ -1,6 +1,10 @@
-"""网格交叉校核：用另一组网格样本核对射线等时圈。
+"""网格交叉校核与融合收尾：旧模式核对射线圈，融合模式形成正式主范围。
 
-射线圈（36 方向 × 7 档半径，射线之间直线相连）仍是结果的主几何：面积、圈内设施、盲区占比与评分
+fusion_mode 使用单点路线自身耗时、实际终点观测和统一的模型等待。
+为缺测收尾与额外偏移点核验预留预算；强跳变降低局部耦合，临界点不强制圈内外分类。
+下面的「缺口/存疑」说明保留给旧版校核图层；融合主范围不混用两种接口的耗时。
+
+旧版校核中，射线圈（36 方向 × 7 档半径，射线之间直线相连）仍是主几何：面积、圈内设施、盲区占比与评分
 都按它算。这里只做核对，输出一个辅助图层，回答三个问题：
 
 1. **射线圈里有没有走不到的地方（缺口）？** 盲区判定本来就测了「中心 → 每个格心」的步行
@@ -36,6 +40,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from ..baidu.errors import BaiduApiError, QuotaExhaustedError
+from .fusion import apply_validation_gate, estimate_fusion, field_time, fusion_time
 from .geometry import (
     METERS_PER_DEG_LAT,
     haversine_m,
@@ -43,8 +48,15 @@ from .geometry import (
     point_in_polygon,
     simplify_path,
 )
+from .localfield import BOUNDARY_TOLERANCE_S
 from .refine import RefineResult, build_profile
 from .tin import Vertex, areas_m2, classify_rings, contour_rings, interpolate, ring_area
+from .validation import (
+    known_reachable_segments,
+    validation_coverage,
+    validation_plan,
+    validation_request_budget,
+)
 
 POINT_GRID_M = 10.0  # 「中心 → 点」的终点细键；起点是同一个中心
 # 显示的绕行线索：已实测（confirmed）与预算没测到（unverified）。存疑的只计数
@@ -67,6 +79,12 @@ class GridcheckConfig:
     max_quarter_pairs: int = 40
     raster_m: float = 10.0
     max_edge_m: float = 300.0
+    domain: object = None
+    fusion_mode: bool = False
+    critical_s: float = 60.0
+    validation_points: int = 8
+    boundary_band_s: float = 100.0  # 补测筛选带，十五分钟分类阈值仍是 target_s。
+    completion_rounds: int = 2
 
     def clue_threshold(self, s: float) -> float:
         return self.kappa * s + 2 * self.eps_m
@@ -76,7 +94,7 @@ class GridcheckConfig:
 class Probe:
     """一个测时点：盲区格心（level 0，边长为网格间距 s）、子点（1，s/2）或更细一层（2，s/4）。"""
 
-    key: tuple[int, int]  # 以 1/8 格距为单位的格网坐标 (Y, X)
+    key: tuple[int, int]  # 格网点为 1/8 格距坐标；独立孔洞/验收测点也可用非空间索引。
     level: int
     lat: float
     lng: float
@@ -90,7 +108,20 @@ class Probe:
     blocked: bool = False  # 路线穿过施工围挡
     measured: bool = False
     off_network: bool = False
+    route_authoritative: bool = False
+    observed_location: tuple[float, float] | None = None
     route_checked: bool = False
+    route_endpoint: tuple[float, float] | None = None
+    route_start: tuple[float, float] | None = None
+    route_origin: tuple[float, float] | None = None
+    route_origin_basis: str = "path_start"
+    route_origin_consistent: bool = True
+    route_fetched_at: str | None = None
+    route_cache_hit: bool = False
+    route_geometry_complete: bool = True
+    route_position_basis: str = "legacy_path"
+    route_position_consistent: bool = True
+    route_path: list[tuple[float, float]] = field(default_factory=list)
     # 单独取过的步行路线自己给的耗时与距离（含过街等待）。eff_s 仍是「批量算路 + 等待」，
     # 两者分处目标两侧时结论存疑
     route_s: float | None = None
@@ -106,19 +137,23 @@ class Probe:
 
     @property
     def eff_s(self) -> float | None:
-        if self.raw_s is None:
-            return None
         if self.blocked:
             return math.inf
+        if self.route_authoritative and self.route_s is not None:
+            return self.route_s
+        if self.raw_s is None:
+            return None
         return self.raw_s + self.delay_s
 
     def status(self, target: float) -> str:
         """over：确认超时；over_unverified：只靠插值等待才超时；reach；unknown；blocked；
         disputed：取过自己的路线，路线耗时与「批量算路 + 等待」分处目标两侧。"""
-        if self.raw_s is None:
-            return "unknown"
         if self.blocked:
             return "blocked"
+        if self.route_authoritative and self.route_s is not None:
+            return "over" if self.route_s > target else "reach"
+        if self.raw_s is None:
+            return "unknown"
         eff = self.raw_s + self.delay_s
         if self.route_s is not None and (eff > target) != (self.route_s > target):
             # 两种口径打架：批量算路的距离配上路线剖面的等待说超时、路线自己说走得到（或反过来）。
@@ -161,6 +196,7 @@ class _Budget:
     routes_used: int = 0
     routes_ok: int = 0
     exhausted: str | None = None  # 停下的原因
+    route_queries: int = 0
 
 
 class _Checker:
@@ -197,8 +233,10 @@ class _Checker:
 
     async def measure(self, probes: list[Probe], cap: int | None = None) -> list[Probe]:
         """按给定顺序测「中心 → 点」，命中缓存的不占预算。返回实际测到（或已测过）的点。"""
+        if getattr(self, "origin_preflight", {}).get("passed") is False:
+            cap = 0
         todo = [p for p in probes if not p.measured]
-        if not todo or self.budget.exhausted:
+        if not todo or self.budget.exhausted in ("quota", "error"):
             return [p for p in probes if p.measured]
         room = self.budget.pairs - self.budget.pairs_used
         if cap is not None:
@@ -216,6 +254,7 @@ class _Checker:
         if not chosen:
             return [p for p in probes if p.measured]
         before = self._pairs_now()
+        refused = getattr(self.client, "refused_pairs", 0)
         try:
             rows = await self.client.walking_matrix_grid(
                 [self.center], [(p.lat, p.lng) for p in chosen], dest_grid_m=POINT_GRID_M
@@ -228,8 +267,20 @@ class _Checker:
             self.budget.exhausted = "error"
             row = [None] * len(chosen)
         after = self._pairs_now()
-        self.budget.pairs_used += (after - before) if before is not None else spend
+        if getattr(self.client, "refused_pairs", 0) > refused:
+            self.budget.exhausted = "budget"
+        self.budget.pairs_used += (
+            spend if self.cfg.fusion_mode else (after - before) if before is not None else spend
+        )
         for p, entry in zip(chosen, row, strict=True):
+            refused_point = getattr(self.client, "pair_was_refused", None)
+            if (
+                entry is None
+                and refused_point
+                and refused_point(self.center, (p.lat, p.lng), dest_grid_m=POINT_GRID_M)
+            ):
+                # 未发出的子点不覆盖已测父格，不凭预算不足制造新的孔洞。
+                continue
             p.measured = True
             if entry is None:
                 continue
@@ -246,31 +297,114 @@ class _Checker:
         p.blocked = blocked
         p.delay_source = "ray_interp" if usable and self.refine.delay_applied else "none"
 
-    async def verify_by_route(self, p: Probe) -> None:
+    async def verify_by_route(self, p: Probe, *, cache_only=False) -> None:
         """取这个点自己的步行路线，用它的过街等待替换插值来的等待。"""
-        if self.budget.routes_used >= self.budget.routes or p.dist_m is None:
+        cache_only = cache_only or getattr(self, "origin_preflight", {}).get("passed") is False
+        upgrade_legacy = (
+            self.cfg.fusion_mode
+            and p.route_cache_hit
+            and p.route_position_basis != "step_and_path"
+            and not cache_only
+        )
+        if (p.route_checked and not upgrade_legacy) or (
+            p.dist_m is None and not self.cfg.fusion_mode
+        ):
             return
-        self.budget.routes_used += 1
+        probe = getattr(self.client, "walking_route_cached", None)
+        legacy_cached = (
+            self.cfg.fusion_mode
+            and probe is not None
+            and probe(self.center, (p.lat, p.lng), fine_m=POINT_GRID_M)
+        )
+        positions_probe = getattr(self.client, "walking_route_positions_cached", None)
+        cached = legacy_cached and (
+            cache_only
+            or positions_probe is None
+            or positions_probe(self.center, (p.lat, p.lng), fine_m=POINT_GRID_M)
+        )
+        if cache_only and not legacy_cached:
+            return
+        if not cached and self.budget.routes_used >= self.budget.routes:
+            return
+        if (
+            not cached
+            and hasattr(self.client, "routes_used")
+            and (
+                self.client.routes_used >= self.client.max_routes
+                or self.client.route_attempts >= self.client.route_limit
+            )
+        ):
+            return
+        self.budget.routes_used += 0 if cached else 1
+        self.budget.route_queries += 1
         p.route_checked = True
-        route = await self.client.walking_route(self.center, (p.lat, p.lng), fine_m=POINT_GRID_M)
+        refused = getattr(self.client, "refused_routes", 0)
+        route_kwargs = {"fine_m": POINT_GRID_M}
+        if legacy_cached and not cached:
+            route_kwargs["fresh"] = True
+        route = await self.client.walking_route(self.center, (p.lat, p.lng), **route_kwargs)
         if route is None:
+            if getattr(self.client, "refused_routes", 0) > refused:
+                p.route_checked = False
+                self.budget.routes_used -= 0 if cached else 1
             return
         self.budget.routes_ok += 1
+        p.measured = True
+        p.route_cache_hit = bool(cached)
+        p.route_fetched_at = route.get("fetched_at")
         base = self.refine.base_speed if self.refine is not None else 1.17
         closures = self.refine.closures if self.refine is not None else ()
         profile = build_profile(route, base, closures)
-        p.delay_s = profile.delay_at(p.dist_m)
+        p.delay_s = profile.delay_at(p.dist_m or float(route.get("distance_m") or 0))
         p.delay_source = "own_route"
         # 路线自己的耗时也留着：status() 拿它与「批量算路距离 + 剖面等待」对照，分处两侧就存疑
         if route.get("duration_s") is not None:
             p.route_s = float(route["duration_s"])
         if route.get("distance_m") is not None:
             p.route_m = float(route["distance_m"])
-        p.blocked = profile.blocked_at_m is not None and p.dist_m >= profile.blocked_at_m
-        pts = [pt for step in route.get("steps") or [] for pt in step.get("path") or []]
+        distance = p.route_m if self.cfg.fusion_mode else p.dist_m
+        p.blocked = profile.blocked_at_m is not None and (distance or 0) >= profile.blocked_at_m
+        from .routequality import route_positions
+
+        positions = route_positions(route)
+        p.route_origin = positions["origin"]
+        p.route_origin_basis = positions["origin_basis"]
+        p.route_origin_consistent = positions["origin_consistent"]
+        pts = positions["path"]
+        p.route_geometry_complete = positions["complete"]
+        p.route_position_consistent = positions["endpoint_agreement"]
+        p.route_position_basis = positions["position_basis"]
         if pts:
             end = (float(pts[-1][0]), float(pts[-1][1]))
-            p.off_network = haversine_m(p.lat, p.lng, *end) > ROUTE_OFF_NETWORK_M
+            p.route_endpoint = end
+            p.route_start = (float(pts[0][0]), float(pts[0][1]))
+            end_error = haversine_m(p.lat, p.lng, *end)
+            p.off_network = end_error > ROUTE_OFF_NETWORK_M
+            if self.cfg.fusion_mode:
+                from .routequality import same_origin
+
+                origin_ok = same_origin(p, self.center)
+                time_ok = (
+                    p.route_s is not None
+                    and math.isfinite(p.route_s)
+                    and (p.route_s > 0 or haversine_m(*self.center, *end) < 1)
+                )
+                distance_ok = (
+                    p.route_m is not None
+                    and math.isfinite(p.route_m)
+                    and p.route_m >= max(0, haversine_m(*self.center, *end) - 30)
+                )
+                if time_ok and distance_ok and origin_ok and p.route_geometry_complete:
+                    p.route_authoritative = not p.off_network
+                    if end_error <= 150 and not p.blocked:
+                        p.route_path = [(float(a), float(b)) for a, b in pts]
+                    if end_error <= 150:
+                        # 测到的是吸附后的真实终点，把观测放回该位置，不能强贴原格心。
+                        p.observed_location = end
+                else:
+                    p.off_network = True
+        elif self.cfg.fusion_mode:
+            p.off_network = True
 
     # ---------- 点的生成 ----------
 
@@ -330,7 +464,7 @@ def ray_samples_of(isochrone: Any) -> list[tuple[float, float, float | None, flo
     out = []
     for ray in getattr(isochrone, "rays", []) or []:
         for s in ray.samples:
-            if s.duration_s is None:
+            if s.duration_s is None or getattr(s, "position_suspect", False):
                 out.append((s.lat, s.lng, None, None))
             elif s.blocked:
                 out.append((s.lat, s.lng, math.inf, s.distance_m))
@@ -361,6 +495,17 @@ async def cross_check(
     cfg = replace(cfg, spacing_m=spacing)
     lattice = _Lattice(cells, spacing)
     chk = _Checker(client, center, polygon, refine, cfg)
+    if cfg.fusion_mode:
+        # 核验的重试也占额度；前面的拟合补测不能借用这份预留。
+        validation_reserve = min(
+            cfg.max_routes, max(cfg.validation_points * 2, math.ceil(cfg.max_routes * 0.6))
+        )
+        route_reserve = min(12, cfg.max_routes // 3)
+        pair_reserve = min(40, cfg.max_pairs // 4)
+        chk.budget.routes = max(0, cfg.max_routes - validation_reserve - route_reserve)
+        chk.budget.pairs = max(0, cfg.max_pairs - pair_reserve)
+        if hasattr(client, "route_limit"):
+            client.route_limit = max(0, client.max_routes - validation_reserve - route_reserve)
     target = cfg.target_s
     exact = float(grid.get("reach_grid_m") or 0) == POINT_GRID_M
 
@@ -372,6 +517,9 @@ async def cross_check(
         if p is None:
             continue
         p.stored_raw_s = c.get("reach_raw_s")
+        if exact:
+            # 已经失败的格心也是一次观测；不能静默丢掉再跨过去插值填绿。
+            p.measured = True
         if exact and c.get("reach_raw_s") is not None and c.get("reach_m") is not None:
             p.measured = True
             p.raw_s = float(c["reach_raw_s"])
@@ -383,6 +531,20 @@ async def cross_check(
                 if c.get("reach_s") is not None:
                     p.delay_s = float(c["reach_s"]) - p.raw_s
         base.append(p)
+    if cfg.fusion_mode:
+        from .routequality import check_origin
+
+        chk.origin_preflight = await check_origin(chk, base)
+        if not chk.origin_preflight["passed"]:
+            if (
+                not any(
+                    r["position_basis"] == "step_and_path" for r in chk.origin_preflight["records"]
+                )
+                and chk.budget.routes_used >= chk.budget.routes
+            ):
+                chk.budget.exhausted = chk.budget.exhausted or "budget"
+            chk.budget.pairs = chk.budget.pairs_used
+            chk.budget.routes = chk.budget.routes_used
     remeasured = 0
     if not exact:
         # 可疑的先测：结论与射线圈冲突的格（超时）在前
@@ -403,7 +565,7 @@ async def cross_check(
     # 2. 外圈：射线圈外、与圈内格八邻接的格网点；可达的再向外扩
     frontier = [p for p in base]
     outer_all: list[Probe] = []
-    for _ in range(1 + cfg.outer_rounds):
+    for outer_round in range(1 + cfg.outer_rounds):
         ring: list[Probe] = []
         for p in frontier:
             for dy in (-8, 0, 8):
@@ -416,17 +578,20 @@ async def cross_check(
         if not ring:
             break
         ring.sort(key=lambda q: haversine_m(*center, q.lat, q.lng))
-        got = await chk.measure(ring)
+        # 首圈以外只复用缓存，把新增点对留给冲突片区与边界子点。
+        got = await chk.measure(ring, cap=0 if cfg.fusion_mode and outer_round > 0 else None)
         outer_all += got
         frontier = [q for q in got if q.status(target) == "reach"]
-        if not frontier or chk.budget.exhausted:
+        if not frontier or (chk.budget.exhausted and not cfg.fusion_mode):
             break
     # 预算没测到的外圈点不算数
     for key in [k for k, p in chk.probes.items() if p.kind == "outer" and not p.measured]:
         del chk.probes[key]
 
     # 绕行线索只用 100 米格网（圈内格 + 外圈）的路网距离，先于子点做：复测每段只花 1 个点对
-    clues, candidates = await _clues(chk, lattice, cfg)
+    clues, candidates = (
+        ([], {"edges": 0, "chains": 0}) if cfg.fusion_mode else await _clues(chk, lattice, cfg)
+    )
 
     # 3. 50 米子点：结论与射线圈冲突的格——圈内超时、圈外可达
     def conflict(p: Probe) -> bool:
@@ -435,8 +600,35 @@ async def cross_check(
             return s in ("over", "over_unverified", "blocked")
         return s == "reach"
 
-    parents = [p for p in chk.probes.values() if p.level == 0 and p.measured and conflict(p)]
-    parents.sort(key=lambda p: (not p.inside, -(p.eff_s or 0.0) if p.inside else (p.eff_s or 0.0)))
+    def risk(p):
+        if conflict(p):
+            return 0
+        if p.eff_s is not None and abs(p.eff_s - target) <= cfg.critical_s:
+            return 1
+        for dy, dx in ((8, 0), (-8, 0), (0, 8), (0, -8)):
+            q = chk.probes.get((p.key[0] + dy, p.key[1] + dx))
+            if q is None or q.eff_s is None or p.eff_s is None:
+                continue
+            if (q.eff_s > target) != (p.eff_s > target):
+                return 2
+            if (
+                p.dist_m is not None
+                and q.dist_m is not None
+                and abs(p.dist_m - q.dist_m) > cfg.clue_threshold(spacing)
+            ):
+                return 2
+        return 3
+
+    parents = [
+        p
+        for p in chk.probes.values()
+        if p.level == 0 and p.measured and (risk(p) < 3 if cfg.fusion_mode else conflict(p))
+    ]
+    parents.sort(
+        key=lambda p: (risk(p), abs((p.eff_s or target) - target), not p.inside, p.key)
+        if cfg.fusion_mode
+        else (not p.inside, -(p.eff_s or 0.0) if p.inside else (p.eff_s or 0.0))
+    )
     subs: list[Probe] = []
     for p in parents:
         subs += chk.split(p, lattice)
@@ -445,7 +637,7 @@ async def cross_check(
 
     # 4. 25 米点：超时子点紧邻可达区域时再切一层，定位分界
     quarter_parents = []
-    for p in list(chk.probes.values()):
+    for p in [] if cfg.fusion_mode else list(chk.probes.values()):
         if p.level != 1 or not p.measured or p.status(target) not in ("over", "over_unverified"):
             continue
         if not p.inside:
@@ -462,7 +654,15 @@ async def cross_check(
 
     # 5. 只靠插值等待改变结论的点，取它自己的路线核验：先圈内（决定是否画缺口），后圈外
     leaves = [p for p in chk.probes.values() if p.measured and not p.children]
-    inside_pending = [p for p in leaves if p.inside and p.status(target) == "over_unverified"]
+    inside_pending = [
+        p
+        for p in leaves
+        if p.inside
+        and (
+            p.status(target) == "over_unverified"
+            or (cfg.fusion_mode and p.eff_s is not None and abs(p.eff_s - target) <= cfg.critical_s)
+        )
+    ]
     outside_pending = [
         p
         for p in leaves
@@ -471,20 +671,68 @@ async def cross_check(
     inside_pending.sort(key=lambda p: (p.eff_s or 0) - target)
     outside_pending.sort(key=lambda p: target - (p.eff_s or 0))
     # 路线预算的先后：决定画不画缺口的圈内点 → 绕行线索的示意路线 → 只影响校核估计的圈外点
-    for p in inside_pending:
+    for p in [] if cfg.fusion_mode else inside_pending:
         await chk.verify_by_route(p)
     # 6. 只凭批量算路判为超时的片（一个点都没取过路线）：取最远的一点，用它自己的路线核验整片。
     #    批量算路自己也会出错（桃浦有一格缓存值 2631 米、精确坐标实测 902 米），不能只信它
-    await _check_representatives(chk, leaves, target)
-    await _illustrate(chk, clues)
-    for p in outside_pending:
+    if not cfg.fusion_mode:
+        await _check_representatives(chk, leaves, target)
+    if not cfg.fusion_mode:
+        await _illustrate(chk, clues)
+    for p in [] if cfg.fusion_mode else outside_pending:
         await chk.verify_by_route(p)
+
+    completion = None
+    if cfg.fusion_mode:
+        # 候选冻结前生成线索。原始相邻点对参与审核，显示折线不作为墙。
+        if chk.origin_preflight["passed"]:
+            clues, candidates = await _clues(chk, lattice, cfg)
+            await _illustrate(chk, clues)
+        chk.fusion_clues = clues
+        # 按当前候选的完整覆盖计划扩大验收预留，只调整原预算内的阶段分配。
+        preview = _estimate(chk, ray_samples, cfg)["fusion"]
+        preview_targets, preview_plan = validation_plan(chk, lattice, leaves, preview, ray_samples)
+        preview_budget = validation_request_budget(chk, preview_targets)
+        validation_reserve = min(
+            cfg.max_routes, max(validation_reserve, preview_budget["planned_requests"])
+        )
+        chk.budget.routes = max(0, cfg.max_routes - validation_reserve)
+        chk.budget.pairs = cfg.max_pairs
+        if hasattr(client, "route_limit"):
+            client.route_limit = max(0, client.max_routes - validation_reserve)
+        completion = await _complete_fusion(chk, lattice, ray_samples, initial=preview)
+        completion["validation_reserve"] = {
+            "reserved_requests": validation_reserve,
+            "target_points": preview_plan["target_points"],
+            "planned_points": preview_plan["planned_points"],
+            **preview_budget,
+        }
+        leaves = [p for p in chk.probes.values() if p.measured and not p.children]
 
     # 7. 缺口：射线圈内、确认超时的叶子点；路线与批量算路结论相反的点（片）记为存疑，不画
     gaps, disputed = _gaps(chk, leaves, clues, target)
 
     # 8. 受约束局部线性插值 → 校核估计面积
     estimate = _estimate(chk, ray_samples, cfg)
+    validation = None
+    if cfg.fusion_mode:
+        chk.budget.routes = cfg.max_routes
+        chk.budget.pairs = cfg.max_pairs
+        if hasattr(client, "route_limit"):
+            client.route_limit = client.max_routes
+        from .adoption import prepare_fusion
+
+        prepared = prepare_fusion(chk, lattice, leaves, estimate["fusion"], ray_samples)
+        estimate.update(
+            fusion=prepared,
+            area_km2=prepared["area_km2"],
+            unknown_km2=prepared["unknown_inside_ray_km2"],
+            rings=[ring for face in prepared["geometry"]["coordinates"] for ring in face],
+            holes=[i > 0 for face in prepared["geometry"]["coordinates"] for i in range(len(face))],
+        )
+        validation = await _validate_fusion(chk, lattice, leaves, estimate, ray_samples)
+        apply_validation_gate(estimate["fusion"], validation)
+        # 验收后不再取得新的开发证据或示意路线，避免改变冻结依据和挤占预算。
 
     over_unverified = sum(1 for p in leaves if p.inside and p.status(target) == "over_unverified")
     outside_reach = [p for p in leaves if not p.inside and p.status(target) == "reach"]
@@ -496,6 +744,8 @@ async def cross_check(
     for p in chk.probes.values():
         if not p.measured:
             continue
+        if p.kind.startswith(("validation", "hole_", "boundary_")):
+            continue
         if p.kind == "outer":
             counts["outer"] += 1
         elif p.level == 1:
@@ -506,9 +756,14 @@ async def cross_check(
     verified = sum(1 for p in chk.probes.values() if p.delay_source == "own_route")
     gap_area = sum(g["area_m2"] for g in gaps)
     return {
-        "version": 1,
+        "version": 2 if cfg.fusion_mode else 1,
         "basis": (
-            "另一组网格样本交叉校核：方格的路网距离与不含等待的耗时逐点实测（10 米细键缓存），"
+            "射线提供基础耗时，网格与可信路线在固定计算网格上进行局部校正；"
+            "缺测与近边界点优先核验，位置可信的路线使用自身耗时，偏移观测放回实际终点；"
+            "距离跳变仅降低耦合，缺测保留记录、不直接挖洞，绿色为模型估计。"
+            "融合范围作为主几何，正式设施、盲区、面积与评分同步重算。"
+            if cfg.fusion_mode
+            else "另一组网格样本交叉校核：方格的路网距离与不含等待的耗时逐点实测（10 米细键缓存），"
             "过街等待仍取自相邻射线的路线剖面；只有单独取过路线的点用自己的等待。"
             "射线圈仍是主几何，面积、圈内设施、盲区占比与评分都按射线圈计算。"
         ),
@@ -518,6 +773,11 @@ async def cross_check(
         "estimate_unknown_km2": estimate["unknown_km2"],
         "estimate_rings": estimate["rings"],
         "estimate_holes": estimate["holes"],
+        **(
+            {"fusion": estimate["fusion"], "validation": validation, "completion": completion}
+            if cfg.fusion_mode
+            else {}
+        ),
         "gaps": gaps,
         "gap_area_km2": round(gap_area / 1e6, 4),
         "clues": [c for c in clues if c["status"] in SHOWN],
@@ -539,7 +799,7 @@ async def cross_check(
         # 取过路线、路线耗时与「批量算路 + 等待」分处 900 秒两侧的点，以及代表点被路线推翻的整片
         "disputed": disputed,
         "routes": {
-            "requested": chk.budget.routes_used,
+            "requested": chk.budget.route_queries if cfg.fusion_mode else chk.budget.routes_used,
             "ok": chk.budget.routes_ok,
             "points_verified": verified,
             "representatives": sum(1 for p in chk.probes.values() if p.representative),
@@ -561,8 +821,13 @@ async def cross_check(
             "一个点都没取过路线的片，取最远的一点核验，路线说走得到的整片记为存疑。",
             "绕行线索按三角不等式推得，400 米为经验筛选阈值；60 米吸附余量与 ±50 米位置误差"
             "都是经验值，不是已证明的误差上限。线索画在两格公共边上，不是障碍的真实位置。",
-            "校核估计面积是另一种插值估计（三角网受约束局部线性插值，10 米栅格积分），"
-            "不替代射线圈。",
+            (
+                "融合边界直接裁切三角形的线性耗时场；补回与扣除范围均为采样插值估计，"
+                "扣除范围包含待核实区域，不能全解释为确认超时。"
+                if cfg.fusion_mode
+                else "校核估计面积是另一种插值估计（三角网受约束局部线性插值，10 米栅格积分），"
+                "不替代射线圈。"
+            ),
         ],
     }
 
@@ -660,13 +925,19 @@ async def _clues(chk: _Checker, lattice: _Lattice, cfg: GridcheckConfig):
 async def _illustrate(chk: _Checker, clues: list[dict]) -> None:
     """给已实测的线索取一条 B → A 步行路线，只作地图示意：路线规划与批量算路的距离口径不同。"""
     for clue in clues:
-        if clue["status"] != "confirmed" or chk.budget.routes_used >= chk.budget.routes:
+        if clue["status"] != "confirmed":
             continue
         v = clue["verification"]
-        chk.budget.routes_used += 1
-        route = await chk.client.walking_route(
-            (v["from"][1], v["from"][0]), (v["to"][1], v["to"][0]), fine_m=POINT_GRID_M
+        origin, dest = (v["from"][1], v["from"][0]), (v["to"][1], v["to"][0])
+        probe = getattr(chk.client, "walking_route_cached", None)
+        cached = (
+            chk.cfg.fusion_mode and probe is not None and probe(origin, dest, fine_m=POINT_GRID_M)
         )
+        if not cached and chk.budget.routes_used >= chk.budget.routes:
+            continue
+        chk.budget.routes_used += 0 if cached else 1
+        chk.budget.route_queries += 1
+        route = await chk.client.walking_route(origin, dest, fine_m=POINT_GRID_M)
         if route is None:
             continue
         pts = [
@@ -676,6 +947,16 @@ async def _illustrate(chk: _Checker, clues: list[dict]) -> None:
         ]
         chk.budget.routes_ok += 1
         v["route_m"] = round(float(route.get("distance_m") or 0))
+        if chk.cfg.fusion_mode:
+            from .routequality import route_positions
+
+            positions = route_positions(route)
+            v["route_positions_verified"] = bool(
+                positions["complete"]
+                and positions["position_basis"] == "step_and_path"
+                and haversine_m(*positions["start"], *origin) <= 1
+                and haversine_m(*positions["end"], *dest) <= 2
+            )
         if v["route_m"] > chk.cfg.clue_threshold(v["straight_m"]):
             v["route_path"] = [
                 [round(lng, 6), round(lat, 6)] for lat, lng in simplify_path(pts, 8.0)
@@ -805,7 +1086,14 @@ def _components(probes: list[Probe]) -> list[list[Probe]]:
 
 def _gap_candidates(leaves: list[Probe], target: float) -> list[Probe]:
     """射线圈内可能画成缺口的叶子点：确认超时、受围挡阻断，或取过路线后存疑。"""
-    return [p for p in leaves if p.inside and p.status(target) in ("over", "blocked", "disputed")]
+    return [
+        p
+        for p in leaves
+        # 孔洞补测是独立终点，没有代表一块规则方格的面积，不能用索引画整格缺口。
+        if not p.kind.startswith(("hole_", "boundary_"))
+        and p.inside
+        and p.status(target) in ("over", "blocked", "disputed")
+    ]
 
 
 def _route_confirmed(p: Probe, target: float) -> bool:
@@ -838,6 +1126,8 @@ def _gaps(
     先把候选点（超时、阻断、存疑）并成片：代表点被自己的路线推翻的片整片存疑，不画；
     其余片只去掉存疑的点，剩下的确认点重新并成片画出。
     """
+    if chk.cfg.fusion_mode:
+        leaves = [p for p in leaves if not p.off_network]
     candidates = _gap_candidates(leaves, target)
     kept: list[Probe] = []
     dropped: list[Probe] = []
@@ -939,7 +1229,297 @@ def _leaf(chk: _Checker, p: Probe) -> dict[str, Any]:
     }
 
 
+def _add_hole_target(chk, lattice, lat, lng, kind):
+    """孔洞或边界的独立位置不贴格心；相同目标复用，不分配规则方格面积。"""
+    existing = next(
+        (
+            p
+            for p in chk.probes.values()
+            if not p.kind.startswith("validation") and haversine_m(lat, lng, p.lat, p.lng) < 1e-3
+        ),
+        None,
+    )
+    if existing is not None:
+        if not existing.route_checked:
+            existing.measured = True
+        return existing
+    key = (
+        round((lat - lattice.lat0) / lattice.dlat * 8),
+        round((lng - lattice.lng0) / lattice.dlng * 8),
+    )
+    if key in chk.probes:
+        n = len(chk.probes)
+        key = (700000, n)
+        while key in chk.probes:
+            n += 1
+            key = (700000, n)
+    p = chk.add(key, 1, kind, lat, lng)
+    p.measured = True
+    return p
+
+
+def _boundary_candidates(chk, current):
+    """从冻结一轮的模型场两侧选真实补测位置，不把整片临界带当成已实测。"""
+    field = current.get("time_field") or {}
+    vertices = field.get("vertices") or []
+    candidates = list(vertices)
+    for face in field.get("triangles") or []:
+        points = [vertices[i] for i in face]
+        if any(p[2] is None for p in points):
+            continue
+        # 三角形内部也需选点；只测节点会漏掉射线/网格点之间的边界。
+        candidates.append([sum(p[k] for p in points) / 3 for k in range(3)])
+    known = [
+        position
+        for p in chk.probes.values()
+        if p.measured or p.route_checked
+        for position in [(p.lat, p.lng), *([p.observed_location] if p.observed_location else [])]
+    ]
+    out = {}
+    for lng, lat, value in candidates:
+        if (
+            value is None
+            or not math.isfinite(value)
+            or abs(value - chk.cfg.target_s) > chk.cfg.boundary_band_s
+            or any(haversine_m(lat, lng, *position) < 20 for position in known)
+        ):
+            continue
+        key = (round(lat, 7), round(lng, 7))
+        out.setdefault(key, (lat, lng, value))
+    return sorted(out.values(), key=lambda p: (abs(p[2] - chk.cfg.target_s), p[0], p[1]))
+
+
+async def _complete_fusion(chk, lattice, ray_samples, initial=None):
+    """在验收前补测并重算局部场；模型阈值两侧都选点，不复用本轮验收点。"""
+    from .routequality import usable_for_fusion
+
+    cfg = chk.cfg
+    initial = initial if initial is not None else _estimate(chk, ray_samples, cfg)["fusion"]
+    before_routes = chk.budget.route_queries
+    cache_restored = 0
+    corrections = []
+    rounds = 0
+    cached = getattr(chk.client, "walking_route_cached", None)
+    for p in sorted(chk.probes.values(), key=lambda p: p.key):
+        if (
+            p.measured
+            and not p.route_checked
+            and cached
+            and cached(chk.center, (p.lat, p.lng), fine_m=POINT_GRID_M)
+        ):
+            await chk.verify_by_route(p, cache_only=True)
+            cache_restored += int(p.route_authoritative or p.observed_location is not None)
+
+    # 分批重排风险点：大分歧/范围改变优先，并把补测分散到不同 200 米片区。
+    for _ in range(cfg.completion_rounds):
+        current = _estimate(chk, ray_samples, cfg)["fusion"]
+        hole_targets = set()
+        clue_targets = set()
+        for clue in getattr(chk, "fusion_clues", []):
+            if clue["status"] not in ("confirmed", "unverified"):
+                continue
+            for lng, lat in (clue["verification"]["from"], clue["verification"]["to"]):
+                clue_targets.add(_add_hole_target(chk, lattice, lat, lng, "clue_probe").key)
+        for face in current["geometry"]["coordinates"]:
+            for hole in face[1:]:
+                hole_geo = {"type": "Polygon", "coordinates": [hole]}
+                interior = [
+                    v
+                    for v in current["time_field"]["vertices"]
+                    if point_in_polygon(v[1], v[0], hole_geo)
+                ]
+                if not interior:
+                    continue
+                lng, lat, _time = max(interior, key=lambda v: v[2])
+                hole_targets.add(_add_hole_target(chk, lattice, lat, lng, "hole_probe").key)
+                # 四侧检查区分局部尖峰、真实封闭区和边界缺口，而非重复最高点。
+                radius = max(
+                    35.0,
+                    min(
+                        75.0,
+                        2 * math.sqrt(abs(ring_area([chk.xy(y, x) for x, y in hole])) / math.pi),
+                    ),
+                )
+                for dx, dy in ((radius, 0), (0, radius), (-radius, 0), (0, -radius)):
+                    q = _add_hole_target(
+                        chk,
+                        lattice,
+                        lat + dy / METERS_PER_DEG_LAT,
+                        lng + dx / chk.mpl,
+                        "hole_surrounding",
+                    )
+                    hole_targets.add(q.key)
+        groups = {}
+        model_candidates = _boundary_candidates(chk, current)
+        queued = []
+        for lat, lng, predicted_s in model_candidates:
+            # 只为本批真正取路线的位置建立观测，未请求的计算节点不是缺测样本。
+            queued.append((lat, lng, predicted_s))
+        prediction = {
+            (round(v[1], 7), round(v[0], 7)): v[2] for v in current["time_field"]["vertices"]
+        }
+        for p in chk.probes.values():
+            legacy_upgrade = p.route_cache_hit and p.route_position_basis != "step_and_path"
+            if (
+                not p.measured
+                or (p.route_checked and not legacy_upgrade)
+                or p.kind.startswith("validation")
+            ):
+                continue
+            value = fusion_time(p, cfg.target_s)
+            predicted = point_in_polygon(p.lat, p.lng, current["geometry"])
+            predicted_s = prediction.get((round(p.lat, 7), round(p.lng, 7)))
+            if predicted_s is None:
+                predicted_s = field_time(current["time_field"], p.lat, p.lng)
+            conflict = value is not None and (value <= cfg.target_s) != predicted
+            if not (
+                p.key in hole_targets
+                or p.key in clue_targets
+                or conflict
+                or value is None
+                or abs(value - cfg.target_s) <= cfg.boundary_band_s
+                or (
+                    predicted_s is not None
+                    and abs(predicted_s - cfg.target_s) <= cfg.boundary_band_s
+                )
+            ):
+                continue
+            severity = (
+                abs(value - predicted_s)
+                if predicted_s is not None and value is not None
+                else abs((value or cfg.target_s) - cfg.target_s)
+            )
+            priority = (
+                not conflict,
+                p.key not in hole_targets and p.key not in clue_targets,
+                value is not None,
+                -severity if conflict else abs((value or cfg.target_s) - cfg.target_s),
+                p.key,
+            )
+            # 非格网测点也按真实位置分组，不能用备用索引当成空间坐标。
+            region = (
+                round((p.lat - lattice.lat0) / lattice.dlat * 8) // 16,
+                round((p.lng - lattice.lng0) / lattice.dlng * 8) // 16,
+            )
+            groups.setdefault(region, []).append((priority, p, predicted_s))
+        for lat, lng, predicted_s in queued:
+            region = (
+                math.floor((lat - lattice.lat0) / lattice.dlat / 2),
+                math.floor((lng - lattice.lng0) / lattice.dlng / 2),
+            )
+            priority = (True, True, False, abs(predicted_s - cfg.target_s), (lat, lng))
+            groups.setdefault(region, []).append((priority, (lat, lng), predicted_s))
+        for group in groups.values():
+            group.sort(key=lambda item: item[0])
+        ordered = []
+        while groups:
+            for key in sorted(groups, key=lambda k: groups[k][0][0]):
+                ordered.append(groups[key].pop(0)[1:])
+            groups = {key: group for key, group in groups.items() if group}
+        before = chk.budget.route_queries
+        attempted = 0
+        selected_positions = []
+        for item, predicted_s in ordered:
+            lat, lng = (item.lat, item.lng) if isinstance(item, Probe) else item
+            if any(haversine_m(lat, lng, *position) < 25 for position in selected_positions):
+                continue
+            cached_route = cached and cached(chk.center, (lat, lng), fine_m=POINT_GRID_M)
+            if not cached_route and chk.budget.routes_used >= chk.budget.routes:
+                continue
+            if isinstance(item, Probe):
+                p = item
+            else:
+                p = _add_hole_target(chk, lattice, lat, lng, "boundary_model")
+            await chk.verify_by_route(p)
+            if not p.route_checked:
+                continue
+            attempted += 1
+            selected_positions.append((lat, lng))
+            corrections.append(
+                {
+                    "lat": p.lat,
+                    "lng": p.lng,
+                    "kind": p.kind,
+                    "predicted_before_s": predicted_s,
+                    "route_s": p.route_s,
+                    "actual_endpoint": list(p.route_endpoint) if p.route_endpoint else None,
+                    "cache_hit": p.route_cache_hit,
+                    "used_for_fit": bool(
+                        (p.route_authoritative or p.observed_location is not None)
+                        and usable_for_fusion(p, chk.center)
+                    ),
+                }
+            )
+            if attempted >= 8:
+                break
+        if chk.budget.route_queries == before:
+            break
+        rounds += 1
+
+    extra = 0
+    for _ in range(2):
+        if chk.budget.pairs_used >= chk.budget.pairs or chk.budget.routes_used >= chk.budget.routes:
+            break
+        current = _estimate(chk, ray_samples, cfg)["fusion"]
+        if current["unknown_inside_ray_km2"] <= 0:
+            break
+        candidates = []
+        for face in current["unknown_geometry"]["coordinates"]:
+            ring = face[0][:-1]
+            if not ring:
+                continue
+            lat = sum(p[1] for p in ring) / len(ring)
+            lng = sum(p[0] for p in ring) / len(ring)
+            if not point_in_polygon(lat, lng, chk.polygon):
+                continue
+            iy = round((lat - lattice.lat0) / lattice.dlat * 8)
+            ix = round((lng - lattice.lng0) / lattice.dlng * 8)
+            q = chk.add((iy, ix), 1, "completion", lattice=lattice)
+            if q is not None:
+                candidates.append(q)
+        if not candidates:
+            break
+        await chk.measure(candidates, cap=20)
+        for q in candidates:
+            if q.measured:
+                await chk.verify_by_route(q)
+                extra += 1
+        if not any(q.measured for q in candidates):
+            break
+    final = _estimate(chk, ray_samples, cfg)["fusion"]
+
+    return {
+        "cache_routes_restored": cache_restored,
+        "route_checks": chk.budget.route_queries - before_routes,
+        "extra_points": extra,
+        "pending_before_km2": initial["unknown_inside_ray_km2"],
+        "pending_after_km2": final["unknown_inside_ray_km2"],
+        "route_verified_points": sum(
+            p.route_authoritative and usable_for_fusion(p, chk.center) for p in chk.probes.values()
+        ),
+        "relocated_observations": sum(
+            p.observed_location is not None and usable_for_fusion(p, chk.center)
+            for p in chk.probes.values()
+        ),
+        "boundary_band_s": cfg.boundary_band_s,
+        "correction_rounds": rounds,
+        "correction_points": corrections,
+    }
+
+
 def _estimate(chk: _Checker, ray_samples, cfg: GridcheckConfig) -> dict[str, Any]:
+    if cfg.fusion_mode:
+        fusion = estimate_fusion(chk, ray_samples)
+        rings = [ring for face in fusion["geometry"]["coordinates"] for ring in face]
+        return {
+            "area_km2": fusion["area_km2"],
+            "unknown_km2": fusion["unknown_inside_ray_km2"],
+            "rings": rings,
+            "holes": [
+                i > 0 for face in fusion["geometry"]["coordinates"] for i in range(len(face))
+            ],
+            "fusion": fusion,
+        }
     vertices: list[Vertex] = [Vertex(0.0, 0.0, 0.0, 0.0)]
     seen: set[tuple[int, int]] = {(0, 0)}
 
@@ -990,4 +1570,156 @@ def _estimate(chk: _Checker, ray_samples, cfg: GridcheckConfig) -> dict[str, Any
         "rings": out_rings,
         "holes": holes,
         "barrier_triangles": raster.barrier_triangles,
+    }
+
+
+async def _validate_fusion(chk, lattice, leaves, estimate, ray_samples):
+    """偏移点始终留出，不参与拟合；冲突用于质量门槛，不泄漏回训练集。"""
+    if chk.cfg.validation_points <= 0:
+        return {"checked": 0, "corrections": 0, "note": "未安排额外核验点。"}
+    selections, plan = validation_plan(chk, lattice, leaves, estimate["fusion"], ray_samples)
+    from .adoption import candidate_hash, targets_hash
+
+    adoption = estimate["fusion"].get("adoption")
+    if adoption and (
+        adoption["candidate_hash"] != candidate_hash(estimate["fusion"])
+        or adoption["targets_hash"] != targets_hash(selections)
+    ):
+        raise ValueError("冻结候选或验收计划已变化，禁止继续使用原验收轮次")
+    plan = {**plan, "budget": validation_request_budget(chk, selections)}
+    training = [p for p in estimate["fusion"]["measured_points"] if p["time_s"] is not None]
+    results = []
+    checked_endpoints = []
+    checked = disagreements = unknown = 0
+    # 点数动态增长后，冻结路径只预处理一次；预算拦下的点不做耗时场遍历。
+    from .validation import distance_to_paths
+
+    known_paths = known_reachable_segments(chk, estimate["fusion"])
+
+    async def evaluate(selection, region_nodes):
+        p = chk.add(selection["key"], 1, "validation", selection["lat"], selection["lng"])
+        # 直接核验路线；矩阵失败、矩阵预算耗尽都不应阻断这份独立预留。
+        preflight_blocked = estimate["fusion"].get("quality", {}).get("preflight_blocked", False)
+        cache_probe = getattr(chk.client, "walking_route_cached", None)
+        cache_hit = bool(cache_probe and cache_probe(chk.center, (p.lat, p.lng), fine_m=10))
+        if not preflight_blocked or cache_hit:
+            await chk.verify_by_route(p, cache_only=preflight_blocked)
+        actual = p.route_endpoint or (p.lat, p.lng)
+        usable = (
+            (p.route_authoritative or p.observed_location is not None)
+            and not p.blocked
+            and p.route_geometry_complete
+            and p.route_position_consistent
+            and p.route_position_basis == "step_and_path"
+        )
+        # 吸附到训练样本附近不能算新的留出证据，也不能替远处的目标片区验收。
+        independent = usable and all(
+            haversine_m(*actual, q["lat"], q["lng"]) >= 10 for q in training
+        )
+        near_known_path = usable and distance_to_paths(*chk.xy(*actual), known_paths) <= 5
+        independent = independent and not near_known_path
+        anchor = estimate["fusion"].get("origin_anchor")
+        from .routequality import same_origin as origin_matches
+
+        same_origin = not anchor or origin_matches(p, anchor)
+        distinct = all(haversine_m(*actual, *q) >= 10 for q in checked_endpoints)
+        nearby = haversine_m(p.lat, p.lng, *actual) <= 50
+        if region_nodes:
+            nearby = (
+                nearby and min(haversine_m(*actual, lat, lng) for lng, lat in region_nodes) <= 100
+            )
+        region_triangles = selection.get("region_triangles")
+        if region_triangles:
+            from .fieldmesh import barycentric
+
+            nearby = nearby and any(
+                min(barycentric(chk.xy(*actual), *(chk.xy(lat, lng) for lng, lat in face)) or (-1,))
+                >= -1e-8
+                for face in region_triangles
+            )
+        region_polygons = selection.get("region_polygons")
+        if region_polygons:
+            nearby = nearby and any(
+                point_in_polygon(*actual, {"type": "Polygon", "coordinates": [part]})
+                for part in region_polygons
+            )
+        if selection.get("hole_task"):
+            from .holevalidation import task_contains
+
+            nearby = nearby and task_contains(selection["hole_task"], chk.xy(*actual))
+            nearby = nearby and point_in_polygon(*actual, estimate["fusion"]["geometry"]) == (
+                selection["hole_task"]["role"] == "outside"
+            )
+        value = (
+            p.route_s if usable and independent and distinct and nearby and same_origin else None
+        )
+        predicted = point_in_polygon(*actual, estimate["fusion"]["geometry"])
+        predicted_s = (
+            field_time(estimate["fusion"]["time_field"], *actual) if p.route_s is not None else None
+        )
+        observed = value <= chk.cfg.target_s if value is not None else None
+        verdict = (
+            "unknown" if observed is None else "consistent" if observed == predicted else "conflict"
+        )
+        if not p.route_checked:
+            reason = "候选预审未通过，未新增路线请求" if preflight_blocked else "本地路线预算不足"
+        elif p.route_position_basis != "step_and_path":
+            reason = "路线位置元数据不足"
+        elif not usable:
+            reason = "路线缺失或不可靠"
+        elif not independent:
+            reason = "终点与拟合样本重合"
+        elif not distinct:
+            reason = "终点与已核验位置重合"
+        elif not nearby:
+            reason = "终点偏离核验片区"
+        elif not same_origin:
+            reason = "实际出发道路与模型起点不一致"
+        else:
+            reason = None
+        return {
+            "lat": round(p.lat, 6),
+            "lng": round(p.lng, 6),
+            "source": selection["source"],
+            "hole_task_id": (selection.get("hole_task") or {}).get("id"),
+            "actual_endpoint": [round(actual[1], 8), round(actual[0], 8)],
+            "region": selection["region"],
+            "sector": int((math.atan2(*reversed(chk.xy(*actual))) % math.tau) / (math.pi / 2)),
+            "predicted_reachable": predicted,
+            "predicted_s": round(predicted_s, 2) if predicted_s is not None else None,
+            "route_s": p.route_s,
+            "position_basis": p.route_position_basis,
+            "path_upper_conflict": bool(
+                near_known_path
+                and usable
+                and nearby
+                and same_origin
+                and p.route_s > chk.cfg.target_s + BOUNDARY_TOLERANCE_S
+            ),
+            "verdict": verdict,
+            "reason": reason,
+        }
+
+    from .validation import validate_in_stages
+
+    def record_known(result):
+        checked_endpoints.append(tuple(reversed(result["actual_endpoint"])))
+
+    results = await validate_in_stages(selections, evaluate, record_known)
+    for result in results:
+        if result["verdict"] == "unknown":
+            unknown += 1
+        else:
+            checked += 1
+            if result["verdict"] == "conflict":
+                disagreements += 1
+    return {
+        "requested": len(selections),
+        "checked": checked,
+        "corrections": 0,
+        "disagreements": disagreements,
+        "unknown": unknown,
+        "points": results,
+        "coverage": validation_coverage(plan, results),
+        "basis": "偏移点始终不参与拟合；这是同一地图服务下的留出核对，不是实地准确率",
     }
