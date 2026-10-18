@@ -1,7 +1,8 @@
-"""请求前审查修正的可验证性；只在耗时场中撤销，禁止按验收结果修补候选。"""
+"""冻结前审查修正的可验证性；只在耗时场中撤销，不回写已冻结候选。"""
 
 import hashlib
 import json
+import math
 from copy import deepcopy
 
 from .fusion import estimate_fusion, field_time
@@ -22,6 +23,7 @@ def candidate_hash(fusion):
             "origin_anchor",
             "measured_points",
             "training_paths",
+            "matrix_guidance",
         )
     }
     frozen["hole_records"] = fusion.get("quality", {}).get("hole_records", [])
@@ -37,6 +39,10 @@ def candidate_hash(fusion):
             "local_hole_estimates",
             "strict_mesh_topology_stable",
             "localized_topology_only",
+            "local_sensitivity",
+            "local_correction_caps",
+            "prior_policy",
+            "calibrated_matrix_observations",
         )
     }
     return hashlib.sha256(json.dumps(frozen, sort_keys=True).encode()).hexdigest()
@@ -53,7 +59,10 @@ def prepare_fusion(chk, lattice, leaves, fusion, samples):
     rolled = set(getattr(chk, "rollback_xy", ()))
     history = []
     previous = None
-    for iteration in range(3):
+    cap_rounds = rollback_rounds = 0
+    # 限制影响半径与局部回退各有两次机会；不能前一步占掉后一项的次数。
+    # 最多四次重算加一次最终检查，不靠无限循环追着结果修改。
+    for iteration in range(5):
         targets, plan = validation_plan(chk, lattice, leaves, fusion, samples)
         budget = validation_request_budget(chk, targets)
         quality = fusion["quality"]
@@ -93,6 +102,38 @@ def prepare_fusion(chk, lattice, leaves, fusion, samples):
                 "boundary_clipped",
             )
         ) or (quality.get("excluded_origin_routes", 0) > 0 and not quality.get("protected_routes"))
+        local_ids = {r.get("id") for r in quality.get("local_hole_estimates", [])}
+        # 单个慢点只缩小其模型影响半径；原测时、节点分类和路线约束均保留。
+        # 不以扩大面积阈值放行，也不把已经接纳的局部洞一起撤销。
+        caps = set(getattr(chk, "correction_caps", ()))
+        proposed = set()
+        if not fatal and cap_rounds < 2:
+            for record in quality.get("hole_records", []):
+                ring = record["ring_xy"]
+                if (
+                    record["supported"]
+                    or record.get("id") in local_ids
+                    or record.get("slow_points") != 1
+                    or record.get("fast_inside")
+                    or record.get("path_crossings")
+                    or record["area_m2"] > 1600
+                    or max(math.dist(a, b) for a in ring for b in ring) > 60
+                ):
+                    continue
+                for point in fusion.get("measured_points", []):
+                    if (
+                        point.get("time_basis") == "route_duration_includes_model_wait"
+                        and (point.get("time_s") or 0) > chk.cfg.target_s + BOUNDARY_TOLERANCE_S
+                    ):
+                        x, y = chk.xy(point["lat"], point["lng"])
+                        if inside_ring(x, y, ring):
+                            proposed.add((x, y, 25.0))
+        if proposed - caps:
+            cap_rounds += 1
+            chk.correction_caps = tuple(sorted(caps | proposed))
+            history.append({"iteration": iteration, "local_correction_caps": list(proposed - caps)})
+            fusion = estimate_fusion(chk, samples)
+            continue
         field = fusion["time_field"]
         xy = field.get("vertices_xy") or [chk.xy(v[1], v[0]) for v in field["vertices"]]
         # 抽样预算或选点不足只影响核验等级，不能撤销已有可靠修正。
@@ -103,13 +144,30 @@ def prepare_fusion(chk, lattice, leaves, fusion, samples):
         }
         # 不直接填孔：撤销涉及的场节点，重算后仍须满足全部可靠路线约束。
         if quality.get("unsupported_holes"):
-            holes = [r["ring_xy"] for r in quality.get("hole_records", []) if not r["supported"]]
+            holes = [
+                r["ring_xy"]
+                for r in quality.get("hole_records", [])
+                if not r["supported"] and r.get("id") not in local_ids
+            ]
             for face in field["triangles"]:
                 if any(inside_ring(*xy[i], ring) for i in face for ring in holes):
                     new_nodes.update(tuple(xy[i]) for i in face)
         # 没有可达路径支持的独立碎片撤销其局部修正，随后完整重算及核验。
         for ring in quality.get("unsupported_component_rings", []):
             new_nodes.update(tuple(p) for p in xy if inside_ring(*p, ring))
+        if quality.get("mesh_topology_stable") is False:
+            protected_xy = [
+                chk.xy(p["lat"], p["lng"])
+                for p in fusion.get("measured_points", [])
+                if p.get("time_basis") == "route_duration_includes_model_wait"
+            ]
+            for ring in quality.get("local_sensitivity", {}).get("rollback_rings", []):
+                new_nodes.update(
+                    tuple(p)
+                    for p in xy
+                    if inside_ring(*p, ring)
+                    and all((p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2 > 1e-8 for q in protected_xy)
+                )
         new_nodes -= rolled
         history.append(
             {
@@ -134,19 +192,20 @@ def prepare_fusion(chk, lattice, leaves, fusion, samples):
             quality = fusion["quality"]
             quality["rollback_rejected"] = True
             new_nodes = set()
-        if not new_nodes or fatal or iteration == 2:
+        if not new_nodes or fatal or rollback_rounds >= 2:
             blocked = (
-                fatal
-                or not quality.get("ready", False)
-                or quality.get("unsupported_holes", 0) > 0
-                or not plan["plan_complete"]
-                or not budget["sufficient"]
+                fatal or not quality.get("ready", False) or quality.get("unsupported_holes", 0) > 0
             )
             quality["preflight_blocked"] = bool(blocked)
+            quality["validation_plan_pending"] = (
+                not plan["plan_complete"] or not budget["sufficient"]
+            )
             quality["preflight_budget_shortfall"] = budget["shortfall"]
             fusion["adoption"] = {
                 "rounds": history,
                 "rollback_nodes": len(rolled),
+                "cap_rounds": cap_rounds,
+                "rollback_rounds": rollback_rounds,
                 "ready_for_validation": not blocked,
                 "candidate_hash": candidate_hash(fusion),
                 "targets_hash": targets_hash(targets),
@@ -157,6 +216,7 @@ def prepare_fusion(chk, lattice, leaves, fusion, samples):
             }
             return fusion
         previous = (deepcopy(fusion), targets, plan, budget, set(rolled))
+        rollback_rounds += 1
         rolled.update(new_nodes)
         chk.rollback_xy = tuple(sorted(rolled))
         fusion = estimate_fusion(chk, samples)

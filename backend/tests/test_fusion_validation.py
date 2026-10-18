@@ -31,10 +31,16 @@ def test_validation_needs_no_matrix_request_and_never_changes_fitted_surface():
     result = asyncio.run(
         _validate_fusion(chk, lattice, list(chk.probes.values()), {"fusion": surface}, _rays(net))
     )
-    assert result["checked"] == result["requested"]
+    assert result["checked"] == result["requested"] - result["unattempted"]
+    assert result["points"][-1]["significant_conflict"]
+    assert result["unattempted"] > 0  # 明显反例出现后停止付费，不再强求完整覆盖。
     assert result["requested"] >= 8  # 实际范围差异可能包含节点检查未发现的细片区。
     assert net.matrix_pairs == 0
-    assert result["coverage"]["checked_sectors"] == 4
+    # 四方向优先的计划不等于四方向均完成；首点反例早停不能虚报方向覆盖。
+    assert result["coverage"]["checked_sectors"] == len(
+        {p["sector"] for p in result["points"] if p["verdict"] != "unknown"}
+    )
+    assert not result["coverage"]["complete"]
     assert estimate_fusion(chk, _rays(net))["geometry"] == surface["geometry"]
 
 

@@ -220,7 +220,7 @@ def walking_segments(chk):
     """只读取拟合阶段取得的路线几何，不使用路线沿途推算耗时或核验结果。"""
     segments = set()
     for p in chk.probes.values():
-        if p.kind == "validation" or p.blocked:
+        if p.kind.startswith("validation") or p.blocked:
             continue
         path = [chk.xy(*point) for point in p.route_path]
         for a, b in zip(path, path[1:], strict=False):
@@ -390,6 +390,8 @@ def validation_plan(chk, lattice, leaves, fusion, ray_samples):
     training = [
         chk.xy(p["lat"], p["lng"]) for p in fusion["measured_points"] if p["time_s"] is not None
     ]
+    # 旧轮次核验结果已经用于决定是否纠错，不再冒充新候选的独立样本。
+    training.extend(getattr(chk, "retired_validation_xy", ()))
     candidates = {}
     known_paths = known_reachable_segments(chk, fusion)
     searched = [0] * len(regions)
@@ -536,7 +538,7 @@ def validation_plan(chk, lattice, leaves, fusion, ray_samples):
             and all(math.dist(item["xy"], other["xy"]) >= 10 for other in selected)
         ]
         alternatives.sort(key=lambda item: (item["source"] != "walking_path", item["key"]))
-        q["alternatives"] = alternatives[:1]
+        q["alternatives"] = alternatives[:3]
         for alternative in q["alternatives"]:
             alternative["region_triangles"] = q["region_triangles"]
             alternative["region_polygons"] = q["region_polygons"]
@@ -546,6 +548,25 @@ def validation_plan(chk, lattice, leaves, fusion, ray_samples):
     from .holevalidation import add_hole_targets
 
     hole_tasks, unplanned_hole_tasks = add_hole_targets(chk, fusion, selected)
+    # 预算有限时先取得分散方向的证据，再遍历剩余细片区。计划本身不删减，
+    # 未执行片区仍计为未完成，不能用四方向核验冒充完整覆盖。
+    first = []
+    for sector in range(4):
+        pool = [q for q in selected if q.get("sector") == sector and not q.get("hole_task")]
+        if pool:
+            first.append(
+                min(
+                    pool,
+                    key=lambda q: (
+                        q["source"] != "walking_path",
+                        q.get("region") is not None,
+                        q.get("threshold_distance", 0),
+                        q["key"],
+                    ),
+                )
+            )
+    first_keys = {q["key"] for q in first}
+    selected = first + [q for q in selected if q["key"] not in first_keys]
     return selected, {
         "hole_tasks": hole_tasks,
         "unplanned_hole_tasks": unplanned_hole_tasks,
@@ -642,12 +663,23 @@ async def validate_in_stages(selections, evaluate, record_known):
     """先完成所有主目标，再消耗共享备选；有效判定及路径冲突禁止换点覆盖。"""
     results = []
     attempts = []
+
+    def finish():
+        for i, result in enumerate(results):
+            result["attempts"] = attempts[i]
+        return results
+
     for selection in selections:
         result = await evaluate(selection, selection["region_nodes"])
         results.append(result)
         attempts.append([result.copy()])
         if result["verdict"] != "unknown":
             record_known(result)
+        if (
+            result.get("significant_conflict", result["verdict"] == "conflict")
+            or result["path_upper_conflict"]
+        ):
+            return finish()
     for i, selection in enumerate(selections):
         result = results[i]
         if result["verdict"] == "unknown" and not result["path_upper_conflict"]:
@@ -656,6 +688,12 @@ async def validate_in_stages(selections, evaluate, record_known):
                 attempts[i].append(result.copy())
                 if result["verdict"] != "unknown":
                     record_known(result)
+                if (
+                    result.get("significant_conflict", result["verdict"] == "conflict")
+                    or result["path_upper_conflict"]
+                ):
+                    results[i] = result
+                    return finish()
                 if result["verdict"] != "unknown" or result["path_upper_conflict"]:
                     break
         result["attempts"] = attempts[i]

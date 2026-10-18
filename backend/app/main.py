@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -364,9 +365,25 @@ class AnalysisState:
     def __init__(self) -> None:
         self.stage = "center"
         self.completed: list[str] = []
+        self.started_at = self.stage_started_at = time.monotonic()
+        self.stage_seconds: dict[str, float] = {}
 
     def enter(self, stage: str) -> None:
+        now = time.monotonic()
+        self.stage_seconds[self.stage] = self.stage_seconds.get(self.stage, 0) + (
+            now - self.stage_started_at
+        )
         self.stage = stage
+        self.stage_started_at = now
+
+    def timings(self) -> dict:
+        now = time.monotonic()
+        stages = dict(self.stage_seconds)
+        stages[self.stage] = stages.get(self.stage, 0) + now - self.stage_started_at
+        return {
+            "elapsed_s": round(now - self.started_at, 3),
+            "stages_s": {k: round(v, 3) for k, v in stages.items()},
+        }
 
     def finish(self, label: str) -> None:
         self.completed.append(label)
@@ -716,6 +733,7 @@ async def _analysis_steps(
     state.enter("report")
     props["report"] = build_report(props, coverage_dict, props.get("blindspots"))
     attach_markings(coverage_dict_a, coverage_dict, blind_dict_a, props.get("blindspots"))
+    props["analysis_timings"] = state.timings()
 
 
 def _timeout_detail(settings_timeout: float, state: AnalysisState | None = None) -> dict:
@@ -727,10 +745,12 @@ def _timeout_detail(settings_timeout: float, state: AnalysisState | None = None)
         "code": "analysis_timeout",
         "stage": state.stage if state else None,
         "stage_label": stage_label or None,
+        "timings": state.timings() if state else None,
         "message": (
             f"分析超过 {settings_timeout:.0f} 秒已终止"
             + (f"，停在「{stage_label}」这一步" if stage_label else "")
-            + f"。{kept}已测过的点对都已缓存，重新计算会从断点附近接着算、不重复耗配额；"
+            + f"。{kept}重新计算会复用有效接口缓存，但会重新执行建模；"
+            "新增测点、缺失或过期缓存仍可能消耗配额。"
             "也可以降低方向数、关闭盲区判定，或调大 BAIDU_ANALYSIS_TIMEOUT。"
         ),
     }

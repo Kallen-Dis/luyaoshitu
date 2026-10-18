@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 from copy import deepcopy
 from typing import Any
@@ -17,7 +18,33 @@ from .localfield import (
 )
 from .tin import Vertex, clip_mesh, inside_ring, ring_area
 
-VERSION = "ray-path-v3.16"
+VERSION = "ray-path-v3.19"
+
+
+def _evaluation_key(checker, ray_samples, excluded):
+    """单次体检内复用同输入求解；包含证据内容而非仅点数，保留完整水域几何。"""
+    domain = getattr(checker.cfg, "domain", None)
+    inputs = (
+        checker.center,
+        checker.polygon,
+        vars(checker.cfg),
+        [(key, vars(p)) for key, p in sorted(getattr(checker, "probes", {}).items())],
+        ray_samples,
+        sorted(excluded or ()),
+        *[
+            getattr(checker, k, None)
+            for k in (
+                "origin_preflight",
+                "fusion_clues",
+                "rollback_xy",
+                "correction_caps",
+            )
+        ],
+        (domain.water.wkb, domain.coverage.wkb) if domain is not None else None,
+        id(_estimate_fusion),
+        id(fit_field),
+    )
+    return hashlib.sha256(repr(inputs).encode()).digest()
 
 
 def apply_validation_gate(estimate: dict, validation: dict | None) -> None:
@@ -28,7 +55,7 @@ def apply_validation_gate(estimate: dict, validation: dict | None) -> None:
     checked = validation.get("checked", 0)
     coverage = validation.get("coverage") or {}
     significant = sum(
-        (p.get("verdict") == "conflict" or p.get("path_upper_conflict"))
+        (p.get("verdict") == "conflict" or bool(p.get("path_upper_conflict")))
         and p.get("route_s") is not None
         and abs(p["route_s"] - estimate.get("target_s", 900)) > BOUNDARY_TOLERANCE_S
         for p in validation.get("points", [])
@@ -70,6 +97,9 @@ def apply_validation_gate(estimate: dict, validation: dict | None) -> None:
             "unsupported_components",
             "route_response_conflicts",
             "blocked_observations",
+            "repair_unresolved_conflicts",
+            "repair_scope_exceeded",
+            "repair_verification_pending",
         )
     )
     complete = (
@@ -186,8 +216,12 @@ def fusion_time(point, target):
 
 def estimate_fusion(checker, ray_samples, excluded=None):
     """数值/拓扑失败也提供可审计的拒绝结果，不能使整次社区体检失败。"""
+    key = _evaluation_key(checker, ray_samples, excluded)
+    cached = getattr(checker, "_fusion_evaluation_cache", None)
+    if cached is not None and cached[0] == key:
+        return deepcopy(cached[1])
     try:
-        return _estimate_fusion(checker, ray_samples, excluded)
+        result = _estimate_fusion(checker, ray_samples, excluded)
     except ValueError as exc:
         ray = [checker.xy(lat, lng) for lat, lng in checker.polygon]
         area = abs(ring_area(ray)) / 1e6
@@ -219,6 +253,10 @@ def estimate_fusion(checker, ray_samples, excluded=None):
             "triangles": 0,
             "basis": "融合计算未形成有效几何，保留射线结果。",
         }
+    else:
+        # 使用者会添加采用/核验状态；副本避免状态污染下一次基础求解。
+        checker._fusion_evaluation_cache = (key, deepcopy(result))
+        return result
 
 
 def _estimate_fusion(checker, ray_samples, excluded=None):
@@ -247,7 +285,7 @@ def _estimate_fusion(checker, ray_samples, excluded=None):
     rejected_positions = 0
     domain_route_conflicts = 0
     for point in sorted(checker.probes.values(), key=lambda p: p.key):
-        if not point.measured or point.kind == "validation" or point.key in excluded:
+        if not point.measured or point.kind.startswith("validation") or point.key in excluded:
             continue
         relocated = point.observed_location is not None and not point.blocked
         domain = checker.cfg.domain
@@ -331,6 +369,9 @@ def _estimate_fusion(checker, ray_samples, excluded=None):
                     "reason": "接口冲突、端点偏离或等待/围挡尚未核实",
                 }
             )
+    from .evidence import calibrate_matrix_observations
+
+    observations = calibrate_matrix_observations(checker, observations)
     ray = [checker.xy(lat, lng) for lat, lng in checker.polygon]
     samples = [
         (*checker.xy(lat, lng), value, distance) for lat, lng, value, distance in ray_samples
@@ -350,6 +391,7 @@ def _estimate_fusion(checker, ray_samples, excluded=None):
         rollback_xy=getattr(checker, "rollback_xy", ()),
         clues=clues,
         domain=checker.cfg.domain,
+        correction_caps=getattr(checker, "correction_caps", ()),
     )
     quality["origin_conflicts"] = origin_conflicts
     quality["domain_route_conflicts"] = domain_route_conflicts
@@ -378,6 +420,7 @@ def _estimate_fusion(checker, ray_samples, excluded=None):
     preliminary = {t: contour_field(vertices, triangles, t) for t in sorted(set(thresholds))}
     stable = {}
     sensitivity = {t: [] for t in preliminary}
+    sensitivity_quality = []
     # 即使粗网格没有孔洞，也要检查加密是否凭空生出孔洞。
     if any(o.protected for o in observations):
         finer_v, finer_t, finer_q = fit_field(
@@ -390,6 +433,7 @@ def _estimate_fusion(checker, ray_samples, excluded=None):
             rollback_xy=getattr(checker, "rollback_xy", ()),
             clues=clues,
             domain=checker.cfg.domain,
+            correction_caps=getattr(checker, "correction_caps", ()),
         )
         quality["refinement_quality"] = finer_q
         if finer_q["ready"]:
@@ -410,9 +454,27 @@ def _estimate_fusion(checker, ray_samples, excluded=None):
                 clues=clues,
                 domain=checker.cfg.domain,
                 support_scale=scale,
+                correction_caps=getattr(checker, "correction_caps", ()),
             )
             for t in preliminary:
-                sensitivity[t].append(contour_field(sv, st, t).rings if sq["ready"] else [])
+                sensitivity[t].append(contour_field(sv, st, t).rings if sq["ready"] else None)
+            sensitivity_quality.append(
+                {
+                    "scale": scale,
+                    **{
+                        k: sq[k]
+                        for k in (
+                            "ready",
+                            "solver_converged",
+                            "solver_change_s",
+                            "solver_iterations",
+                            "constraint_conflicts",
+                            "path_violations",
+                        )
+                    },
+                }
+            )
+    quality["support_sensitivity_quality"] = sensitivity_quality
     topology = {
         str(t): hole_evidence(
             m.rings,
@@ -433,7 +495,7 @@ def _estimate_fusion(checker, ray_samples, excluded=None):
         topology[str(t)]["mesh_topology_stable"] = topology_stable(
             preliminary[t].rings, stable.get(t)
         ) and all(topology_stable(preliminary[t].rings, variant) for variant in sensitivity[t])
-    from .holepolicy import is_local_hole, localized_topology_stable
+    from .holepolicy import is_local_hole, local_sensitivity, localized_topology_stable
 
     strict_stability = topology[str(target)]["mesh_topology_stable"]
     area_limit = min(1000.0, abs(ring_area(ray)) * 0.001)
@@ -468,6 +530,18 @@ def _estimate_fusion(checker, ray_samples, excluded=None):
         localized_topology_stable(preliminary[target].rings, variant, area_limit)
         for variant in sensitivity[target]
     )
+    sensitivity_audit = local_sensitivity(
+        preliminary[target].rings,
+        [stable.get(target), *sensitivity[target]],
+        observations,
+        routes,
+        target,
+        area_limit,
+        checker.cfg.domain,
+    )
+    quality["local_sensitivity"] = sensitivity_audit
+    quality["local_correction_caps"] = list(getattr(checker, "correction_caps", ()))
+    local_stability = local_stability or sensitivity_audit["passed"]
     quality["mesh_topology_stable"] = strict_stability or local_stability
     quality["localized_topology_only"] = bool(local_stability and not strict_stability)
     quality["mesh_stability_status"] = (
@@ -475,6 +549,7 @@ def _estimate_fusion(checker, ray_samples, excluded=None):
         if quality["mesh_topology_stable"]
         else "incomplete"
         if quality.get("refinement_quality", {}).get("ready") is False
+        or any(not q["ready"] for q in sensitivity_quality)
         else "changed"
     )
     for record in quality["hole_records"]:
@@ -562,6 +637,17 @@ def _estimate_fusion(checker, ray_samples, excluded=None):
         "omitted_ray_area_km2": round(max(0.0, abs(ring_area(ray)) - overlap) / 1e6, 6),
         "pending_points": pending,
         "measured_points": measurements,
+        "matrix_guidance": [
+            {
+                "lat": checker.center[0] + o.y / METERS_PER_DEG_LAT,
+                "lng": checker.center[1] + o.x / checker.mpl,
+                "time_s": o.seconds,
+                "weight": o.weight,
+                "basis": "双路线同路段、近端点及等待一致性校正；仅弱观测，不构成超时硬证据",
+            }
+            for o in observations
+            if o.soft_eligible
+        ],
         "time_field": {
             "vertices_xy": [[v.x, v.y] for v in mesh.field_vertices],
             "vertices": [
@@ -668,6 +754,12 @@ def apply_fusion(feature: dict[str, Any], checked: dict[str, Any]) -> bool:
             )
         if quality.get("validation_significant_conflicts"):
             reasons.append("留出点存在超过临界容差的圈内外分歧")
+        if quality.get("repair_unresolved_conflicts"):
+            reasons.append("局部纠错后仍与已知有效路线不一致")
+        if quality.get("repair_scope_exceeded"):
+            reasons.append("局部纠错影响扩散到新增证据以外，需进一步核实")
+        if quality.get("repair_verification_pending"):
+            reasons.append("局部纠错已完成，但尚不足两个方向的新点复核，未冒充验收通过")
         if not quality.get("validation_coverage_complete"):
             reasons.append("关键修正片区或方向的核验覆盖不足")
         if quality.get("unsupported_holes") or quality.get("unsupported_inner_holes"):
@@ -702,6 +794,7 @@ def apply_fusion(feature: dict[str, Any], checked: dict[str, Any]) -> bool:
             "quality": deepcopy((estimate or {}).get("quality", {})),
             "validation": deepcopy(checked.get("validation")),
             "adoption": deepcopy((estimate or {}).get("adoption")),
+            "repair": deepcopy((estimate or {}).get("repair")),
         }
         return False
     props.pop("fusion_fallback", None)
@@ -761,6 +854,7 @@ async def publish_fusion(feature: dict, checked: dict, rebuild) -> bool:
             "quality": deepcopy(checked["fusion"]["quality"]),
             "validation": deepcopy(checked.get("validation")),
             "publication_failed": True,
+            "repair": deepcopy(checked["fusion"].get("repair")),
         }
         return False
     # 主结果已经保存融合元数据；辅助层不再重复携带整个耗时场。

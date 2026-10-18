@@ -168,3 +168,75 @@ def localized_topology_stable(rings, alternatives, area_limit):
         [r for r in rings if not (ring_area(r) < 0 and is_local_hole(r))],
         [r for r in alternatives if not (ring_area(r) < 0 and is_local_hole(r))],
     )
+
+
+def local_sensitivity(rings, variants, observations, routes, target, area_limit, domain=None):
+    """按变化的物理片区核对证据，不把单个扰动洞的面积当成全域失败。"""
+    from shapely.geometry import LineString, Point, Polygon
+    from shapely.ops import unary_union
+
+    audit = {"passed": False, "regions": [], "rollback_rings": [], "area_limit_m2": area_limit}
+    if any(v is None for v in variants):
+        audit["reason"] = "comparison_incomplete"
+        return audit
+    groups = []
+    for index, group in enumerate([rings, *variants]):
+        for ring in group:
+            if ring_area(ring) >= 0:
+                continue
+            poly = Polygon(ring)
+            if not poly.is_valid:
+                audit["reason"] = "invalid_comparison_geometry"
+                return audit
+            touching = [g for g in groups if any(poly.intersects(p) for _, _, p in g)]
+            merged = [(index, ring, poly)]
+            for g in touching:
+                merged.extend(g)
+                groups.remove(g)
+            groups.append(merged)
+    used = 0.0
+    water = domain.xy_shape(domain.water) if domain else None
+    for group in groups:
+        by_variant = [[r for j, r, _ in group if j == i] for i in range(len(variants) + 1)]
+        if all(topology_stable(by_variant[0], other) for other in by_variant[1:]):
+            continue
+        envelope = unary_union([p for _, _, p in group]).convex_hull
+        coords = list(envelope.exterior.coords)[:-1]
+        span = max(math.dist(a, b) for a in coords for b in coords)
+        slow = [o for o in observations if o.protected and o.seconds > target + 30]
+        anchored = all(any(p.covers(Point(o.x, o.y)) for o in slow) for _, _, p in group)
+        fast = any(
+            o.protected and o.seconds <= target and envelope.covers(Point(o.x, o.y))
+            for o in observations
+        )
+        crossing = any(
+            r.seconds <= target
+            and len(r.path) >= 2
+            and LineString(r.path).intersection(envelope).length > 1e-6
+            for r in routes
+        )
+        bounded = envelope.area <= 1000 and span <= 60
+        water_hit = water is not None and water.intersects(envelope)
+        used += envelope.area
+        passed = anchored and bounded and not (fast or crossing or water_hit)
+        audit["regions"].append(
+            {
+                "ring_xy": coords,
+                "area_m2": envelope.area,
+                "span_m": span,
+                "slow_supported": anchored,
+                "fast_inside": fast,
+                "path_crossing": crossing,
+                "water_intersection": water_hit,
+                "passed": passed,
+            }
+        )
+        # 只对没有可靠慢点支撑的有界局部变化试撤销；硬冲突不借回退掩盖。
+        if bounded and not (anchored or fast or crossing or water_hit):
+            audit["rollback_rings"].append(coords)
+    audit["changed_area_m2"] = used
+    within_budget = used <= area_limit and len(audit["regions"]) <= 16
+    audit["passed"] = within_budget and all(r["passed"] for r in audit["regions"])
+    if not within_budget:
+        audit["rollback_rings"] = []
+    return audit

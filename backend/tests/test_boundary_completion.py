@@ -88,6 +88,34 @@ def test_model_band_does_not_spend_without_budget_or_reuse_validation_as_trainin
     assert list(chk.probes.values()) == [check] and check.kind == "validation"
 
 
+def test_new_round_restores_previous_direct_counterexample_before_candidate_freeze():
+    a = offset_point(*C, 90, 400)
+
+    class Net(RouteNet):
+        def recent_walking_targets(self, origin):
+            return [a]
+
+        def walking_route_cached(self, *args, **kwargs):
+            return True
+
+        async def walking_route(self, *args, **kwargs):
+            route = await super().walking_route(*args, **kwargs)
+            route["duration_s"] = 1052
+            return route
+
+    chk = _Checker(Net(), C, POLY, None, GridcheckConfig(fusion_mode=True, completion_rounds=0))
+    chk.origin_preflight = {"passed": True}
+    lattice = _Lattice([{"lat": C[0], "lng": C[1]}], 100)
+    original = surface([(*a, 848), (*offset_point(*C, 0, 400), 900)])
+    with patch("app.isochrone.gridcheck._estimate", return_value={"fusion": original}):
+        result = asyncio.run(_complete_fusion(chk, lattice, []))
+    assert result["indexed_routes_restored"] == 1
+    point = next(iter(chk.probes.values()))
+    assert point.route_s == 1052 and point.kind == "cache_evidence"
+    assert point.route_cache_hit and chk.budget.routes_used == 0
+    assert original["time_field"]["vertices"][1][2] == 848  # 上一冻结候选不被回写。
+
+
 @pytest.mark.parametrize("path_s", [850, 1200])
 def test_new_endpoint_on_a_slow_path_can_validate_but_known_reachable_path_cannot(path_s):
     a, b = offset_point(*C, 90, 400), offset_point(*C, 0, 400)

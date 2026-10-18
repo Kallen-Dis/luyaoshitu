@@ -94,6 +94,20 @@ def test_contradictory_path_and_slow_endpoint_are_not_silently_averaged():
     assert q["route_response_conflicts"] and not q["ready"]
 
 
+@pytest.mark.parametrize("end", [400, 700])
+def test_local_rollback_does_not_raise_a_known_fast_path_to_the_ray_prior(end):
+    route = RouteBound(((0, 0), (300, 0), (end, 0)), 300)
+    v, t, q = fit_field(RING, [], [], routes=[route], rollback_xy=[(300, 0), (end, 0)])
+    assert q["ready"] and not q["path_violations"]
+    assert all(value(v, t, x, 0) <= 300 + 1e-5 for x in range(0, end + 1, 5))
+
+
+def test_local_rollback_never_replaces_a_reliable_slow_endpoint():
+    v, t, q = fit_field(RING, [], [Observation(300, 25, 1200, 80, True)], rollback_xy=[(300, 25)])
+    assert q["ready"] and not q["constraint_conflicts"]
+    assert value(v, t, 300, 25) > 900
+
+
 @pytest.mark.parametrize("seconds", [290, 890, 1200])
 def test_origin_stays_zero_and_conflicting_origin_measurement_rejects_candidate(seconds):
     for refine in (False, True):
@@ -217,6 +231,21 @@ def test_local_refinement_keeps_known_classes_and_nested_contours():
 def test_known_route_positions_are_not_independent_validation():
     assert distance_to_paths(300, 0, [((0, 0), (600, 0))]) == 0
     assert distance_to_paths(300, 30, [((0, 0), (600, 0))]) == 30
+
+
+def test_local_rollback_conforms_nearby_path_without_changing_its_upper_bound():
+    route = RouteBound(((0, 0), (300, 10), (630, 10)), 850, 630)
+    observation = Observation(630, 10, 850, 80, True, 630)
+    vertices, faces, quality = fit_field(
+        RING, [], [observation], routes=[route], rollback_xy=[(650, 50)]
+    )
+    assert quality["conforming_rollback_route_segments"] > 0
+    assert quality["constraint_conflicts"] == 0 and quality["path_violations"] == 0
+    assert value(vertices, faces, 650, 50) > 900
+    for a, b in zip(route.path, route.path[1:], strict=False):
+        for i in range(31):
+            x, y = (a[k] + i / 30 * (b[k] - a[k]) for k in (0, 1))
+            assert value(vertices, faces, x, y) <= 850 + 1e-5
 
 
 def test_failed_statistics_never_publish_new_geometry_or_partial_statistics():

@@ -536,6 +536,51 @@ class BaiduMapClient:
             is not None
         )
 
+    def recent_walking_targets(self, origin, limit=96):
+        """新候选复用同起点的近期直接测时；留出点须在新一轮重新选择。"""
+        from ..isochrone.geometry import haversine_m
+        from ..isochrone.routequality import location, route_positions
+
+        folder = self._cache._root / "route_walk"
+        if not folder.is_dir() or limit <= 0:
+            return []
+        try:
+            paths = sorted(folder.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        except OSError:
+            return []
+        targets = []
+        seen = set()
+        # 限制读取量和恢复点数，避免一次体检扫描无限增长的路线缓存。
+        for path in paths[:512]:
+            entry = self._cache.read(path, self._ttl())
+            if not isinstance(entry, dict):
+                continue
+            positions = route_positions(entry)
+            actual_origin = positions["origin"]
+            raw = entry.get("requested_destination")
+            dest = (
+                location({"lat": raw[0], "lng": raw[1]})
+                if isinstance(raw, list) and len(raw) == 2
+                else None
+            )
+            if (
+                not positions["complete"]
+                or not positions["origin_consistent"]
+                or positions["position_basis"] != "step_and_path"
+                or not actual_origin
+                or haversine_m(*actual_origin, *origin) > 1
+                or not dest
+                or haversine_m(*origin, *dest) > 2500
+                or dest in seen
+                or not self.walking_route_cached(origin, dest, fine_m=10)
+            ):
+                continue
+            targets.append(dest)
+            seen.add(dest)
+            if len(targets) >= limit:
+                break
+        return targets
+
     def walking_route_positions_cached(self, origin, destination, fine_m=None) -> bool:
         from ..isochrone.routequality import route_positions
 

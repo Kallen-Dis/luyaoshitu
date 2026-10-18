@@ -85,19 +85,24 @@ def test_rollback_cannot_reclassify_a_reliable_slow_node_as_reachable():
     restored, faces, quality = fit_field(RING, [], [observation], rollback_xy=[(450, 0)])
     assert value(old, faces, 450, 0) > 900
     assert value(restored, faces, 450, 0) > 900
-    assert quality["rollback_vertices"] == 1 and not quality["ready"]
+    assert quality["rollback_skipped_protected_vertices"] == 1 and quality["ready"]
+    assert not quality["constraint_conflicts"]
 
 
 def test_rollback_cannot_overwrite_a_known_reachable_endpoint():
     observation = Observation(650, 0, 800, 80, True)
-    _, _, quality = fit_field(RING, [], [observation], rollback_xy=[(650, 0)])
-    assert quality["constraint_conflicts"] > 0 and not quality["ready"]
+    vertices, faces, quality = fit_field(RING, [], [observation], rollback_xy=[(650, 0)])
+    assert value(vertices, faces, 650, 0) <= 800
+    assert quality["rollback_skipped_protected_vertices"] == 1
+    assert not quality["constraint_conflicts"] and quality["ready"]
 
 
 def test_rollback_cannot_cut_through_a_reliable_fast_path():
     bound = RouteBound(((0, 0), (600, 0), (650, 0)), 800)
-    *_, quality = fit_field(RING, [], [], routes=[bound], rollback_xy=[(650, 0)])
-    assert quality["path_violations"] and not quality["ready"]
+    vertices, faces, quality = fit_field(RING, [], [], routes=[bound], rollback_xy=[(650, 0)])
+    assert all(value(vertices, faces, x, 0) <= 800 + 1e-5 for x in range(0, 651, 5))
+    assert quality["rollback_skipped_protected_vertices"] == 1
+    assert not quality["path_violations"] and quality["ready"]
 
 
 def test_even_custom_borderline_reachable_time_keeps_an_endpoint_upper_bound():
@@ -152,7 +157,8 @@ def test_unplanned_sampling_does_not_erase_candidate_before_freeze():
         patch("app.isochrone.adoption.estimate_fusion", return_value=rebuilt) as rebuild,
     ):
         result = prepare_fusion(chk, lattice, [], candidate, [])
-    assert not result["adoption"]["ready_for_validation"]
+    assert result["adoption"]["ready_for_validation"]
+    assert result["quality"]["validation_plan_pending"]
     assert result["adoption"]["rollback_nodes"] == 0
     assert rebuild.call_count == 0
     assert candidate == original

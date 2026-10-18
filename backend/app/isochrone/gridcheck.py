@@ -40,7 +40,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from ..baidu.errors import BaiduApiError, QuotaExhaustedError
-from .fusion import apply_validation_gate, estimate_fusion, field_time, fusion_time
+from .fusion import estimate_fusion, field_time, fusion_time
 from .geometry import (
     METERS_PER_DEG_LAT,
     haversine_m,
@@ -84,7 +84,8 @@ class GridcheckConfig:
     critical_s: float = 60.0
     validation_points: int = 8
     boundary_band_s: float = 100.0  # 补测筛选带，十五分钟分类阈值仍是 target_s。
-    completion_rounds: int = 2
+    completion_rounds: int = 3
+    repair_rounds: int = 2  # 同一次体检内纠错；每轮重新冻结，旧核验点转为建模证据。
 
     def clue_threshold(self, s: float) -> float:
         return self.kappa * s + 2 * self.eps_m
@@ -349,8 +350,13 @@ class _Checker:
                 self.budget.routes_used -= 0 if cached else 1
             return
         self.budget.routes_ok += 1
+        self.ingest_route(p, route, cache_hit=bool(cached))
+
+    def ingest_route(self, p: Probe, route: dict, *, cache_hit=False) -> None:
+        """复用已取得的完整响应也经过同一位置/围挡检查，不增加请求计数。"""
+        p.route_checked = True
         p.measured = True
-        p.route_cache_hit = bool(cached)
+        p.route_cache_hit = cache_hit
         p.route_fetched_at = route.get("fetched_at")
         base = self.refine.base_speed if self.refine is not None else 1.17
         closures = self.refine.closures if self.refine is not None else ()
@@ -496,16 +502,14 @@ async def cross_check(
     lattice = _Lattice(cells, spacing)
     chk = _Checker(client, center, polygon, refine, cfg)
     if cfg.fusion_mode:
-        # 核验的重试也占额度；前面的拟合补测不能借用这份预留。
-        validation_reserve = min(
-            cfg.max_routes, max(cfg.validation_points * 2, math.ceil(cfg.max_routes * 0.6))
-        )
-        route_reserve = min(12, cfg.max_routes // 3)
+        # 预留一轮方向核验；完整片区计划不足不再挤占全部建模预算。
+        # 起点预检阶段最多八次，后续阶段始终共用原请求硬上限（包括重试）。
+        validation_reserve = min(cfg.max_routes, max(4, cfg.validation_points))
         pair_reserve = min(40, cfg.max_pairs // 4)
-        chk.budget.routes = max(0, cfg.max_routes - validation_reserve - route_reserve)
+        chk.budget.routes = min(8, cfg.max_routes)
         chk.budget.pairs = max(0, cfg.max_pairs - pair_reserve)
         if hasattr(client, "route_limit"):
-            client.route_limit = max(0, client.max_routes - validation_reserve - route_reserve)
+            client.route_limit = min(client.max_routes, client.route_attempts + 8)
     target = cfg.target_s
     exact = float(grid.get("reach_grid_m") or 0) == POINT_GRID_M
 
@@ -684,23 +688,24 @@ async def cross_check(
 
     completion = None
     if cfg.fusion_mode:
+        from .completion import reuse_ray_routes
+
+        reused = reuse_ray_routes(chk, lattice)
+        chk.budget.routes = max(chk.budget.routes_used, cfg.max_routes - validation_reserve)
+        if hasattr(client, "route_limit"):
+            client.route_limit = max(client.route_attempts, client.max_routes - validation_reserve)
         # 候选冻结前生成线索。原始相邻点对参与审核，显示折线不作为墙。
         if chk.origin_preflight["passed"]:
             clues, candidates = await _clues(chk, lattice, cfg)
             await _illustrate(chk, clues)
         chk.fusion_clues = clues
-        # 按当前候选的完整覆盖计划扩大验收预留，只调整原预算内的阶段分配。
+        # 完整覆盖所需额度只记录；不能让复杂地区因片区多而完全没有修正机会。
         preview = _estimate(chk, ray_samples, cfg)["fusion"]
         preview_targets, preview_plan = validation_plan(chk, lattice, leaves, preview, ray_samples)
         preview_budget = validation_request_budget(chk, preview_targets)
-        validation_reserve = min(
-            cfg.max_routes, max(validation_reserve, preview_budget["planned_requests"])
-        )
-        chk.budget.routes = max(0, cfg.max_routes - validation_reserve)
         chk.budget.pairs = cfg.max_pairs
-        if hasattr(client, "route_limit"):
-            client.route_limit = max(0, client.max_routes - validation_reserve)
         completion = await _complete_fusion(chk, lattice, ray_samples, initial=preview)
+        completion["ray_routes_reused"] = reused
         completion["validation_reserve"] = {
             "reserved_requests": validation_reserve,
             "target_points": preview_plan["target_points"],
@@ -720,9 +725,11 @@ async def cross_check(
         chk.budget.pairs = cfg.max_pairs
         if hasattr(client, "route_limit"):
             client.route_limit = client.max_routes
-        from .adoption import prepare_fusion
+        from .reconciliation import reconcile_fusion
 
-        prepared = prepare_fusion(chk, lattice, leaves, estimate["fusion"], ray_samples)
+        prepared, validation = await reconcile_fusion(
+            chk, lattice, leaves, estimate["fusion"], ray_samples
+        )
         estimate.update(
             fusion=prepared,
             area_km2=prepared["area_km2"],
@@ -730,8 +737,12 @@ async def cross_check(
             rings=[ring for face in prepared["geometry"]["coordinates"] for ring in face],
             holes=[i > 0 for face in prepared["geometry"]["coordinates"] for i in range(len(face))],
         )
-        validation = await _validate_fusion(chk, lattice, leaves, estimate, ray_samples)
-        apply_validation_gate(estimate["fusion"], validation)
+        leaves = [
+            p
+            for p in chk.probes.values()
+            if p.measured and not p.children and p.kind in ("cell", "sub", "outer")
+        ]
+        gaps, disputed = _gaps(chk, leaves, clues, target)
         # 验收后不再取得新的开发证据或示意路线，避免改变冻结依据和挤占预算。
 
     over_unverified = sum(1 for p in leaves if p.inside and p.status(target) == "over_unverified")
@@ -744,7 +755,7 @@ async def cross_check(
     for p in chk.probes.values():
         if not p.measured:
             continue
-        if p.kind.startswith(("validation", "hole_", "boundary_")):
+        if p.kind not in ("cell", "sub", "outer"):
             continue
         if p.kind == "outer":
             counts["outer"] += 1
@@ -1090,7 +1101,7 @@ def _gap_candidates(leaves: list[Probe], target: float) -> list[Probe]:
         p
         for p in leaves
         # 孔洞补测是独立终点，没有代表一块规则方格的面积，不能用索引画整格缺口。
-        if not p.kind.startswith(("hole_", "boundary_"))
+        if p.kind in ("cell", "sub", "outer")
         and p.inside
         and p.status(target) in ("over", "blocked", "disputed")
     ]
@@ -1272,7 +1283,7 @@ def _boundary_candidates(chk, current):
     known = [
         position
         for p in chk.probes.values()
-        if p.measured or p.route_checked
+        if p.route_checked or p.kind.startswith("validation")
         for position in [(p.lat, p.lng), *([p.observed_location] if p.observed_location else [])]
     ]
     out = {}
@@ -1300,6 +1311,20 @@ async def _complete_fusion(chk, lattice, ray_samples, initial=None):
     corrections = []
     rounds = 0
     cached = getattr(chk.client, "walking_route_cached", None)
+    restored_targets = getattr(chk.client, "recent_walking_targets", None)
+    indexed_restored = 0
+    if restored_targets and getattr(chk, "origin_preflight", {}).get("passed"):
+        for lat, lng in restored_targets(chk.center):
+            if any(
+                p.kind.startswith("validation") and haversine_m(lat, lng, p.lat, p.lng) < 1e-3
+                for p in chk.probes.values()
+            ):
+                continue
+            p = _add_hole_target(chk, lattice, lat, lng, "cache_evidence")
+            if p.route_checked:
+                continue
+            await chk.verify_by_route(p, cache_only=True)
+            indexed_restored += int(p.route_authoritative or p.observed_location is not None)
     for p in sorted(chk.probes.values(), key=lambda p: p.key):
         if (
             p.measured
@@ -1416,6 +1441,9 @@ async def _complete_fusion(chk, lattice, ray_samples, initial=None):
             for key in sorted(groups, key=lambda k: groups[k][0][0]):
                 ordered.append(groups[key].pop(0)[1:])
             groups = {key: group for key, group in groups.items() if group}
+        from .completion import spread_boundary_targets
+
+        ordered, boundary_coverage = spread_boundary_targets(chk, current, ordered)
         before = chk.budget.route_queries
         attempted = 0
         selected_positions = []
@@ -1490,6 +1518,7 @@ async def _complete_fusion(chk, lattice, ray_samples, initial=None):
 
     return {
         "cache_routes_restored": cache_restored,
+        "indexed_routes_restored": indexed_restored,
         "route_checks": chk.budget.route_queries - before_routes,
         "extra_points": extra,
         "pending_before_km2": initial["unknown_inside_ray_km2"],
@@ -1504,6 +1533,7 @@ async def _complete_fusion(chk, lattice, ray_samples, initial=None):
         "boundary_band_s": cfg.boundary_band_s,
         "correction_rounds": rounds,
         "correction_points": corrections,
+        "boundary_sector_counts": boundary_coverage if rounds else [],
     }
 
 
@@ -1597,7 +1627,12 @@ async def _validate_fusion(chk, lattice, leaves, estimate, ray_samples):
     known_paths = known_reachable_segments(chk, estimate["fusion"])
 
     async def evaluate(selection, region_nodes):
-        p = chk.add(selection["key"], 1, "validation", selection["lat"], selection["lng"])
+        key = selection["key"]
+        # 每轮目标重新冻结；键不能与上一轮留出记录碰撞而丢掉新请求。
+        key = (key[0] + 10000000 * getattr(chk, "validation_round", 0), key[1])
+        p = chk.add(key, 1, "validation", selection["lat"], selection["lng"])
+        if p is None:
+            raise ValueError("同一轮核验目标键重复")
         # 直接核验路线；矩阵失败、矩阵预算耗尽都不应阻断这份独立预留。
         preflight_blocked = estimate["fusion"].get("quality", {}).get("preflight_blocked", False)
         cache_probe = getattr(chk.client, "walking_route_cached", None)
@@ -1678,6 +1713,7 @@ async def _validate_fusion(chk, lattice, leaves, estimate, ray_samples):
         else:
             reason = None
         return {
+            "probe_key": list(p.key),
             "lat": round(p.lat, 6),
             "lng": round(p.lng, 6),
             "source": selection["source"],
@@ -1688,6 +1724,9 @@ async def _validate_fusion(chk, lattice, leaves, estimate, ray_samples):
             "predicted_reachable": predicted,
             "predicted_s": round(predicted_s, 2) if predicted_s is not None else None,
             "route_s": p.route_s,
+            "significant_conflict": bool(
+                verdict == "conflict" and abs(value - chk.cfg.target_s) > BOUNDARY_TOLERANCE_S
+            ),
             "position_basis": p.route_position_basis,
             "path_upper_conflict": bool(
                 near_known_path
@@ -1706,6 +1745,7 @@ async def _validate_fusion(chk, lattice, leaves, estimate, ray_samples):
         checked_endpoints.append(tuple(reversed(result["actual_endpoint"])))
 
     results = await validate_in_stages(selections, evaluate, record_known)
+    unattempted = len(selections) - len(results)
     for result in results:
         if result["verdict"] == "unknown":
             unknown += 1
@@ -1718,8 +1758,10 @@ async def _validate_fusion(chk, lattice, leaves, estimate, ray_samples):
         "checked": checked,
         "corrections": 0,
         "disagreements": disagreements,
-        "unknown": unknown,
+        "unknown": unknown + unattempted,
+        "unattempted": unattempted,
         "points": results,
         "coverage": validation_coverage(plan, results),
-        "basis": "偏移点始终不参与拟合；这是同一地图服务下的留出核对，不是实地准确率",
+        "basis": "核验点不参与本轮冻结候选拟合；若用于后续纠错，须重新冻结并取新点。"
+        "这是同一地图服务下的留出核对，不是实地准确率",
     }

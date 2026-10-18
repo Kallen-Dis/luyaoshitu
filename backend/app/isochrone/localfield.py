@@ -48,7 +48,7 @@ def route_jump(a, b):
     )
 
 
-def correction_support(vertices, observations, target=900, scale=1.0):
+def correction_support(vertices, observations, target=900, scale=1.0, correction_caps=()):
     """慢终点局限于一个计算格附近，不让单个慢点扩散到附近快路。
 
     这些是保守的模型影响半径，不是实测精度。无路线证据处严格回到射线先验。
@@ -63,7 +63,12 @@ def correction_support(vertices, observations, target=900, scale=1.0):
             and abs(o.seconds - q.seconds) <= 120
             for q in routes
         )
-        radius.append(((75.0 if corroborated else 50.0) if o.seconds > target else 125.0) * scale)
+        r = (75.0 if corroborated else 50.0) if o.seconds > target else 125.0
+        if o.seconds > target:
+            r = min(
+                [r, *(cap for x, y, cap in correction_caps if math.hypot(o.x - x, o.y - y) < 1)]
+            )
+        radius.append(r * scale)
     support = []
     for v in vertices:
         best = 0.0
@@ -83,6 +88,7 @@ class Observation:
     weight: float = 2.0
     protected: bool = False
     distance: float | None = None
+    soft_eligible: bool = False
 
 
 @dataclass(frozen=True)
@@ -186,7 +192,9 @@ class RayPrior:
             groups.setdefault(angle, []).append((math.hypot(x, y), t))
         self.angles = sorted(groups)
         self.profiles = []
+        self.raw_profiles = []
         for a in self.angles:
+            self.raw_profiles.append([(0.0, 0.0), *sorted(groups[a])])
             profile = [(0.0, 0.0)]
             for radius, t in sorted(groups[a]):
                 profile.append((radius, max(profile[-1][1] + 0.01, t)))
@@ -239,6 +247,33 @@ class RayPrior:
         b = self.profile_time(self.profiles[right], r, boundary)
         return a * (1 - f) + b * f
 
+    def measured_time(self, x, y):
+        """证据支持区内使用原始射线测时，不再将远处较快点强改成更慢。
+
+        不把原射线边界当作900秒的实测位置；无数据时仍返回几何先验。
+        """
+        if not self.angles:
+            return self(x, y)
+        radius = math.hypot(x, y)
+        angle = math.atan2(y, x) % math.tau
+        right = bisect.bisect_right(self.angles, angle) % len(self.angles)
+        left = (right - 1) % len(self.angles)
+        span = (self.angles[right] - self.angles[left]) % math.tau
+        fraction = ((angle - self.angles[left]) % math.tau) / span if span else 0.0
+
+        def value(profile):
+            for a, b in zip(profile, profile[1:], strict=False):
+                if radius <= b[0]:
+                    return a[1] + (b[1] - a[1]) * (radius - a[0]) / max(b[0] - a[0], 1e-9)
+            # 域外不从下降段外推负耗时；仍不宣称这是新测量。
+            a, b = profile[-2:]
+            return b[1] + (radius - b[0]) * max(0.5, (b[1] - a[1]) / (b[0] - a[0]))
+
+        return (
+            value(self.raw_profiles[left]) * (1 - fraction)
+            + value(self.raw_profiles[right]) * fraction
+        )
+
 
 def fit_field(
     ring,
@@ -252,14 +287,25 @@ def fit_field(
     clues=(),
     support_scale=1.0,
     domain=None,
+    correction_caps=(),
 ):
     """实际终点局部插点，整段路线作上限；无法满足的约束显式拒绝，不全图加密。"""
     prior = RayPrior(ring, samples, target)
     extent = max(max(math.hypot(*p) for p in ring) + 250, 400)
+    # 射线响应的终点及绕行可能在原先验圈外；接纳证据后不能仍裁掉它的路径。
+    # 使用固定网格单位向上扩域；异常超远数据仍由裁剪/冲突门槛拒绝，防止无限分配。
+    evidence_extent = max(
+        [
+            extent,
+            *(math.hypot(o.x, o.y) + 2 * spacing for o in observations if o.protected),
+            *(max(abs(x), abs(y)) + 2 * spacing for r in routes for x, y in r.path),
+        ]
+    )
+    extent = min(evidence_extent, max(2500.0, extent * 2))
     observation_count = len(observations)
     observations = sorted(
         {o for o in observations if math.hypot(o.x, o.y) <= extent - spacing},
-        key=lambda o: (o.x, o.y, o.seconds, o.weight),
+        key=lambda o: (o.x, o.y, o.seconds, o.weight, o.soft_eligible),
     )
     routes = sorted(set(routes), key=lambda r: (r.seconds, r.path))
     mesh = FieldMesh(extent, spacing)
@@ -287,6 +333,23 @@ def fit_field(
             if max(abs(point[0]), abs(point[1])) < mesh.limit - spacing:
                 mesh.insert(point)
     mesh_flips = mesh.improve_quality()
+    # 局部撤销附近让路径落在网格边上，避免“路径穿过三角形”把整片非路径顶点
+    # 一并锁死。只细分计算网格，路径、实测时间及上下限均不改变。
+    conformed_routes = 0
+    if rollback_xy:
+        from .validation import distance_to_paths
+
+        segments = sorted(
+            {
+                tuple(sorted((a, b)))
+                for r in routes
+                for a, b in zip(r.path, r.path[1:], strict=False)
+            }
+        )
+        for a, b in segments:
+            if any(distance_to_paths(x, y, [(a, b)]) <= spacing for x, y in rollback_xy):
+                mesh.conform_segment(a, b)
+                conformed_routes += 1
     patches = evidence_patches(observations, routes, target)
     reachable_patches = evidence_patches(observations, routes, target, reachable=True)
     patch_edges = {
@@ -323,14 +386,14 @@ def fit_field(
     base = [prior(x, y) for x, y in points]
     for k in boundary:
         base[k] = target
-    support = correction_support(vertices, observations, target, support_scale)
+    support = correction_support(vertices, observations, target, support_scale, correction_caps)
     patch_floors = patch_floors_at(vertices, patches)
     patch_ceilings = patch_floors_at(vertices, reachable_patches, upper=True)
     patch_count = len(patches)
     for k, floor in enumerate(patch_floors):
         if floor:
             support[k] = 1.0
-    bounds, anchors = local_envelopes(vertices, base, observations, spacing)
+    prior_support = support.copy()
     path_constraints = {}
     invalid_segments = 0
     clipped_paths = 0
@@ -390,16 +453,31 @@ def fit_field(
     }
     for k in rollback:
         support[k] = 0.0
+        prior_support[k] = 0.0
+    # 几何先验仅在缺乏证据处保持；有证据处取消径向单调/900秒边界重标定。
+    # 过渡使用原局部支持，不将校正扩散到不相通的邻近区域。
+    base = [
+        (1 - s) * t + s * prior.measured_time(*p)
+        for p, t, s in zip(points, base, prior_support, strict=True)
+    ]
+    bounds, anchors = local_envelopes(vertices, base, observations, spacing)
     from .fieldenergy import regularization
 
     triangles = [face for face in mesh.faces if face is not None]
-    diag, rows, mass, weakened = regularization(points, triangles, anchors, clues, route_jump)
+    diag, rows, mass, weakened = regularization(
+        points,
+        triangles,
+        anchors,
+        clues,
+        route_jump,
+        prior_strength=[1 - 0.75 * s for s in support],
+    )
     rhs = [0.0 for _ in vertices]
     prepared = []
     for o in observations:
-        # 矩阵加插值等待与单点路线不是同一耗时观测。未核实点保留给风险选点，
-        # 不因它恰好靠近某条路线，就获得推动正式边界的权力。
-        if not o.protected:
+        # 普通矩阵测时仅用于选点；经双路线同路段校准的点只作低权重软观测，
+        # 不获得端点分类、孔洞或路径的硬约束权力。
+        if not o.protected and not o.soft_eligible:
             continue
         weights = mesh.stencil((o.x, o.y))
         if not weights:
@@ -418,12 +496,15 @@ def fit_field(
     residual = [0.0 for _ in vertices]
     # 钝角有限元单元不保证离散最大值原理。只观测到变快时不能凭平滑
     # 生出正修正，反之亦然；局部支持仍限制传播，不截断刚度矩阵系数。
-    observed_deltas = [o.seconds - prior(o.x, o.y) for o in observations if o.protected]
+    observed_deltas = [
+        o.seconds - prior.measured_time(o.x, o.y) for o in observations if o.protected
+    ]
     delta_low, delta_high = min([0.0, *observed_deltas]), max([0.0, *observed_deltas])
     center = mesh.stencil((0, 0))
     fixed = {k for k, w in center if w > 0.999999}
     change = 0.0
-    for _iteration in range(3000):
+    iteration_limit = 6000
+    for _iteration in range(iteration_limit):
         change = 0.0
         for k, row in enumerate(rows):
             if k in fixed or not support[k] or diag[k] <= 0:
@@ -439,6 +520,8 @@ def fit_field(
             residual[k] = value
         if change < 0.025:
             break
+        if _iteration == 2999 and change >= 0.1:
+            break  # 明显未收敛不盲目加倍，仅延长已接近原精度门槛的迭代。
     values = [max(0, a + s * b) for a, s, b in zip(base, support, residual, strict=True)]
     verified = [(o, w) for o, w in prepared if o.protected]
     thresholds = sorted({t for t in (300, 600, target) if t <= target})
@@ -454,11 +537,22 @@ def fit_field(
     for k in fixed:
         lower[k] = 0.0
         upper[k] = 0.0
-    for k in rollback - fixed:
+    measured_nodes = {k for _, weights in verified for k, w in weights if w > 0.999999}
+    path_bound_nodes = {k for weights, _ in constraints for k, w in weights if w > 1e-10}
+    protected_rollback = rollback & (fixed | measured_nodes | path_bound_nodes)
+    # 路径穿过三角形时也约束其非路径顶点。局部回退不能给这些节点新增
+    # 与既有路线竞争的下限；没有可安全撤销的节点就保留失败原因。
+    for k in rollback - fixed - measured_nodes - path_bound_nodes:
         # 圈外碎片只撤销“可达”分类；不把先验大耗时强加给已知较短路径。
         restored = min(base[k], target + 1.0)
-        lower[k] = max(lower[k], restored)
-        upper[k] = restored
+        if restored <= target:
+            # 撤销无证据的超时插值只需限制上限。不能把先验耗时同时设成
+            # 新下限，迫使相邻可信快路线变慢；已有慢区下限仍须保留。
+            if lower[k] <= restored:
+                upper[k] = min(upper[k], restored)
+        else:
+            lower[k] = max(lower[k], restored)
+            upper[k] = restored
     data_conflicts = sum(
         o.seconds > 1e-6 and any(k in fixed and w > 0.999999 for k, w in weights)
         for o, weights in verified
@@ -564,23 +658,28 @@ def fit_field(
         "solver_converged": change < 0.025,
         "observed_correction_range_s": [delta_low, delta_high],
         "computational_spacing_m": spacing,
+        "computational_extent_m": extent,
         "local_node_offsets_m": [12.5, 6.25] if refine else [12.5],
         "mesh_quality_flips": mesh_flips,
         "local_inserted_vertices": len(points) - initial_count,
         "observations": len(observations),
         "duplicate_or_outside_observations": observation_count - len(observations),
         "soft_observation_deadband_s": BOUNDARY_TOLERANCE_S,
+        "calibrated_matrix_observations": sum(o.soft_eligible for o in observations),
+        "prior_policy": "raw_samples_in_route_supported_area",
         "prior_boundary_vertices": len(boundary),
         "corroborated_patch_triangles": patch_count,
         "corroborated_reachable_triangles": len(reachable_patches),
         "conforming_patch_edges": len(patch_edges),
+        "conforming_rollback_route_segments": conformed_routes,
         "support_radius_m": {"reachable": 125, "slow_single": 50, "slow_corroborated": 75},
         "prior_only_vertices": sum(s == 0 for s in support),
         "bounded_vertices": sum(math.isfinite(hi) for _, hi in bounds),
         "disconnected_smoothing_edges": 0,
         "regularization": "area_integrated_linear_gradient",
         "prior_integral_weight": round(sum(mass), 6),
-        "solver_iteration_limit": 3000,
+        "solver_iteration_limit": iteration_limit,
+        "solver_extended": _iteration >= 3000,
         "weakened_smoothing_edges": weakened,
         "protected_routes": len(verified),
         "hard_constraint_routes": len(protected),
@@ -598,6 +697,7 @@ def fit_field(
             o.seconds > target + BOUNDARY_TOLERANCE_S for o, _ in verified
         ),
         "rollback_vertices": len(rollback),
+        "rollback_skipped_protected_vertices": len(protected_rollback),
         "path_constraints": len(constraints),
         "path_violations": sum(v > 1e-5 for v in path_violations),
         "max_path_violation_s": round(max(path_violations, default=0), 6),

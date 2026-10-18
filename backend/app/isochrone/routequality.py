@@ -4,6 +4,9 @@ import math
 
 from .geometry import haversine_m
 
+# 请求/顶层响应的微小坐标量化差异；不放宽不同请求起点或道路首段的检查。
+ORIGIN_ECHO_TOLERANCE_M = 2.0
+
 
 def location(value):
     if not isinstance(value, dict):
@@ -62,8 +65,9 @@ def route_positions(route):
     response = location(route.get("response_origin"))
     declared = route.get("requested_origin") is not None or route.get("response_origin") is not None
     origin = requested if declared else start
+    wire = tuple(round(v, 6) for v in requested) if requested else None
     origin_consistent = (
-        bool(requested and response and haversine_m(*requested, *response) <= 1)
+        bool(wire and response and haversine_m(*wire, *response) <= ORIGIN_ECHO_TOLERANCE_M)
         if declared
         else bool(start)
     )
@@ -71,6 +75,7 @@ def route_positions(route):
     return {
         "origin": origin,
         "origin_consistent": origin_consistent,
+        "origin_echo_error_m": haversine_m(*wire, *response) if wire and response else None,
         "origin_basis": "request_and_response" if declared else "path_start",
         "start_gap_m": gap,
         "start": start,

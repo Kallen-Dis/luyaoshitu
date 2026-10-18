@@ -42,7 +42,7 @@ def test_validated_prior_publishes_and_preserves_ray_reference():
     assert checked["validation"]["requested"] <= checked["validation"]["coverage"]["target_points"]
     assert checked["validation"]["coverage"]["complete"]
     assert checked["usage"]["matrix_pairs"] <= 400
-    assert checked["usage"]["routes"] <= 40
+    assert checked["usage"]["routes"] <= 64  # 本用例显式给出的总上限；补点和重验共享。
 
 
 def test_a_route_to_the_checked_endpoint_uses_its_own_time_not_mixed_matrix_time():
@@ -292,7 +292,14 @@ def test_spatial_validation_catches_an_underestimated_boundary_between_fit_point
 
     with patch("app.isochrone.gridcheck._validate_fusion", validate):
         # 候选须先通过预审，才能测试冻结后的新点冲突；不依赖一个本来就被拒绝的开发场。
-        checked = _run(net, fusion_mode=True, max_pairs=0, max_routes=64, completion_rounds=0)
+        checked = _run(
+            net,
+            fusion_mode=True,
+            max_pairs=0,
+            max_routes=64,
+            completion_rounds=0,
+            repair_rounds=0,  # 此用例检查冻结候选本身；新轮纠错另有回归。
+        )
     assert checked["fusion"]["quality"]["validation_significant_conflicts"] > 0
     assert not checked["fusion"]["quality"]["ready"]
 

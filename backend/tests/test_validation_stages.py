@@ -39,3 +39,34 @@ def test_path_upper_conflict_cannot_be_hidden_by_another_backup():
 
     results = asyncio.run(validate_in_stages(selections, evaluate, lambda r: None))
     assert calls == ["a", "danger"] and results[0]["path_upper_conflict"]
+
+
+def test_primary_counterexample_stops_further_requests():
+    calls = []
+
+    async def evaluate(selection, nodes):
+        calls.append(selection["id"])
+        return {"verdict": "conflict", "path_upper_conflict": False}
+
+    targets = [{"id": i, "region_nodes": [], "alternatives": []} for i in range(4)]
+    result = asyncio.run(validate_in_stages(targets, evaluate, lambda r: None))
+    assert calls == [0] and len(result) == 1
+    assert result[0]["attempts"][0]["verdict"] == "conflict"
+
+
+def test_borderline_disagreement_is_retained_without_stopping_other_targets():
+    calls = []
+
+    async def evaluate(selection, nodes):
+        calls.append(selection["id"])
+        return {
+            "verdict": "conflict" if selection["id"] == 0 else "consistent",
+            "significant_conflict": False,
+            "path_upper_conflict": False,
+        }
+
+    targets = [{"id": i, "region_nodes": [], "alternatives": []} for i in range(4)]
+    result = asyncio.run(validate_in_stages(targets, evaluate, lambda r: None))
+    assert calls == [0, 1, 2, 3]
+    assert result[0]["verdict"] == "conflict"
+    assert len(result[0]["attempts"]) == 1

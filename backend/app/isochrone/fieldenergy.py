@@ -5,7 +5,7 @@ from __future__ import annotations
 from .holepolicy import smoothing_factor
 
 
-def regularization(points, triangles, anchors, clues, jump):
+def regularization(points, triangles, anchors, clues, jump, prior_strength=None):
     """能量为 0.35/2500 ∫r² + 2∫a|∇r|²；先验项使用集中质量近似。
 
     2500 平方米是固定的参考面积，不跟计算网格间距一起改变。
@@ -38,7 +38,7 @@ def regularization(points, triangles, anchors, clues, jump):
         # 整个局部单元采用同一个正系数，保持梯度能量非负，不将线索当墙切开。
         factor = min(factors)
         for i, k in enumerate(face):
-            mass[k] += 0.35 * area / (3 * 2500)
+            mass[k] += 0.35 * area / (3 * 2500) * (prior_strength[k] if prior_strength else 1.0)
             for j, other in enumerate(face):
                 term = (
                     2

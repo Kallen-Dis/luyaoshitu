@@ -145,7 +145,8 @@ def test_budget_shortage_keeps_reliable_corrections_and_only_blocks_full_samplin
     assert result["time_field"] == f["time_field"]
     assert result["quality"]["measurement_conflicts"] == 0
     assert result["adoption"]["rollback_nodes"] == 0
-    assert result["quality"]["preflight_blocked"]
+    assert not result["quality"]["preflight_blocked"]
+    assert result["quality"]["validation_plan_pending"]
 
 
 @pytest.mark.parametrize("reported_local_count,adopted", [(1, True), (2, False)])

@@ -93,3 +93,19 @@ def test_one_bad_direction_does_not_block_three_valid_directions():
     ]
     result = asyncio.run(check_origin(chk, points))
     assert result["passed"] and sum(r["usable"] for r in result["records"]) == 3
+
+
+@pytest.mark.parametrize("error,passed", [(1.0575, True), (1.9, True), (2.2, False), (20, False)])
+def test_response_quantization_does_not_move_the_fixed_request_origin(error, passed):
+    class Quantized(ContractNet):
+        async def walking_route(self, origin, destination, **kwargs):
+            data = await super().walking_route(origin, destination, **kwargs)
+            lat, lng = offset_point(*origin, 0, error)
+            data["response_origin"] = {"lat": lat, "lng": lng}
+            return data
+
+    chk, points = checker(Quantized())
+    result = asyncio.run(check_origin(chk, points))
+    assert result["passed"] == passed
+    assert all(p.route_origin == C for p in points)
+    assert chk.center == C
